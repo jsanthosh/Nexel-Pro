@@ -1,0 +1,19 @@
+# Environment variables (never commit your API key)
+.env
+
+# Dependencies
+node_modules/
+
+# Build output
+server/dist/
+client/build/
+
+# Database
+data/
+
+# OS files
+.DS_Store
+
+# Editor
+.vscode/
+*.local
