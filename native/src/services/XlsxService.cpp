@@ -9,12 +9,12 @@
 #include <QtCore/private/qzipwriter_p.h>
 #include <algorithm>
 
-std::vector<std::shared_ptr<Spreadsheet>> XlsxService::importFromFile(const QString& filePath) {
-    std::vector<std::shared_ptr<Spreadsheet>> sheets;
+XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
+    XlsxImportResult result;
 
     QZipReader zip(filePath);
     if (!zip.isReadable()) {
-        return sheets;
+        return result;
     }
 
     // Read shared strings
@@ -30,10 +30,11 @@ std::vector<std::shared_ptr<Spreadsheet>> XlsxService::importFromFile(const QStr
     if (!stylesData.isEmpty()) {
         auto fonts = parseFonts(stylesData);
         auto fills = parseFills(stylesData);
+        auto borders = parseBorders(stylesData);
         auto cellXfs = parseCellXfs(stylesData);
         auto customNumFmts = parseNumFmts(stylesData);
         for (const auto& xf : cellXfs) {
-            styles.push_back(buildCellStyle(xf, fonts, fills, xf.numFmtId, customNumFmts));
+            styles.push_back(buildCellStyle(xf, fonts, fills, borders, xf.numFmtId, customNumFmts));
         }
     }
 
@@ -51,7 +52,8 @@ std::vector<std::shared_ptr<Spreadsheet>> XlsxService::importFromFile(const QStr
     }
 
     // Parse each sheet
-    for (const auto& info : sheetInfos) {
+    for (int sheetIdx = 0; sheetIdx < static_cast<int>(sheetInfos.size()); ++sheetIdx) {
+        const auto& info = sheetInfos[sheetIdx];
         QString path = "xl/" + info.filePath;
         QByteArray sheetData = zip.fileData(path);
         if (sheetData.isEmpty()) continue;
@@ -69,11 +71,59 @@ std::vector<std::shared_ptr<Spreadsheet>> XlsxService::importFromFile(const QStr
         spreadsheet->setColumnCount(std::max(256, maxCol + 10));
 
         spreadsheet->setAutoRecalculate(true);
-        sheets.push_back(spreadsheet);
+        result.sheets.push_back(spreadsheet);
+
+        // ---- Chart import: scan for embedded charts ----
+        QString drawingRId = findDrawingRId(sheetData);
+        if (drawingRId.isEmpty()) continue;
+
+        // Parse sheet rels to find drawing path
+        QString fullSheetPath = "xl/" + info.filePath;
+        int lastSlash = fullSheetPath.lastIndexOf('/');
+        QString sheetDirPath = fullSheetPath.left(lastSlash);
+        QString sheetFileName = fullSheetPath.mid(lastSlash + 1);
+        QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
+        QByteArray sheetRelsData = zip.fileData(sheetRelsPath);
+        auto sheetRels = parseRels(sheetRelsData);
+
+        auto drawIt = sheetRels.find(drawingRId);
+        if (drawIt == sheetRels.end()) continue;
+
+        QString drawingPath = resolveRelativePath(fullSheetPath, drawIt->second);
+        QByteArray drawingData = zip.fileData(drawingPath);
+        if (drawingData.isEmpty()) continue;
+
+        auto chartRefs = parseDrawing(drawingData);
+        if (chartRefs.empty()) continue;
+
+        // Parse drawing rels to find chart paths
+        int drawLastSlash = drawingPath.lastIndexOf('/');
+        QString drawingDir = drawingPath.left(drawLastSlash);
+        QString drawingFileName = drawingPath.mid(drawLastSlash + 1);
+        QString drawingRelsPath = drawingDir + "/_rels/" + drawingFileName + ".rels";
+        QByteArray drawingRelsData = zip.fileData(drawingRelsPath);
+        auto drawingRels = parseRels(drawingRelsData);
+
+        for (const auto& ref : chartRefs) {
+            auto chartIt = drawingRels.find(ref.chartRId);
+            if (chartIt == drawingRels.end()) continue;
+
+            QString chartPath = resolveRelativePath(drawingPath, chartIt->second);
+            QByteArray chartData = zip.fileData(chartPath);
+            if (chartData.isEmpty()) continue;
+
+            ImportedChart chart = parseChartXml(chartData);
+            chart.sheetIndex = sheetIdx;
+            chart.x = ref.fromCol * 64;
+            chart.y = ref.fromRow * 20;
+            chart.width = qMax(200, (ref.toCol - ref.fromCol) * 64);
+            chart.height = qMax(150, (ref.toRow - ref.fromRow) * 20);
+            result.charts.push_back(chart);
+        }
     }
 
     zip.close();
-    return sheets;
+    return result;
 }
 
 std::vector<XlsxService::SheetInfo> XlsxService::parseWorkbook(const QByteArray& workbookXml,
@@ -246,6 +296,78 @@ std::vector<XlsxService::XlsxFill> XlsxService::parseFills(const QByteArray& sty
     return fills;
 }
 
+std::vector<XlsxService::XlsxBorder> XlsxService::parseBorders(const QByteArray& stylesXml) {
+    std::vector<XlsxBorder> borders;
+    QXmlStreamReader xml(stylesXml);
+
+    bool inBorders = false;
+    bool inBorder = false;
+    XlsxBorder currentBorder;
+    QString currentSide;
+
+    auto parseBorderStyle = [](const QString& style) -> int {
+        if (style == "thin" || style == "hair") return 1;
+        if (style == "medium" || style == "dashed" || style == "dotted") return 2;
+        if (style == "thick" || style == "double") return 3;
+        if (!style.isEmpty()) return 1; // any non-empty style means border exists
+        return 0;
+    };
+
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            if (xml.name() == u"borders") {
+                inBorders = true;
+            } else if (inBorders && xml.name() == u"border") {
+                inBorder = true;
+                currentBorder = XlsxBorder();
+            } else if (inBorder) {
+                QString name = xml.name().toString();
+                if (name == "left" || name == "right" || name == "top" || name == "bottom") {
+                    currentSide = name;
+                    QString style = xml.attributes().value("style").toString();
+                    int width = parseBorderStyle(style);
+                    if (width > 0) {
+                        XlsxBorderSide side;
+                        side.enabled = true;
+                        side.width = width;
+                        if (name == "left") currentBorder.left = side;
+                        else if (name == "right") currentBorder.right = side;
+                        else if (name == "top") currentBorder.top = side;
+                        else if (name == "bottom") currentBorder.bottom = side;
+                    }
+                } else if (xml.name() == u"color" && !currentSide.isEmpty()) {
+                    QString rgb = xml.attributes().value("rgb").toString();
+                    if (!rgb.isEmpty()) {
+                        if (rgb.length() == 8) rgb = rgb.mid(2);
+                        QString color = "#" + rgb;
+                        if (currentSide == "left") currentBorder.left.color = color;
+                        else if (currentSide == "right") currentBorder.right.color = color;
+                        else if (currentSide == "top") currentBorder.top.color = color;
+                        else if (currentSide == "bottom") currentBorder.bottom.color = color;
+                    }
+                }
+            }
+        } else if (xml.isEndElement()) {
+            if (inBorder) {
+                QString name = xml.name().toString();
+                if (name == "left" || name == "right" || name == "top" || name == "bottom") {
+                    currentSide.clear();
+                }
+            }
+            if (xml.name() == u"border" && inBorders) {
+                borders.push_back(currentBorder);
+                inBorder = false;
+            } else if (xml.name() == u"borders") {
+                inBorders = false;
+                break;
+            }
+        }
+    }
+
+    return borders;
+}
+
 std::vector<XlsxService::XlsxCellXf> XlsxService::parseCellXfs(const QByteArray& stylesXml) {
     std::vector<XlsxCellXf> xfs;
     QXmlStreamReader xml(stylesXml);
@@ -264,9 +386,11 @@ std::vector<XlsxService::XlsxCellXf> XlsxService::parseCellXfs(const QByteArray&
                 currentXf = XlsxCellXf();
                 currentXf.fontId = xml.attributes().value("fontId").toInt();
                 currentXf.fillId = xml.attributes().value("fillId").toInt();
+                currentXf.borderId = xml.attributes().value("borderId").toInt();
                 currentXf.numFmtId = xml.attributes().value("numFmtId").toInt();
                 currentXf.applyFont = (xml.attributes().value("applyFont") == u"1");
                 currentXf.applyFill = (xml.attributes().value("applyFill") == u"1");
+                currentXf.applyBorder = (xml.attributes().value("applyBorder") == u"1");
                 currentXf.applyAlignment = (xml.attributes().value("applyAlignment") == u"1");
                 currentXf.applyNumberFormat = (xml.attributes().value("applyNumberFormat") == u"1");
             } else if (inXf && xml.name() == u"alignment") {
@@ -299,6 +423,7 @@ std::vector<XlsxService::XlsxCellXf> XlsxService::parseCellXfs(const QByteArray&
 CellStyle XlsxService::buildCellStyle(const XlsxCellXf& xf,
                                         const std::vector<XlsxFont>& fonts,
                                         const std::vector<XlsxFill>& fills,
+                                        const std::vector<XlsxBorder>& borders,
                                         int numFmtId,
                                         const std::map<int, QString>& customNumFmts) {
     CellStyle style;
@@ -320,6 +445,31 @@ CellStyle XlsxService::buildCellStyle(const XlsxCellXf& xf,
         const auto& fl = fills[xf.fillId];
         if (fl.hasFg) {
             style.backgroundColor = fl.fgColor.name();
+        }
+    }
+
+    // Apply borders
+    if (xf.borderId >= 0 && xf.borderId < static_cast<int>(borders.size())) {
+        const auto& b = borders[xf.borderId];
+        if (b.left.enabled) {
+            style.borderLeft.enabled = true;
+            style.borderLeft.color = b.left.color;
+            style.borderLeft.width = b.left.width;
+        }
+        if (b.right.enabled) {
+            style.borderRight.enabled = true;
+            style.borderRight.color = b.right.color;
+            style.borderRight.width = b.right.width;
+        }
+        if (b.top.enabled) {
+            style.borderTop.enabled = true;
+            style.borderTop.color = b.top.color;
+            style.borderTop.width = b.top.width;
+        }
+        if (b.bottom.enabled) {
+            style.borderBottom.enabled = true;
+            style.borderBottom.color = b.bottom.color;
+            style.borderBottom.width = b.bottom.width;
         }
     }
 
@@ -421,9 +571,55 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
     QXmlStreamReader xml(xmlData);
 
     static QRegularExpression cellRefRe("^([A-Z]+)(\\d+)$");
+    static QRegularExpression rangeRefRe("^([A-Z]+)(\\d+):([A-Z]+)(\\d+)$");
 
     while (!xml.atEnd()) {
         xml.readNext();
+
+        // Parse column widths: <col min="1" max="3" width="15.5" customWidth="1"/>
+        if (xml.isStartElement() && xml.name() == u"col") {
+            int minCol = xml.attributes().value("min").toInt() - 1; // XLSX is 1-based
+            int maxCol = xml.attributes().value("max").toInt() - 1;
+            double width = xml.attributes().value("width").toDouble();
+            if (width > 0 && maxCol < 256) {
+                // Excel width units ≈ character widths; convert to pixels (approx 7.5px per unit)
+                int pixelWidth = qMax(30, static_cast<int>(width * 7.5));
+                for (int c = minCol; c <= maxCol && c < 256; ++c) {
+                    sheet->setColumnWidth(c, pixelWidth);
+                }
+            }
+            continue;
+        }
+
+        // Parse row heights: <row r="1" ht="25.5" customHeight="1">
+        if (xml.isStartElement() && xml.name() == u"row") {
+            QString htStr = xml.attributes().value("ht").toString();
+            if (!htStr.isEmpty()) {
+                int rowIdx = xml.attributes().value("r").toInt() - 1; // XLSX is 1-based
+                double ht = htStr.toDouble();
+                if (ht > 0 && rowIdx >= 0) {
+                    // Excel height is in points; convert to pixels (1pt ≈ 1.333px)
+                    int pixelHeight = qMax(14, static_cast<int>(ht * 1.333));
+                    sheet->setRowHeight(rowIdx, pixelHeight);
+                }
+            }
+            // Don't continue — row contains child <c> elements
+        }
+
+        // Parse merged cells: <mergeCell ref="A1:D1"/>
+        if (xml.isStartElement() && xml.name() == u"mergeCell") {
+            QString ref = xml.attributes().value("ref").toString();
+            auto rangeMatch = rangeRefRe.match(ref);
+            if (rangeMatch.hasMatch()) {
+                int startCol = columnLetterToIndex(rangeMatch.captured(1));
+                int startRow = rangeMatch.captured(2).toInt() - 1;
+                int endCol = columnLetterToIndex(rangeMatch.captured(3));
+                int endRow = rangeMatch.captured(4).toInt() - 1;
+                CellRange range(CellAddress(startRow, startCol), CellAddress(endRow, endCol));
+                sheet->mergeCells(range);
+            }
+            continue;
+        }
 
         if (xml.isStartElement() && xml.name() == u"c") {
             QString ref = xml.attributes().value("r").toString();
@@ -470,8 +666,24 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
             CellAddress addr(row, col);
             bool cellSet = false;
 
+            // If the cell has a formula, set it via setCellFormula
+            if (!formula.isEmpty()) {
+                QString f = formula;
+                if (!f.startsWith('=')) f = "=" + f;
+                sheet->setCellFormula(addr, f);
+                cellSet = true;
+                // Also set the cached value if present
+                if (!value.isEmpty() && type != "s") {
+                    // Numeric cached value - set directly so it displays before recalc
+                    bool ok;
+                    double num = value.toDouble(&ok);
+                    if (ok) {
+                        sheet->setCellValue(addr, num);
+                    }
+                }
+            }
             // Handle inline strings first (type="inlineStr")
-            if (type == "inlineStr" && !inlineStr.isEmpty()) {
+            else if (type == "inlineStr" && !inlineStr.isEmpty()) {
                 sheet->setCellValue(addr, inlineStr);
                 cellSet = true;
             }
@@ -505,8 +717,6 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
                         isDateFmt = (fmt == "Date" || fmt == "Time");
                     }
                     if (isDateFmt && num > 0 && num < 2958466) {
-                        // Valid Excel serial date (1 to Dec 31, 9999)
-                        // Convert to date string so it displays correctly
                         QDate epoch(1899, 12, 30);
                         QDate date = epoch.addDays(static_cast<qint64>(num));
                         if (date.isValid()) {
@@ -516,12 +726,6 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
                         }
                     } else {
                         sheet->setCellValue(addr, num);
-                        // If style says Date but value is not a valid serial, override to General
-                        if (isDateFmt) {
-                            if (styleIdx > 0 && styleIdx < static_cast<int>(styles.size())) {
-                                // We'll apply a modified style below
-                            }
-                        }
                     }
                 } else {
                     sheet->setCellValue(addr, value);
@@ -534,7 +738,6 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
                 auto cell = sheet->getCell(addr);
                 if (cell) {
                     CellStyle cellStyle = styles[styleIdx];
-                    // If date format was applied to a non-date value, override to General
                     if ((cellStyle.numberFormat == "Date" || cellStyle.numberFormat == "Time")) {
                         bool ok;
                         double num = value.toDouble(&ok);
@@ -1162,4 +1365,302 @@ QByteArray XlsxService::generateSheet(Spreadsheet* sheet,
     Q_UNUSED(sharedStrings);
     // This method is not used in the final export flow - sheets are generated inline
     return QByteArray();
+}
+
+// ============== XLSX CHART IMPORT HELPERS ==============
+
+QString XlsxService::resolveRelativePath(const QString& basePath, const QString& relativePath) {
+    if (relativePath.startsWith('/')) {
+        return relativePath.mid(1); // absolute path within package
+    }
+
+    int lastSlash = basePath.lastIndexOf('/');
+    QStringList baseParts;
+    if (lastSlash >= 0) {
+        baseParts = basePath.left(lastSlash).split('/');
+    }
+
+    QStringList relParts = relativePath.split('/');
+    for (const auto& part : relParts) {
+        if (part == "..") {
+            if (!baseParts.isEmpty()) baseParts.removeLast();
+        } else if (part != "." && !part.isEmpty()) {
+            baseParts.append(part);
+        }
+    }
+
+    return baseParts.join('/');
+}
+
+std::map<QString, QString> XlsxService::parseRels(const QByteArray& relsXml) {
+    std::map<QString, QString> rels;
+    if (relsXml.isEmpty()) return rels;
+
+    QXmlStreamReader xml(relsXml);
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement() && xml.name() == u"Relationship") {
+            QString id = xml.attributes().value("Id").toString();
+            QString target = xml.attributes().value("Target").toString();
+            if (!id.isEmpty() && !target.isEmpty()) {
+                rels[id] = target;
+            }
+        }
+    }
+    return rels;
+}
+
+QString XlsxService::findDrawingRId(const QByteArray& sheetXml) {
+    QXmlStreamReader xml(sheetXml);
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement() && xml.name() == u"drawing") {
+            // Try namespace-based lookup first (most reliable)
+            static const QString relNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+            QString rId = xml.attributes().value(relNs, "id").toString();
+            // Fallback: try qualified name r:id
+            if (rId.isEmpty()) {
+                rId = xml.attributes().value("r:id").toString();
+            }
+            // Last resort: scan all attributes for any ":id"
+            if (rId.isEmpty()) {
+                for (const auto& attr : xml.attributes()) {
+                    if (attr.qualifiedName().toString().endsWith(":id")) {
+                        rId = attr.value().toString();
+                        break;
+                    }
+                }
+            }
+            return rId;
+        }
+    }
+    return "";
+}
+
+std::vector<XlsxService::DrawingChartRef> XlsxService::parseDrawing(const QByteArray& drawingXml) {
+    std::vector<DrawingChartRef> refs;
+    QXmlStreamReader xml(drawingXml);
+
+    DrawingChartRef current;
+    bool inAnchor = false;
+    bool inFrom = false, inTo = false;
+
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            QString n = xml.name().toString();
+            if (n == "twoCellAnchor" || n == "oneCellAnchor") {
+                inAnchor = true;
+                current = DrawingChartRef();
+            } else if (inAnchor && n == "from") {
+                inFrom = true;
+            } else if (inAnchor && n == "to") {
+                inTo = true;
+            } else if ((inFrom || inTo) && n == "col") {
+                int val = xml.readElementText().toInt();
+                if (inFrom) current.fromCol = val;
+                else current.toCol = val;
+            } else if ((inFrom || inTo) && n == "row") {
+                int val = xml.readElementText().toInt();
+                if (inFrom) current.fromRow = val;
+                else current.toRow = val;
+            } else if (inAnchor && n == "chart") {
+                // <c:chart r:id="rId1"/>
+                QString rId;
+                for (const auto& attr : xml.attributes()) {
+                    QString qn = attr.qualifiedName().toString();
+                    if (qn.endsWith(":id") || attr.name() == u"id") {
+                        rId = attr.value().toString();
+                        break;
+                    }
+                }
+                if (!rId.isEmpty()) {
+                    current.chartRId = rId;
+                }
+            }
+        } else if (xml.isEndElement()) {
+            QString n = xml.name().toString();
+            if (n == "twoCellAnchor" || n == "oneCellAnchor") {
+                if (!current.chartRId.isEmpty()) {
+                    refs.push_back(current);
+                }
+                inAnchor = false;
+                inFrom = false;
+                inTo = false;
+            } else if (n == "from") {
+                inFrom = false;
+            } else if (n == "to") {
+                inTo = false;
+            }
+        }
+    }
+
+    return refs;
+}
+
+ImportedChart XlsxService::parseChartXml(const QByteArray& chartXml) {
+    ImportedChart chart;
+    chart.chartType = "column"; // default
+
+    QXmlStreamReader xml(chartXml);
+
+    // Context flags
+    bool inPlotArea = false;
+    bool inSer = false;
+    bool inSerTx = false;   // <tx> inside <ser>
+    bool inCat = false;     // <cat>
+    bool inVal = false;     // <val>
+    bool inXVal = false;    // <xVal> (scatter)
+    bool inYVal = false;    // <yVal> (scatter)
+    bool inChartTitle = false;
+    bool inCatAx = false;
+    bool inValAx = false;
+    bool inAxTitle = false;
+    bool chartTypeSet = false;
+
+    ImportedChartSeries currentSeries;
+    QVector<QString> sharedCategories;
+
+    while (!xml.atEnd()) {
+        xml.readNext();
+
+        if (xml.isStartElement()) {
+            QString n = xml.name().toString();
+
+            if (n == "plotArea") {
+                inPlotArea = true;
+            }
+            // Chart type detection (only first chart type element in plotArea)
+            else if (inPlotArea && !chartTypeSet) {
+                if (n == "barChart" || n == "bar3DChart") {
+                    chart.chartType = "column";
+                    chartTypeSet = true;
+                } else if (n == "lineChart" || n == "line3DChart") {
+                    chart.chartType = "line";
+                    chartTypeSet = true;
+                } else if (n == "areaChart" || n == "area3DChart") {
+                    chart.chartType = "area";
+                    chartTypeSet = true;
+                } else if (n == "scatterChart") {
+                    chart.chartType = "scatter";
+                    chartTypeSet = true;
+                } else if (n == "pieChart" || n == "pie3DChart" || n == "ofPieChart") {
+                    chart.chartType = "pie";
+                    chartTypeSet = true;
+                } else if (n == "doughnutChart") {
+                    chart.chartType = "donut";
+                    chartTypeSet = true;
+                } else if (n == "radarChart") {
+                    chart.chartType = "line";
+                    chartTypeSet = true;
+                } else if (n == "bubbleChart") {
+                    chart.chartType = "scatter";
+                    chartTypeSet = true;
+                } else if (n == "stockChart") {
+                    chart.chartType = "line";
+                    chartTypeSet = true;
+                }
+            }
+
+            // Bar direction: col=column, bar=horizontal bar
+            if (n == "barDir") {
+                if (xml.attributes().value("val") == u"bar") {
+                    chart.chartType = "bar";
+                }
+            }
+
+            // Series
+            if (inPlotArea && n == "ser") {
+                inSer = true;
+                currentSeries = ImportedChartSeries();
+            }
+            if (inSer && n == "tx") inSerTx = true;
+            if (inSer && n == "cat") inCat = true;
+            if (inSer && n == "val") inVal = true;
+            if (inSer && n == "xVal") inXVal = true;
+            if (inSer && n == "yVal") inYVal = true;
+
+            // Value element inside series context
+            if (n == "v" && inSer && (inVal || inYVal || inXVal || inCat || inSerTx)) {
+                QString text = xml.readElementText();
+                if (inVal || inYVal) {
+                    bool ok;
+                    double v = text.toDouble(&ok);
+                    currentSeries.values.append(ok ? v : 0.0);
+                } else if (inXVal) {
+                    bool ok;
+                    double v = text.toDouble(&ok);
+                    currentSeries.xNumeric.append(ok ? v : 0.0);
+                } else if (inCat) {
+                    currentSeries.categories.append(text);
+                } else if (inSerTx) {
+                    currentSeries.name = text;
+                }
+            }
+
+            // Chart title (not inside plotArea or axes)
+            if (n == "title" && !inPlotArea && !inCatAx && !inValAx && !inSer) {
+                inChartTitle = true;
+            }
+
+            // Axis elements
+            if (inPlotArea && (n == "catAx" || n == "dateAx")) inCatAx = true;
+            if (inPlotArea && n == "valAx") inValAx = true;
+
+            // Axis title
+            if ((inCatAx || inValAx) && n == "title") inAxTitle = true;
+
+            // Text element <a:t> for titles
+            if (n == "t" && !inSer && (inChartTitle || inAxTitle)) {
+                QString text = xml.readElementText();
+                if (inAxTitle && inCatAx) {
+                    if (!chart.xAxisTitle.isEmpty()) chart.xAxisTitle += " ";
+                    chart.xAxisTitle += text;
+                } else if (inAxTitle && inValAx) {
+                    if (!chart.yAxisTitle.isEmpty()) chart.yAxisTitle += " ";
+                    chart.yAxisTitle += text;
+                } else if (inChartTitle && !inAxTitle) {
+                    if (!chart.title.isEmpty()) chart.title += " ";
+                    chart.title += text;
+                }
+            }
+        }
+        else if (xml.isEndElement()) {
+            QString n = xml.name().toString();
+
+            if (n == "plotArea") inPlotArea = false;
+            if (n == "ser" && inSer) {
+                chart.series.append(currentSeries);
+                if (sharedCategories.isEmpty() && !currentSeries.categories.isEmpty()) {
+                    sharedCategories = currentSeries.categories;
+                }
+                inSer = false;
+                inSerTx = false;
+                inCat = false;
+                inVal = false;
+                inXVal = false;
+                inYVal = false;
+            }
+            if (n == "tx" && inSer) inSerTx = false;
+            if (n == "cat") inCat = false;
+            if (n == "val") inVal = false;
+            if (n == "xVal") inXVal = false;
+            if (n == "yVal") inYVal = false;
+            if (n == "title" && inChartTitle && !inCatAx && !inValAx) inChartTitle = false;
+            if (n == "title" && inAxTitle) inAxTitle = false;
+            if (n == "catAx" || n == "dateAx") { inCatAx = false; inAxTitle = false; }
+            if (n == "valAx") { inValAx = false; inAxTitle = false; }
+        }
+    }
+
+    // Copy shared categories to series that don't have them
+    if (!sharedCategories.isEmpty()) {
+        for (auto& s : chart.series) {
+            if (s.categories.isEmpty()) {
+                s.categories = sharedCategories;
+            }
+        }
+    }
+
+    return chart;
 }

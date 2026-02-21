@@ -15,15 +15,21 @@
 #include "UndoManager.h"
 #include "DependencyGraph.h"
 #include "ConditionalFormatting.h"
+#include "SparklineConfig.h"
+
+struct PivotConfig; // forward declaration
 
 class Spreadsheet {
 public:
     Spreadsheet();
-    ~Spreadsheet() = default;
+    ~Spreadsheet();
 
     // Cell access and modification
     std::shared_ptr<Cell> getCell(const CellAddress& addr);
     std::shared_ptr<Cell> getCell(int row, int col);
+    // Read-only cell access - returns nullptr for non-existent cells (no allocation)
+    std::shared_ptr<Cell> getCellIfExists(const CellAddress& addr) const;
+    std::shared_ptr<Cell> getCellIfExists(int row, int col) const;
     QVariant getCellValue(const CellAddress& addr);
     void setCellValue(const CellAddress& addr, const QVariant& value);
     void setCellFormula(const CellAddress& addr, const QString& formula);
@@ -123,20 +129,55 @@ public:
     const std::vector<DataValidationRule>& getValidationRules() const { return m_validationRules; }
     bool validateCell(int row, int col, const QString& value) const;
 
+    // Row/Column dimensions
+    void setRowHeight(int row, int height);
+    void setColumnWidth(int col, int width);
+    int getRowHeight(int row) const;        // returns 0 if not set (use default)
+    int getColumnWidth(int col) const;      // returns 0 if not set (use default)
+    const std::map<int, int>& getRowHeights() const { return m_rowHeights; }
+    const std::map<int, int>& getColumnWidths() const { return m_columnWidths; }
+
+    // Pivot table support
+    void setPivotConfig(std::unique_ptr<PivotConfig> config);
+    const PivotConfig* getPivotConfig() const;
+    bool isPivotSheet() const;
+
     // Performance settings
     void setAutoRecalculate(bool enabled);
     bool getAutoRecalculate() const;
+    void reserveCells(size_t count) { m_cells.reserve(count); }
+
+    // Sparklines
+    void setSparkline(const CellAddress& addr, const SparklineConfig& config);
+    void removeSparkline(const CellAddress& addr);
+    const SparklineConfig* getSparkline(const CellAddress& addr) const;
+    const auto& getSparklines() const { return m_sparklines; }
+
+    // Display settings
+    void setShowGridlines(bool show) { m_showGridlines = show; }
+    bool showGridlines() const { return m_showGridlines; }
 
 private:
     struct CellKey {
         int row, col;
+        bool operator==(const CellKey& other) const {
+            return row == other.row && col == other.col;
+        }
         bool operator<(const CellKey& other) const {
             if (row != other.row) return row < other.row;
             return col < other.col;
         }
     };
 
-    std::map<CellKey, std::shared_ptr<Cell>> m_cells;
+    struct CellKeyHash {
+        size_t operator()(const CellKey& k) const {
+            // Fast hash combining row and col
+            return std::hash<uint64_t>()(
+                (static_cast<uint64_t>(k.row) << 32) | static_cast<uint32_t>(k.col));
+        }
+    };
+
+    std::unordered_map<CellKey, std::shared_ptr<Cell>, CellKeyHash> m_cells;
     std::unique_ptr<FormulaEngine> m_formulaEngine;
     DependencyGraph m_depGraph;
     UndoManager m_undoManager;
@@ -145,10 +186,20 @@ private:
     int m_columnCount;
     bool m_autoRecalculate;
     bool m_inTransaction;
+    // Cached max row/col (avoids O(n) scan every call)
+    mutable int m_cachedMaxRow = -1;
+    mutable int m_cachedMaxCol = -1;
+    mutable bool m_maxRowColDirty = true;
+    void updateMaxRowCol() const;
     std::vector<SpreadsheetTable> m_tables;
     ConditionalFormatting m_conditionalFormatting;
     std::vector<DataValidationRule> m_validationRules;
     std::vector<MergedRegion> m_mergedRegions;
+    std::unique_ptr<PivotConfig> m_pivotConfig;
+    std::map<int, int> m_rowHeights;     // row -> height in pixels
+    std::map<int, int> m_columnWidths;   // col -> width in pixels
+    bool m_showGridlines = true;
+    std::unordered_map<CellKey, SparklineConfig, CellKeyHash> m_sparklines;
 
     void recalculate(const CellAddress& addr);
     void recalculateAll();

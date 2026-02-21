@@ -4,11 +4,13 @@
 #include "../core/UndoManager.h"
 #include "../core/TableStyle.h"
 #include "../core/ConditionalFormatting.h"
+#include "../core/SparklineConfig.h"
 #include <QFont>
 #include <QMessageBox>
 #include <QApplication>
 #include <QTimer>
 #include <QColor>
+#include <limits>
 
 SpreadsheetModel::SpreadsheetModel(std::shared_ptr<Spreadsheet> spreadsheet, QObject* parent)
     : QAbstractTableModel(parent), m_spreadsheet(spreadsheet) {
@@ -29,35 +31,65 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
         return QVariant();
     }
 
-    auto cell = m_spreadsheet->getCell(CellAddress(index.row(), index.column()));
+    // Use getCellIfExists to avoid creating Cell objects for empty cells
+    auto cell = m_spreadsheet->getCellIfExists(index.row(), index.column());
+
+    // Fast path for empty cells — only check table styling, skip everything else
     if (!cell) {
-        return QVariant();
+        switch (role) {
+            case Qt::BackgroundRole: {
+                auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
+                if (table) {
+                    int startRow = table->range.getStart().row;
+                    if (table->hasHeaderRow && index.row() == startRow)
+                        return table->theme.headerBg;
+                    int dataRow = index.row() - startRow - (table->hasHeaderRow ? 1 : 0);
+                    if (table->bandedRows)
+                        return (dataRow % 2 == 0) ? table->theme.bandedRow1 : table->theme.bandedRow2;
+                    return table->theme.bandedRow1;
+                }
+                return QVariant();
+            }
+            case Qt::FontRole: {
+                auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
+                if (table && table->hasHeaderRow && index.row() == table->range.getStart().row) {
+                    QFont font("Arial", 11);
+                    font.setBold(true);
+                    return font;
+                }
+                return QVariant();
+            }
+            case Qt::ForegroundRole: {
+                auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
+                if (table && table->hasHeaderRow && index.row() == table->range.getStart().row)
+                    return table->theme.headerFg;
+                return QVariant();
+            }
+            default:
+                return QVariant();
+        }
     }
 
     switch (role) {
         case Qt::DisplayRole: {
             auto value = m_spreadsheet->getCellValue(CellAddress(index.row(), index.column()));
-            QString text = value.toString();
-            // Apply number formatting for display
             const auto& style = cell->getStyle();
-            if (style.numberFormat != "General" && !text.isEmpty()) {
+            if (style.numberFormat != "General" && !value.toString().isEmpty()) {
                 NumberFormatOptions opts;
                 opts.type = NumberFormat::typeFromString(style.numberFormat);
                 opts.decimalPlaces = style.decimalPlaces;
                 opts.useThousandsSeparator = style.useThousandsSeparator;
                 opts.currencyCode = style.currencyCode;
                 opts.dateFormatId = style.dateFormatId;
-                return NumberFormat::format(text, opts);
+                return NumberFormat::format(value.toString(), opts);
             }
             return value;
         }
         case Qt::EditRole: {
-            // Return raw value for editing
             return m_spreadsheet->getCellValue(CellAddress(index.row(), index.column()));
         }
         case Qt::FontRole: {
             const auto& baseStyle = cell->getStyle();
-            // Apply conditional formatting
             CellAddress addr(index.row(), index.column());
             auto cellValue = m_spreadsheet->getCellValue(addr);
             CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle);
@@ -172,6 +204,38 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             if (b.enabled) return QString("%1,%2").arg(b.width).arg(b.color);
             return QVariant();
         }
+        case SparklineRole: { // Sparkline render data
+            auto* sparkline = m_spreadsheet->getSparkline(CellAddress(index.row(), index.column()));
+            if (!sparkline) return QVariant();
+
+            SparklineRenderData rd;
+            rd.type = sparkline->type;
+            rd.lineColor = sparkline->lineColor;
+            rd.highPointColor = sparkline->highPointColor;
+            rd.lowPointColor = sparkline->lowPointColor;
+            rd.negativeColor = sparkline->negativeColor;
+            rd.showHighPoint = sparkline->showHighPoint;
+            rd.showLowPoint = sparkline->showLowPoint;
+            rd.lineWidth = sparkline->lineWidth;
+            rd.minVal = std::numeric_limits<double>::max();
+            rd.maxVal = std::numeric_limits<double>::lowest();
+
+            CellRange range(sparkline->dataRange);
+            for (const auto& addr : range.getCells()) {
+                auto val = m_spreadsheet->getCellValue(addr);
+                bool ok;
+                double num = val.toString().toDouble(&ok);
+                if (ok) {
+                    rd.values.append(num);
+                    if (num < rd.minVal) { rd.minVal = num; rd.lowIndex = rd.values.size() - 1; }
+                    if (num > rd.maxVal) { rd.maxVal = num; rd.highIndex = rd.values.size() - 1; }
+                } else {
+                    rd.values.append(0.0);
+                }
+            }
+            if (rd.values.isEmpty()) return QVariant();
+            return QVariant::fromValue(rd);
+        }
         default:
             return QVariant();
     }
@@ -221,7 +285,6 @@ bool SpreadsheetModel::setData(const QModelIndex& index, const QVariant& value, 
                 auto errorStyle = rule->errorStyle;
 
                 // Defer the dialog to avoid re-entrant event loop crash
-                // (showing a modal dialog inside setData() destroys the editor mid-call)
                 QTimer::singleShot(0, qApp, [errorTitle, errorMsg, errorStyle]() {
                     QWidget* parent = QApplication::activeWindow();
                     if (errorStyle == Spreadsheet::DataValidationRule::Stop) {

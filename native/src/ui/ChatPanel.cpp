@@ -9,8 +9,8 @@
 #include <QInputDialog>
 #include <QRegularExpression>
 #include <QHBoxLayout>
-#include <QGraphicsDropShadowEffect>
-#include <QTextBrowser>
+#include <QPainter>
+#include <QPainterPath>
 
 ChatPanel::ChatPanel(QWidget* parent)
     : QWidget(parent) {
@@ -18,12 +18,12 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_networkManager = new QNetworkAccessManager(this);
     connect(m_networkManager, &QNetworkAccessManager::finished, this, &ChatPanel::onApiResponse);
 
-    // Layout
+    // Main layout
     m_mainLayout = new QVBoxLayout(this);
     m_mainLayout->setContentsMargins(0, 0, 0, 0);
     m_mainLayout->setSpacing(0);
 
-    // ---- Header with gradient ----
+    // ---- Header ----
     auto* header = new QWidget(this);
     header->setFixedHeight(48);
     header->setStyleSheet(
@@ -33,11 +33,6 @@ ChatPanel::ChatPanel(QWidget* parent)
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(14, 0, 10, 0);
 
-    auto* sparkleLabel = new QLabel(header);
-    sparkleLabel->setText("\u2728");
-    sparkleLabel->setStyleSheet("font-size: 18px; background: transparent; border: none;");
-    headerLayout->addWidget(sparkleLabel);
-
     auto* headerLabel = new QLabel("Claude Assistant", header);
     headerLabel->setStyleSheet(
         "color: white; font-weight: 600; font-size: 14px; "
@@ -46,7 +41,7 @@ ChatPanel::ChatPanel(QWidget* parent)
     headerLayout->addStretch();
 
     auto* apiKeyBtn = new QPushButton(header);
-    apiKeyBtn->setText("\u2699");  // gear icon
+    apiKeyBtn->setText("\u2699");
     apiKeyBtn->setToolTip("Set API Key");
     apiKeyBtn->setFixedSize(30, 30);
     apiKeyBtn->setStyleSheet(
@@ -59,63 +54,50 @@ ChatPanel::ChatPanel(QWidget* parent)
             "Enter your Anthropic API key:", QLineEdit::Password, m_apiKey);
         if (!key.isEmpty()) {
             setApiKey(key);
-            QSettings settings("NativeSpreadsheet", "NativeSpreadsheet");
+            QSettings settings("Nexel", "Nexel");
             settings.setValue("claude_api_key", key);
         }
     });
 
     m_mainLayout->addWidget(header);
 
-    // ---- Chat display ----
-    m_chatDisplay = new QTextEdit(this);
-    m_chatDisplay->setReadOnly(true);
-    m_chatDisplay->setStyleSheet(
-        "QTextEdit { background: #F8FAFB; border: none; padding: 12px; font-size: 13px; "
-        "font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; }"
+    // ---- Scrollable message area ----
+    m_scrollArea = new QScrollArea(this);
+    m_scrollArea->setWidgetResizable(true);
+    m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scrollArea->setStyleSheet(
+        "QScrollArea { background: #ECE5DD; border: none; }"
+        "QScrollArea > QWidget > QWidget { background: #ECE5DD; }"
         "QScrollBar:vertical { width: 6px; background: transparent; margin: 2px; }"
-        "QScrollBar::handle:vertical { background: rgba(0,0,0,0.15); border-radius: 3px; min-height: 30px; }"
-        "QScrollBar::handle:vertical:hover { background: rgba(0,0,0,0.25); }"
+        "QScrollBar::handle:vertical { background: rgba(0,0,0,0.2); border-radius: 3px; min-height: 30px; }"
+        "QScrollBar::handle:vertical:hover { background: rgba(0,0,0,0.35); }"
         "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }");
 
-    // Welcome message
-    m_chatDisplay->setHtml(
-        "<div style='padding: 16px 8px; text-align: center;'>"
-        "<div style='font-size: 32px; margin-bottom: 8px;'>\u2728</div>"
-        "<p style='font-size: 15px; font-weight: 600; color: #1B5E3B; margin: 4px 0;'>Claude Spreadsheet Assistant</p>"
-        "<p style='font-size: 12px; color: #64748B; margin: 4px 0 12px 0;'>I can modify your spreadsheet directly. Try asking:</p>"
-        "<div style='text-align: left; background: #F0FDF4; border: 1px solid #BBF7D0; "
-        "border-radius: 8px; padding: 10px 14px; margin: 0 4px;'>"
-        "<p style='font-size: 12px; color: #15803D; margin: 3px 0;'>\u25B6 \"Set A1 to Name, B1 to Age\"</p>"
-        "<p style='font-size: 12px; color: #15803D; margin: 3px 0;'>\u25B6 \"Make row 1 bold with blue background\"</p>"
-        "<p style='font-size: 12px; color: #15803D; margin: 3px 0;'>\u25B6 \"Create a monthly budget table\"</p>"
-        "<p style='font-size: 12px; color: #15803D; margin: 3px 0;'>\u25B6 \"Merge cells A1:D1 and center\"</p>"
-        "<p style='font-size: 12px; color: #15803D; margin: 3px 0;'>\u25B6 \"Apply Ocean Blue table theme\"</p>"
-        "</div>"
-        "<p style='font-size: 11px; color: #94A3B8; margin-top: 10px;'>"
-        "Click \u2699 above to set your API key</p>"
-        "</div>");
+    m_messageContainer = new QWidget();
+    m_messageContainer->setStyleSheet("background: #ECE5DD;");
+    m_messageLayout = new QVBoxLayout(m_messageContainer);
+    m_messageLayout->setContentsMargins(8, 8, 8, 8);
+    m_messageLayout->setSpacing(6);
+    m_messageLayout->addStretch(); // push messages to bottom initially
 
-    m_mainLayout->addWidget(m_chatDisplay);
+    m_scrollArea->setWidget(m_messageContainer);
+    m_mainLayout->addWidget(m_scrollArea, 1);
 
     // ---- Thinking indicator (hidden by default) ----
     m_thinkingWidget = new QWidget(this);
     m_thinkingWidget->setFixedHeight(44);
-    m_thinkingWidget->setStyleSheet(
-        "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "stop:0 #F0FDF4, stop:1 #ECFDF5); "
-        "border-top: 1px solid #D1FAE5;");
+    m_thinkingWidget->setStyleSheet("background: #ECE5DD; border: none;");
     auto* thinkingLayout = new QHBoxLayout(m_thinkingWidget);
-    thinkingLayout->setContentsMargins(14, 6, 14, 6);
+    thinkingLayout->setContentsMargins(16, 4, 16, 4);
 
-    auto* thinkingIcon = new QLabel(m_thinkingWidget);
-    thinkingIcon->setText("\u2728");
-    thinkingIcon->setStyleSheet("font-size: 14px; border: none; background: transparent;");
-    thinkingLayout->addWidget(thinkingIcon);
-
-    m_thinkingLabel = new QLabel("Claude is thinking", m_thinkingWidget);
+    // Three-dot typing indicator bubble (WhatsApp style)
+    m_thinkingLabel = new QLabel(m_thinkingWidget);
+    m_thinkingLabel->setFixedSize(64, 32);
+    m_thinkingLabel->setAlignment(Qt::AlignCenter);
     m_thinkingLabel->setStyleSheet(
-        "color: #16A34A; font-size: 12px; font-weight: 500; "
-        "border: none; background: transparent;");
+        "background: white; border-radius: 16px; color: #667085; "
+        "font-size: 20px; font-weight: bold; letter-spacing: 3px;");
+    m_thinkingLabel->setText("\u2022 \u2022 \u2022");
     thinkingLayout->addWidget(m_thinkingLabel);
     thinkingLayout->addStretch();
 
@@ -124,35 +106,34 @@ ChatPanel::ChatPanel(QWidget* parent)
 
     // Thinking animation timer
     m_thinkingTimer = new QTimer(this);
-    m_thinkingTimer->setInterval(500);
+    m_thinkingTimer->setInterval(400);
     connect(m_thinkingTimer, &QTimer::timeout, this, &ChatPanel::onThinkingTick);
 
     // ---- Input area ----
     auto* inputContainer = new QWidget(this);
     inputContainer->setFixedHeight(56);
-    inputContainer->setStyleSheet(
-        "background: #FFFFFF; border-top: 1px solid #E2E8F0;");
+    inputContainer->setStyleSheet("background: #F0F0F0; border-top: 1px solid #D9D9D9;");
     auto* inputLayout = new QHBoxLayout(inputContainer);
-    inputLayout->setContentsMargins(10, 8, 10, 8);
+    inputLayout->setContentsMargins(8, 8, 8, 8);
     inputLayout->setSpacing(8);
 
     m_inputField = new QLineEdit(inputContainer);
-    m_inputField->setPlaceholderText("Ask Claude to modify your spreadsheet...");
+    m_inputField->setPlaceholderText("Type a message...");
     m_inputField->setStyleSheet(
-        "QLineEdit { background: #F8FAFB; border: 1.5px solid #E2E8F0; border-radius: 20px; "
+        "QLineEdit { background: white; border: 1px solid #D9D9D9; border-radius: 20px; "
         "padding: 8px 16px; font-size: 13px; color: #1E293B; "
-        "font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; }"
-        "QLineEdit:focus { border-color: #22C55E; background: #FFFFFF; }");
+        "font-family: -apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif; }"
+        "QLineEdit:focus { border-color: #25D366; }");
     inputLayout->addWidget(m_inputField);
 
     m_sendBtn = new QPushButton(inputContainer);
-    m_sendBtn->setText("\u27A4");  // arrow
-    m_sendBtn->setFixedSize(36, 36);
+    m_sendBtn->setText("\u27A4");
+    m_sendBtn->setFixedSize(38, 38);
     m_sendBtn->setStyleSheet(
-        "QPushButton { background: #16A34A; color: white; border: none; border-radius: 18px; "
+        "QPushButton { background: #25D366; color: white; border: none; border-radius: 19px; "
         "font-size: 16px; font-weight: bold; }"
-        "QPushButton:hover { background: #15803D; }"
-        "QPushButton:disabled { background: #D1D5DB; }");
+        "QPushButton:hover { background: #1DA851; }"
+        "QPushButton:disabled { background: #C8C8C8; }");
     inputLayout->addWidget(m_sendBtn);
 
     m_mainLayout->addWidget(inputContainer);
@@ -162,8 +143,85 @@ ChatPanel::ChatPanel(QWidget* parent)
     connect(m_inputField, &QLineEdit::returnPressed, this, &ChatPanel::onSendMessage);
 
     // Load saved API key
-    QSettings settings("NativeSpreadsheet", "NativeSpreadsheet");
+    QSettings settings("Nexel", "Nexel");
     m_apiKey = settings.value("claude_api_key").toString();
+
+    // Add welcome message
+    addWelcomeMessage();
+}
+
+void ChatPanel::addWelcomeMessage() {
+    auto* welcomeWidget = new QWidget();
+    welcomeWidget->setStyleSheet("background: transparent;");
+    auto* wLayout = new QVBoxLayout(welcomeWidget);
+    wLayout->setContentsMargins(16, 20, 16, 12);
+    wLayout->setSpacing(10);
+
+    // App icon circle
+    auto* iconLabel = new QLabel();
+    iconLabel->setFixedSize(48, 48);
+    iconLabel->setAlignment(Qt::AlignCenter);
+    iconLabel->setText("\u2728");
+    iconLabel->setStyleSheet(
+        "background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #22C55E, stop:1 #15803D); "
+        "border-radius: 24px; font-size: 22px; color: white; border: none;");
+    auto* iconRow = new QHBoxLayout();
+    iconRow->addStretch();
+    iconRow->addWidget(iconLabel);
+    iconRow->addStretch();
+    wLayout->addLayout(iconRow);
+
+    auto* title = new QLabel("Claude Assistant");
+    title->setAlignment(Qt::AlignCenter);
+    title->setStyleSheet(
+        "font-size: 16px; font-weight: 700; color: #111B21; background: transparent; border: none;");
+    wLayout->addWidget(title);
+
+    auto* subtitle = new QLabel("Your AI spreadsheet assistant. Ask me to modify data, insert charts, or format cells.");
+    subtitle->setAlignment(Qt::AlignCenter);
+    subtitle->setWordWrap(true);
+    subtitle->setStyleSheet(
+        "font-size: 12px; color: #667085; background: transparent; border: none; padding: 0 8px;");
+    wLayout->addWidget(subtitle);
+
+    wLayout->addSpacing(4);
+
+    // Suggestion chips as individual rounded pills
+    QStringList tips = {
+        "Create a monthly budget table",
+        "Insert column chart for A1:D10",
+        "Add sparklines for B2:G2",
+        "Run a macro to fill cells",
+        "Make row 1 bold and blue"
+    };
+    for (const auto& tip : tips) {
+        auto* chipRow = new QHBoxLayout();
+        chipRow->setContentsMargins(0, 0, 0, 0);
+
+        auto* chip = new QLabel(tip);
+        chip->setWordWrap(true);
+        chip->setAlignment(Qt::AlignCenter);
+        chip->setStyleSheet(
+            "background: white; color: #1B5E3B; border-radius: 14px; "
+            "padding: 7px 14px; font-size: 11px; border: none;");
+        chip->setMaximumWidth(230);
+
+        chipRow->addStretch();
+        chipRow->addWidget(chip);
+        chipRow->addStretch();
+        wLayout->addLayout(chipRow);
+    }
+
+    wLayout->addSpacing(4);
+
+    auto* keyHint = new QLabel("Click \u2699 to set your API key");
+    keyHint->setAlignment(Qt::AlignCenter);
+    keyHint->setStyleSheet(
+        "font-size: 10px; color: #94A3B8; background: transparent; border: none;");
+    wLayout->addWidget(keyHint);
+
+    // Insert before the stretch
+    m_messageLayout->insertWidget(m_messageLayout->count() - 1, welcomeWidget);
 }
 
 void ChatPanel::setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet) {
@@ -174,13 +232,20 @@ void ChatPanel::setApiKey(const QString& apiKey) {
     m_apiKey = apiKey;
 }
 
+void ChatPanel::scrollToBottom() {
+    QTimer::singleShot(10, this, [this]() {
+        auto* sb = m_scrollArea->verticalScrollBar();
+        sb->setValue(sb->maximum());
+    });
+}
+
 void ChatPanel::showThinkingIndicator() {
     m_thinkingDots = 0;
-    m_thinkingLabel->setText("\u2728 Claude is thinking");
     m_thinkingWidget->show();
     m_thinkingTimer->start();
     m_sendBtn->setEnabled(false);
     m_inputField->setEnabled(false);
+    scrollToBottom();
 }
 
 void ChatPanel::hideThinkingIndicator() {
@@ -192,21 +257,15 @@ void ChatPanel::hideThinkingIndicator() {
 }
 
 void ChatPanel::onThinkingTick() {
-    m_thinkingDots++;
+    m_thinkingDots = (m_thinkingDots + 1) % 4;
 
-    static const QString phases[] = {
-        "Analyzing your spreadsheet",
-        "Working on it",
-        "Preparing changes",
-        "Generating response",
-    };
-
-    int phase = (m_thinkingDots / 6) % 4;
-    int dotCount = (m_thinkingDots % 3) + 1;
+    // Animate dots with fading colors (WhatsApp-style typing animation)
     QString dots;
-    for (int i = 0; i < dotCount; i++) dots += ".";
-
-    m_thinkingLabel->setText(phases[phase] + dots);
+    for (int i = 0; i < 3; ++i) {
+        int alpha = (i == (m_thinkingDots % 3)) ? 255 : 100;
+        dots += QString("<span style='color: rgba(102,112,133,%1); font-size: 24px;'>\u2022</span> ").arg(alpha);
+    }
+    m_thinkingLabel->setText(dots);
 }
 
 void ChatPanel::onSendMessage() {
@@ -214,6 +273,8 @@ void ChatPanel::onSendMessage() {
     if (text.isEmpty()) return;
 
     m_inputField->clear();
+
+    // Show user message immediately
     addMessage("You", text, true);
 
     if (m_apiKey.isEmpty()) {
@@ -226,41 +287,67 @@ void ChatPanel::onSendMessage() {
 }
 
 void ChatPanel::addMessage(const QString& sender, const QString& text, bool isUser) {
-    QString escapedText = text.toHtmlEscaped().replace("\n", "<br>");
+    Q_UNUSED(sender);
 
-    QString html;
+    auto* rowWidget = new QWidget();
+    rowWidget->setStyleSheet("background: transparent;");
+    auto* rowLayout = new QHBoxLayout(rowWidget);
+    rowLayout->setContentsMargins(4, 2, 4, 2);
+    rowLayout->setSpacing(0);
+
+    auto* bubble = new QLabel();
+    bubble->setWordWrap(true);
+    bubble->setTextFormat(Qt::PlainText);
+    bubble->setText(text);
+    bubble->setMaximumWidth(240);
+    bubble->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+
     if (isUser) {
-        html = QString(
-            "<div style='text-align: right; margin: 6px 4px;'>"
-            "<div style='display: inline-block; background: #16A34A; "
-            "border-radius: 16px 16px 4px 16px; padding: 10px 14px; max-width: 85%%;'>"
-            "<div style='font-size: 13px; color: #FFFFFF; line-height: 1.4;'>%1</div>"
-            "</div></div>")
-            .arg(escapedText);
+        // User bubble: right-aligned, green (WhatsApp style)
+        bubble->setStyleSheet(
+            "background: #DCF8C6; color: #111B21; "
+            "border-radius: 12px; border-top-right-radius: 2px; "
+            "padding: 8px 12px; font-size: 13px; "
+            "font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif;");
+        rowLayout->addStretch();
+        rowLayout->addWidget(bubble);
     } else {
-        html = QString(
-            "<div style='text-align: left; margin: 6px 4px;'>"
-            "<div style='display: inline-block; background: #FFFFFF; "
-            "border: 1px solid #E2E8F0; "
-            "border-radius: 16px 16px 16px 4px; padding: 10px 14px; max-width: 85%%;'>"
-            "<div style='font-size: 13px; color: #1E293B; line-height: 1.4;'>%1</div>"
-            "</div></div>")
-            .arg(escapedText);
+        // Assistant bubble: left-aligned, white
+        bubble->setStyleSheet(
+            "background: white; color: #111B21; "
+            "border-radius: 12px; border-top-left-radius: 2px; "
+            "padding: 8px 12px; font-size: 13px; "
+            "font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif;");
+        rowLayout->addWidget(bubble);
+        rowLayout->addStretch();
     }
 
-    m_chatDisplay->append(html);
-    m_chatDisplay->verticalScrollBar()->setValue(m_chatDisplay->verticalScrollBar()->maximum());
+    // Insert before the bottom stretch
+    m_messageLayout->insertWidget(m_messageLayout->count() - 1, rowWidget);
+    scrollToBottom();
 }
 
 void ChatPanel::addSystemMessage(const QString& text) {
-    QString html = QString(
-        "<div style='text-align: center; margin: 4px 0;'>"
-        "<div style='display: inline-block; background: #F0FDF4; border: 1px solid #BBF7D0; "
-        "border-radius: 12px; padding: 6px 14px;'>"
-        "<span style='font-size: 11px; color: #16A34A; font-weight: 500;'>\u2713 %1</span>"
-        "</div></div>").arg(text.toHtmlEscaped());
-    m_chatDisplay->append(html);
-    m_chatDisplay->verticalScrollBar()->setValue(m_chatDisplay->verticalScrollBar()->maximum());
+    auto* rowWidget = new QWidget();
+    rowWidget->setStyleSheet("background: transparent;");
+    auto* rowLayout = new QHBoxLayout(rowWidget);
+    rowLayout->setContentsMargins(20, 2, 20, 2);
+
+    auto* label = new QLabel();
+    label->setWordWrap(true);
+    label->setText(QString("\u2713 %1").arg(text));
+    label->setAlignment(Qt::AlignCenter);
+    label->setStyleSheet(
+        "background: rgba(255,255,255,0.6); color: #15803D; "
+        "border-radius: 8px; padding: 4px 12px; font-size: 11px; font-weight: 500;");
+    label->setMaximumWidth(260);
+
+    rowLayout->addStretch();
+    rowLayout->addWidget(label);
+    rowLayout->addStretch();
+
+    m_messageLayout->insertWidget(m_messageLayout->count() - 1, rowWidget);
+    scrollToBottom();
 }
 
 QString ChatPanel::buildContext() const {
@@ -293,7 +380,6 @@ QString ChatPanel::buildContext() const {
 
     if (maxRow >= 0 && maxCol >= 0) {
         context += "\nData (first rows/cols):\n";
-        // Column headers
         context += "\t";
         for (int c = 0; c <= maxCol; ++c) {
             context += QString(QChar('A' + c)) + "\t";
@@ -333,22 +419,15 @@ void ChatPanel::sendToApi(const QString& userMessage) {
     }
 
     QString systemPrompt =
-        "You are Claude, an AI spreadsheet assistant inside NativeSpreadsheet. "
-        "You can explain things AND directly modify the spreadsheet by returning action blocks.\n\n"
+        "You are Claude, an AI spreadsheet assistant inside Nexel. "
+        "You can explain things AND directly modify the spreadsheet, insert charts, and add shapes by returning action blocks.\n\n"
         "Return actions using this EXACT format:\n"
         "[ACTIONS]\n"
         "[\n"
         "  {\"action\": \"set_cell\", \"cell\": \"A1\", \"value\": \"Hello\"},\n"
-        "  {\"action\": \"set_formula\", \"cell\": \"B2\", \"formula\": \"=SUM(A1:A10)\"},\n"
-        "  {\"action\": \"format\", \"range\": \"A1:D1\", \"bold\": true, \"bg_color\": \"#4472C4\", \"fg_color\": \"#FFFFFF\"},\n"
-        "  {\"action\": \"merge\", \"range\": \"A1:D1\"},\n"
-        "  {\"action\": \"unmerge\", \"range\": \"A1:D1\"},\n"
-        "  {\"action\": \"border\", \"range\": \"A1:D10\", \"type\": \"all\"},\n"
-        "  {\"action\": \"table\", \"range\": \"A1:D10\", \"theme\": 0},\n"
-        "  {\"action\": \"set_row_height\", \"row\": 1, \"height\": 30},\n"
-        "  {\"action\": \"set_col_width\", \"col\": \"A\", \"width\": 120},\n"
-        "  {\"action\": \"number_format\", \"range\": \"B2:B10\", \"format\": \"Currency\"},\n"
-        "  {\"action\": \"clear\", \"range\": \"A1:Z100\"}\n"
+        "  {\"action\": \"format\", \"range\": \"A1:D1\", \"bold\": true, \"bg_color\": \"#4472C4\"},\n"
+        "  {\"action\": \"insert_chart\", \"type\": \"column\", \"range\": \"A1:D10\", \"title\": \"Sales\"},\n"
+        "  {\"action\": \"insert_shape\", \"type\": \"star\", \"fill_color\": \"#FFD700\", \"text\": \"Hello\"}\n"
         "]\n"
         "[/ACTIONS]\n\n"
         "Available actions:\n"
@@ -357,20 +436,27 @@ void ChatPanel::sendToApi(const QString& userMessage) {
         "- format: Apply formatting. Fields: range, and any of: bold, italic, underline, strikethrough (bool), "
         "bg_color, fg_color (hex like \"#4472C4\"), font_size (int), font_name (string), "
         "h_align (\"left\"/\"center\"/\"right\"), v_align (\"top\"/\"middle\"/\"bottom\")\n"
-        "- merge: Merge cells. Fields: range\n"
-        "- unmerge: Unmerge cells. Fields: range\n"
+        "- merge/unmerge: Merge or unmerge cells. Fields: range\n"
         "- border: Apply borders. Fields: range, type (\"all\"/\"outside\"/\"none\"/\"bottom\"/\"top\"/\"left\"/\"right\"/\"thick_outside\")\n"
-        "- table: Apply table theme with banded rows & header. Fields: range, theme (index 0-11)\n"
-        "  Available themes: " + themeList + "\n"
+        "- table: Apply table theme. Fields: range, theme (index 0-11). Themes: " + themeList + "\n"
         "- number_format: Set number format. Fields: range, format (\"General\"/\"Number\"/\"Currency\"/\"Percentage\"/\"Date\"/\"Text\")\n"
         "- set_row_height: Set row height. Fields: row (1-based), height (pixels)\n"
-        "- set_col_width: Set column width. Fields: col (letter like \"A\"), width (pixels)\n"
-        "- clear: Clear cell values and formatting. Fields: range\n\n"
+        "- set_col_width: Set column width. Fields: col (letter), width (pixels)\n"
+        "- clear: Clear cell values and formatting. Fields: range\n"
+        "- insert_chart: Insert a chart. Fields: type (\"column\"/\"bar\"/\"line\"/\"area\"/\"scatter\"/\"pie\"/\"donut\"/\"histogram\"), "
+        "range (data range like \"A1:D10\"), title (optional), x_axis (optional), y_axis (optional), theme (0-5, optional)\n"
+        "- insert_shape: Insert a shape. Fields: type (\"rectangle\"/\"rounded_rect\"/\"circle\"/\"ellipse\"/\"triangle\"/\"star\"/\"arrow\"/\"diamond\"/\"pentagon\"/\"hexagon\"/\"callout\"/\"line\"), "
+        "fill_color (hex, optional), stroke_color (hex, optional), text (optional), text_color (hex, optional), width (pixels, optional), height (pixels, optional)\n"
+        "- insert_sparkline: Insert in-cell sparkline. Fields: cell (destination like \"A2\"), data_range (like \"B2:G2\"), "
+        "type (\"line\"/\"column\"/\"winloss\", default \"line\"), color (hex, optional), show_high (bool, optional), show_low (bool, optional)\n"
+        "- insert_image: Insert floating image. Fields: path (file path), width (pixels, optional), height (pixels, optional)\n"
+        "- run_macro: Execute JavaScript macro. Fields: code (JS string using sheet.getCellValue/setCellValue/setBold etc.)\n"
+        "- record_macro: Start/stop macro recording. Fields: action (\"start\"/\"stop\")\n\n"
         "Rules:\n"
         "- Always explain what you're doing in plain text BEFORE the [ACTIONS] block\n"
-        "- Use cell references like A1, B2, AA1 etc.\n"
-        "- Ranges use colon: A1:D10\n"
+        "- Use cell references like A1, B2, AA1. Ranges use colon: A1:D10\n"
         "- For formulas, use standard Excel syntax starting with =\n"
+        "- When user says \"insert chart for X\" or \"chart for X\", determine the data range from the spreadsheet data that matches column headers containing X\n"
         "- You can combine many actions in one response\n"
         "- Be concise but friendly\n";
 
@@ -413,7 +499,8 @@ QString ChatPanel::extractAndProcessActions(const QString& responseText) {
     if (!actions.isEmpty()) {
         emit executeActions(actions);
 
-        int setCells = 0, formulas = 0, formats = 0, merges = 0, borders = 0, tables = 0, other = 0;
+        int setCells = 0, formulas = 0, formats = 0, merges = 0, borders = 0, tables = 0;
+        int charts = 0, shapes = 0, sparklines = 0, images = 0, macros = 0, other = 0;
         for (const auto& item : actions) {
             QJsonObject obj = item.toObject();
             QString type = obj["action"].toString();
@@ -423,6 +510,11 @@ QString ChatPanel::extractAndProcessActions(const QString& responseText) {
             else if (type == "merge" || type == "unmerge") merges++;
             else if (type == "border") borders++;
             else if (type == "table") tables++;
+            else if (type == "insert_chart") charts++;
+            else if (type == "insert_shape") shapes++;
+            else if (type == "insert_sparkline") sparklines++;
+            else if (type == "insert_image") images++;
+            else if (type == "run_macro" || type == "record_macro") macros++;
             else other++;
         }
 
@@ -433,6 +525,11 @@ QString ChatPanel::extractAndProcessActions(const QString& responseText) {
         if (merges > 0) parts << QString::number(merges) + " merge(s)";
         if (borders > 0) parts << QString::number(borders) + " border(s)";
         if (tables > 0) parts << QString::number(tables) + " table(s)";
+        if (charts > 0) parts << QString::number(charts) + " chart(s)";
+        if (shapes > 0) parts << QString::number(shapes) + " shape(s)";
+        if (sparklines > 0) parts << QString::number(sparklines) + " sparkline(s)";
+        if (images > 0) parts << QString::number(images) + " image(s)";
+        if (macros > 0) parts << QString::number(macros) + " macro(s)";
         if (other > 0) parts << QString::number(other) + " other";
         addSystemMessage("Applied: " + parts.join(", "));
     }

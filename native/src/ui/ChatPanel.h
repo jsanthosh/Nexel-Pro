@@ -2,10 +2,10 @@
 #define CHATPANEL_H
 
 #include <QWidget>
-#include <QTextEdit>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QScrollArea>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QJsonArray>
@@ -36,13 +36,19 @@ private slots:
 private:
     void addMessage(const QString& sender, const QString& text, bool isUser);
     void addSystemMessage(const QString& text);
+    void addWelcomeMessage();
+    void scrollToBottom();
     QString buildContext() const;
     void sendToApi(const QString& userMessage);
     QString extractAndProcessActions(const QString& responseText);
     void showThinkingIndicator();
     void hideThinkingIndicator();
 
-    QTextEdit* m_chatDisplay;
+    // Chat message area (scroll area with message widgets)
+    QScrollArea* m_scrollArea = nullptr;
+    QWidget* m_messageContainer = nullptr;
+    QVBoxLayout* m_messageLayout = nullptr;
+
     QLineEdit* m_inputField;
     QPushButton* m_sendBtn;
     QNetworkAccessManager* m_networkManager;

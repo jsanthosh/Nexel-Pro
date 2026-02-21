@@ -24,6 +24,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QAbstractButton>
+#include <QScrollBar>
 #include <algorithm>
 
 SpreadsheetView::SpreadsheetView(QWidget* parent)
@@ -39,6 +40,10 @@ SpreadsheetView::SpreadsheetView(QWidget* parent)
 }
 
 void SpreadsheetView::setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet) {
+    destroyFreezeViews();
+    m_frozenRow = -1;
+    m_frozenCol = -1;
+
     m_spreadsheet = spreadsheet;
 
     if (m_model) {
@@ -1377,6 +1382,39 @@ void SpreadsheetView::autofitSelectedRows() {
 
 // ============== UI Operations ==============
 
+void SpreadsheetView::setRowHeight(int row, int height) {
+    if (row >= 0 && height > 0) {
+        verticalHeader()->resizeSection(row, height);
+        if (m_spreadsheet) m_spreadsheet->setRowHeight(row, height);
+    }
+}
+
+void SpreadsheetView::setColumnWidth(int col, int width) {
+    if (col >= 0 && width > 0) {
+        horizontalHeader()->resizeSection(col, width);
+        if (m_spreadsheet) m_spreadsheet->setColumnWidth(col, width);
+    }
+}
+
+void SpreadsheetView::applyStoredDimensions() {
+    if (!m_spreadsheet) return;
+    for (auto& [col, width] : m_spreadsheet->getColumnWidths()) {
+        if (col >= 0 && col < model()->columnCount() && width > 0)
+            horizontalHeader()->resizeSection(col, width);
+    }
+    for (auto& [row, height] : m_spreadsheet->getRowHeights()) {
+        if (row >= 0 && row < model()->rowCount() && height > 0)
+            verticalHeader()->resizeSection(row, height);
+    }
+}
+
+void SpreadsheetView::setGridlinesVisible(bool visible) {
+    if (m_delegate) {
+        m_delegate->setShowGridlines(visible);
+        viewport()->update();
+    }
+}
+
 void SpreadsheetView::refreshView() {
     if (m_model) {
         m_model->layoutChanged();
@@ -1384,24 +1422,180 @@ void SpreadsheetView::refreshView() {
 }
 
 void SpreadsheetView::setFrozenRow(int row) {
-    if (row < 0) {
-        // Unfreeze rows
-        for (int r = 0; r < model()->rowCount(); ++r) {
-            if (verticalHeader()->sectionPosition(r) >= 0) {
-                // No built-in freeze in QTableView; approximate with header resize
-            }
-        }
-    }
-    // QTableView doesn't natively support freeze panes.
-    // We use a simpler approach: keep headers fixed position (already default behavior)
-    // For a true freeze, the user sees the rows above 'row' always fixed.
-    // This is a best-effort implementation using QHeaderView.
+    m_frozenRow = row;
+    if (m_frozenRow > 0 || m_frozenCol > 0)
+        setupFreezeViews();
+    else
+        destroyFreezeViews();
 }
 
 void SpreadsheetView::setFrozenColumn(int col) {
-    Q_UNUSED(col);
-    // Similar to setFrozenRow - QTableView doesn't natively freeze columns.
-    // Headers are always visible, which partially mimics this behavior.
+    m_frozenCol = col;
+    if (m_frozenRow > 0 || m_frozenCol > 0)
+        setupFreezeViews();
+    else
+        destroyFreezeViews();
+}
+
+QTableView* SpreadsheetView::createFreezeOverlay() {
+    auto* v = new QTableView(this);
+    v->setModel(model());
+    v->setItemDelegate(new CellDelegate(v));
+    v->setShowGrid(false);
+    v->horizontalHeader()->hide();
+    v->verticalHeader()->hide();
+    v->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    v->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    v->setHorizontalScrollMode(horizontalScrollMode());
+    v->setVerticalScrollMode(verticalScrollMode());
+    v->setSelectionMode(QAbstractItemView::NoSelection);
+    v->setFocusPolicy(Qt::NoFocus);
+    v->setAttribute(Qt::WA_TransparentForMouseEvents);
+    v->setFont(font());
+    v->setStyleSheet(
+        "QTableView { background: white; border: none; }"
+        "QTableView::item { padding: 0; border: none; background: transparent; }"
+        "QTableView::item:selected { background: transparent; }"
+    );
+
+    // Sync dimensions from main view
+    v->horizontalHeader()->setDefaultSectionSize(horizontalHeader()->defaultSectionSize());
+    v->verticalHeader()->setDefaultSectionSize(verticalHeader()->defaultSectionSize());
+    for (int c = 0; c < model()->columnCount(); c++)
+        v->setColumnWidth(c, columnWidth(c));
+    for (int r = 0; r < model()->rowCount(); r++)
+        v->setRowHeight(r, rowHeight(r));
+
+    return v;
+}
+
+void SpreadsheetView::setupFreezeViews() {
+    destroyFreezeViews();
+    if (m_frozenRow <= 0 && m_frozenCol <= 0) return;
+
+    // Frozen row view (top strip, scrolls horizontally with main)
+    if (m_frozenRow > 0) {
+        m_frozenRowView = createFreezeOverlay();
+        m_freezeConnections.append(
+            connect(horizontalScrollBar(), &QScrollBar::valueChanged,
+                    m_frozenRowView->horizontalScrollBar(), &QScrollBar::setValue));
+    }
+
+    // Frozen column view (left strip, scrolls vertically with main)
+    if (m_frozenCol > 0) {
+        m_frozenColView = createFreezeOverlay();
+        m_freezeConnections.append(
+            connect(verticalScrollBar(), &QScrollBar::valueChanged,
+                    m_frozenColView->verticalScrollBar(), &QScrollBar::setValue));
+    }
+
+    // Corner view (no scrolling, sits on top of both)
+    if (m_frozenRow > 0 && m_frozenCol > 0) {
+        m_frozenCornerView = createFreezeOverlay();
+    }
+
+    // Freeze divider lines
+    if (m_frozenRow > 0) {
+        m_freezeHLine = new QWidget(this);
+        m_freezeHLine->setFixedHeight(2);
+        m_freezeHLine->setStyleSheet("background: #808080;");
+        m_freezeHLine->setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+    if (m_frozenCol > 0) {
+        m_freezeVLine = new QWidget(this);
+        m_freezeVLine->setFixedWidth(2);
+        m_freezeVLine->setStyleSheet("background: #808080;");
+        m_freezeVLine->setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+
+    // Sync column width changes from main to overlays
+    m_freezeConnections.append(
+        connect(horizontalHeader(), &QHeaderView::sectionResized,
+                this, [this](int idx, int, int newSize) {
+            if (m_frozenRowView) m_frozenRowView->setColumnWidth(idx, newSize);
+            if (m_frozenColView) m_frozenColView->setColumnWidth(idx, newSize);
+            if (m_frozenCornerView) m_frozenCornerView->setColumnWidth(idx, newSize);
+            updateFreezeGeometry();
+        }));
+
+    // Sync row height changes from main to overlays
+    m_freezeConnections.append(
+        connect(verticalHeader(), &QHeaderView::sectionResized,
+                this, [this](int idx, int, int newSize) {
+            if (m_frozenRowView) m_frozenRowView->setRowHeight(idx, newSize);
+            if (m_frozenColView) m_frozenColView->setRowHeight(idx, newSize);
+            if (m_frozenCornerView) m_frozenCornerView->setRowHeight(idx, newSize);
+            updateFreezeGeometry();
+        }));
+
+    updateFreezeGeometry();
+}
+
+void SpreadsheetView::destroyFreezeViews() {
+    for (auto& conn : m_freezeConnections)
+        disconnect(conn);
+    m_freezeConnections.clear();
+
+    delete m_frozenRowView; m_frozenRowView = nullptr;
+    delete m_frozenColView; m_frozenColView = nullptr;
+    delete m_frozenCornerView; m_frozenCornerView = nullptr;
+    delete m_freezeHLine; m_freezeHLine = nullptr;
+    delete m_freezeVLine; m_freezeVLine = nullptr;
+}
+
+void SpreadsheetView::updateFreezeGeometry() {
+    if (m_frozenRow <= 0 && m_frozenCol <= 0) return;
+
+    int fw = frameWidth();
+    int hdrH = horizontalHeader()->height();
+    int hdrW = verticalHeader()->width();
+    int vpW = viewport()->width();
+    int vpH = viewport()->height();
+
+    int frozenH = 0;
+    for (int r = 0; r < m_frozenRow && r < model()->rowCount(); r++)
+        frozenH += rowHeight(r);
+
+    int frozenW = 0;
+    for (int c = 0; c < m_frozenCol && c < model()->columnCount(); c++)
+        frozenW += columnWidth(c);
+
+    if (m_frozenRowView) {
+        m_frozenRowView->setGeometry(hdrW + fw, hdrH + fw, vpW, frozenH);
+        m_frozenRowView->show();
+    }
+    if (m_frozenColView) {
+        m_frozenColView->setGeometry(hdrW + fw, hdrH + fw, frozenW, vpH);
+        m_frozenColView->show();
+    }
+    if (m_frozenCornerView) {
+        m_frozenCornerView->setGeometry(hdrW + fw, hdrH + fw, frozenW, frozenH);
+        m_frozenCornerView->show();
+    }
+
+    // Divider lines at the freeze boundary
+    if (m_freezeHLine) {
+        m_freezeHLine->setGeometry(hdrW + fw, hdrH + fw + frozenH - 1, vpW, 2);
+        m_freezeHLine->show();
+        m_freezeHLine->raise();
+    }
+    if (m_freezeVLine) {
+        m_freezeVLine->setGeometry(hdrW + fw + frozenW - 1, hdrH + fw, 2, vpH);
+        m_freezeVLine->show();
+        m_freezeVLine->raise();
+    }
+
+    // Z-order: divider lines on top, then corner, then column, then row
+    if (m_frozenRowView) m_frozenRowView->raise();
+    if (m_frozenColView) m_frozenColView->raise();
+    if (m_frozenCornerView) m_frozenCornerView->raise();
+    if (m_freezeHLine) m_freezeHLine->raise();
+    if (m_freezeVLine) m_freezeVLine->raise();
+}
+
+void SpreadsheetView::resizeEvent(QResizeEvent* event) {
+    QTableView::resizeEvent(event);
+    updateFreezeGeometry();
 }
 
 void SpreadsheetView::zoomIn() {
@@ -1460,6 +1654,8 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         QModelIndex next = model()->index(newRow, currentIndex().column());
         if (next.isValid()) {
             setCurrentIndex(next);
+            scrollTo(next);
+            viewport()->update();
         }
         event->accept();
         return;
@@ -1479,6 +1675,8 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         QModelIndex next = model()->index(currentIndex().row(), newCol);
         if (next.isValid()) {
             setCurrentIndex(next);
+            scrollTo(next);
+            viewport()->update();
         }
         event->accept();
         return;

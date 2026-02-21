@@ -2,13 +2,19 @@
 #include <QDateTime>
 
 Cell::Cell() : m_type(CellType::Empty), m_dirty(false) {
+    // m_customStyle is nullptr by default — uses shared static defaultStyle()
+}
+
+const CellStyle& Cell::defaultStyle() {
+    static const CellStyle s_default;
+    return s_default;
 }
 
 void Cell::setValue(const QVariant& value) {
     if (m_value != value) {
         m_value = value;
         m_dirty = true;
-        
+
         // Detect type
         if (value.isNull() || !value.isValid()) {
             m_type = CellType::Empty;
@@ -45,11 +51,11 @@ CellType Cell::getType() const {
 }
 
 void Cell::setStyle(const CellStyle& style) {
-    m_style = style;
+    m_customStyle = std::make_unique<CellStyle>(style);
 }
 
 const CellStyle& Cell::getStyle() const {
-    return m_style;
+    return m_customStyle ? *m_customStyle : defaultStyle();
 }
 
 void Cell::setComputedValue(const QVariant& value) {
@@ -105,6 +111,7 @@ void Cell::clear() {
     m_formula = QString();
     m_computedValue = QVariant();
     m_type = CellType::Empty;
+    m_customStyle.reset();
     m_error = QString();
     m_dirty = true;
 }

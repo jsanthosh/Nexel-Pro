@@ -2,6 +2,7 @@
 #define CELLDELEGATE_H
 
 #include <QStyledItemDelegate>
+#include "../core/SparklineConfig.h"
 
 class CellDelegate : public QStyledItemDelegate {
     Q_OBJECT
@@ -24,8 +25,15 @@ public:
     QSize sizeHint(const QStyleOptionViewItem& option,
                    const QModelIndex& index) const override;
 
+    void setShowGridlines(bool show) { m_showGridlines = show; }
+    bool showGridlines() const { return m_showGridlines; }
+
 signals:
     void formulaEditModeChanged(bool active) const;
+
+private:
+    bool m_showGridlines = true;
+    void drawSparkline(QPainter* painter, const QRect& rect, const SparklineRenderData& data) const;
 };
 
 #endif // CELLDELEGATE_H

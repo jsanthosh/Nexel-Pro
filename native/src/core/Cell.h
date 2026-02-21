@@ -75,9 +75,10 @@ public:
     QString getFormula() const;
     CellType getType() const;
 
-    // Styling
+    // Styling — lazy: default style shared across all cells, custom allocated on demand
     void setStyle(const CellStyle& style);
     const CellStyle& getStyle() const;
+    bool hasCustomStyle() const { return m_customStyle != nullptr; }
 
     // Computed value (for formulas)
     void setComputedValue(const QVariant& value);
@@ -86,7 +87,7 @@ public:
     // State
     bool isDirty() const;
     void setDirty(bool dirty);
-    
+
     bool hasError() const;
     void setError(const QString& error);
     QString getError() const;
@@ -95,12 +96,15 @@ public:
     QString toString() const;
     void clear();
 
+    // Shared default style (single allocation, reused by all cells)
+    static const CellStyle& defaultStyle();
+
 private:
     QVariant m_value;
     QString m_formula;
     QVariant m_computedValue;
     CellType m_type;
-    CellStyle m_style;
+    std::unique_ptr<CellStyle> m_customStyle; // null = default style
     bool m_dirty;
     QString m_error;
 };

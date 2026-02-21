@@ -9,12 +9,25 @@
 #include "ConditionalFormatDialog.h"
 #include "DataValidationDialog.h"
 #include "ChatPanel.h"
+#include "ChartWidget.h"
+#include "ShapeWidget.h"
+#include "ChartDialog.h"
+#include "ShapePropertiesDialog.h"
+#include "ChartPropertiesPanel.h"
 #include "../core/Spreadsheet.h"
 #include "../core/UndoManager.h"
 #include "../core/CellRange.h"
 #include "../services/DocumentService.h"
 #include "../services/CsvService.h"
 #include "../services/XlsxService.h"
+#include "../core/PivotEngine.h"
+#include "PivotTableDialog.h"
+#include "TemplateGallery.h"
+#include "ImageWidget.h"
+#include "SparklineDialog.h"
+#include "../core/MacroEngine.h"
+#include "MacroEditorDialog.h"
+#include "../core/SparklineConfig.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QMenuBar>
@@ -35,7 +48,7 @@
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
-    setWindowTitle("NativeSpreadsheet");
+    setWindowTitle("Nexel");
     setGeometry(100, 100, 1280, 800);
 
     // Initialize with one default sheet
@@ -83,9 +96,38 @@ MainWindow::MainWindow(QWidget* parent)
     addDockWidget(Qt::RightDockWidgetArea, m_chatDock);
     m_chatDock->hide(); // Hidden by default, toggled from View menu
 
+    // Chart properties panel (dock widget on the right)
+    m_chartPropsPanel = new ChartPropertiesPanel(this);
+    m_chartPropsDock = new QDockWidget(this);
+    m_chartPropsDock->setTitleBarWidget(new QWidget()); // hide default title bar
+    m_chartPropsDock->setWidget(m_chartPropsPanel);
+    m_chartPropsDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
+    m_chartPropsDock->setMinimumWidth(260);
+    m_chartPropsDock->setMaximumWidth(320);
+    m_chartPropsDock->setStyleSheet("QDockWidget { border: none; }");
+    addDockWidget(Qt::RightDockWidgetArea, m_chartPropsDock);
+    m_chartPropsDock->hide();
+
+    // Tabify docks so they don't overlap — they share the right area
+    tabifyDockWidget(m_chatDock, m_chartPropsDock);
+
+    connect(m_chartPropsPanel, &ChartPropertiesPanel::closeRequested, this, [this]() {
+        m_chartPropsDock->hide();
+    });
+
+    // Macro engine
+    m_macroEngine = new MacroEngine(this);
+    m_macroEngine->setSpreadsheet(m_sheets[0]);
+    connect(m_macroEngine, &MacroEngine::logMessage, this, [this](const QString& msg) {
+        statusBar()->showMessage("Macro: " + msg, 3000);
+    });
+
     createMenuBar();
     createStatusBar();
     connectSignals();
+
+    // Deselect charts/shapes when clicking on the spreadsheet
+    m_spreadsheetView->viewport()->installEventFilter(this);
 
     setAcceptDrops(true);
 
@@ -179,7 +221,33 @@ void MainWindow::switchToSheet(int index) {
     m_activeSheetIndex = index;
     m_spreadsheetView->setSpreadsheet(m_sheets[index]);
     m_spreadsheetView->refreshView();
+    m_spreadsheetView->applyStoredDimensions();
+
+    // Sync gridline visibility with sheet setting
+    bool gridlines = m_sheets[index]->showGridlines();
+    m_spreadsheetView->setGridlinesVisible(gridlines);
+    if (m_gridlinesAction) m_gridlinesAction->setChecked(gridlines);
+
     if (m_chatPanel) m_chatPanel->setSpreadsheet(m_sheets[index]);
+
+    // Show/hide charts, shapes, and images per sheet
+    for (auto* c : m_charts) {
+        c->setVisible(c->property("sheetIndex").toInt() == index);
+    }
+    for (auto* s : m_shapes) {
+        s->setVisible(s->property("sheetIndex").toInt() == index);
+    }
+    for (auto* img : m_images) {
+        img->setVisible(img->property("sheetIndex").toInt() == index);
+    }
+
+    // Update macro engine's spreadsheet reference
+    if (m_macroEngine) {
+        m_macroEngine->setSpreadsheet(m_sheets[index]);
+    }
+
+    // Reconnect dataChanged for live chart updates on the new model
+    reconnectDataChanged();
 
     // Reset scroll position and focus to A1
     QModelIndex first = m_spreadsheetView->getModel()->index(0, 0);
@@ -226,6 +294,42 @@ void MainWindow::onDeleteSheet() {
     if (QMessageBox::question(this, "Delete Sheet",
             QString("Delete sheet \"%1\"?").arg(name)) != QMessageBox::Yes) {
         return;
+    }
+
+    // Delete charts/shapes/images belonging to the deleted sheet
+    for (int i = m_charts.size() - 1; i >= 0; --i) {
+        if (m_charts[i]->property("sheetIndex").toInt() == idx) {
+            m_charts[i]->hide();
+            m_charts[i]->deleteLater();
+            m_charts.removeAt(i);
+        }
+    }
+    for (int i = m_shapes.size() - 1; i >= 0; --i) {
+        if (m_shapes[i]->property("sheetIndex").toInt() == idx) {
+            m_shapes[i]->hide();
+            m_shapes[i]->deleteLater();
+            m_shapes.removeAt(i);
+        }
+    }
+    for (int i = m_images.size() - 1; i >= 0; --i) {
+        if (m_images[i]->property("sheetIndex").toInt() == idx) {
+            m_images[i]->hide();
+            m_images[i]->deleteLater();
+            m_images.removeAt(i);
+        }
+    }
+    // Shift sheetIndex down for charts/shapes/images on sheets after the deleted one
+    for (auto* c : m_charts) {
+        int si = c->property("sheetIndex").toInt();
+        if (si > idx) c->setProperty("sheetIndex", si - 1);
+    }
+    for (auto* s : m_shapes) {
+        int si = s->property("sheetIndex").toInt();
+        if (si > idx) s->setProperty("sheetIndex", si - 1);
+    }
+    for (auto* img : m_images) {
+        int si = img->property("sheetIndex").toInt();
+        if (si > idx) img->setProperty("sheetIndex", si - 1);
     }
 
     // Block signals during removal to avoid triggering onSheetTabChanged prematurely
@@ -300,6 +404,14 @@ int MainWindow::nextSheetNumber() const {
 }
 
 void MainWindow::setSheets(const std::vector<std::shared_ptr<Spreadsheet>>& sheets) {
+    // Clear existing charts, shapes, and images from the viewport
+    for (auto* c : m_charts) { c->hide(); c->deleteLater(); }
+    m_charts.clear();
+    for (auto* s : m_shapes) { s->hide(); s->deleteLater(); }
+    m_shapes.clear();
+    for (auto* img : m_images) { img->hide(); img->deleteLater(); }
+    m_images.clear();
+
     m_sheets = sheets;
     m_activeSheetIndex = 0;
 
@@ -323,9 +435,27 @@ void MainWindow::createMenuBar() {
 
     QMenu* fileMenu = menuBar->addMenu("&File");
     fileMenu->addAction("&New", this, &MainWindow::onNewDocument, QKeySequence::New);
+    fileMenu->addAction("New from &Template...", this, &MainWindow::onTemplateGallery);
     fileMenu->addAction("&Open", this, &MainWindow::onOpenDocument, QKeySequence::Open);
     fileMenu->addAction("&Save", this, &MainWindow::onSaveDocument, QKeySequence::Save);
     fileMenu->addAction("Save &As", this, &MainWindow::onSaveAs, QKeySequence::SaveAs);
+    fileMenu->addAction("&Rename Document...", this, [this]() {
+        QString baseName = "Untitled";
+        if (!m_currentFilePath.isEmpty()) {
+            baseName = QFileInfo(m_currentFilePath).completeBaseName();
+        } else {
+            QString title = windowTitle();
+            if (title.contains(" - "))
+                baseName = title.section(" - ", 1);
+        }
+        bool ok;
+        QString newName = QInputDialog::getText(this, "Rename Document",
+            "Document name:", QLineEdit::Normal, baseName, &ok);
+        if (ok && !newName.isEmpty()) {
+            setWindowTitle("Nexel - " + newName);
+            statusBar()->showMessage("Renamed to: " + newName);
+        }
+    });
     fileMenu->addSeparator();
     fileMenu->addAction("&Import CSV...", this, &MainWindow::onImportCsv);
     fileMenu->addAction("&Export CSV...", this, &MainWindow::onExportCsv);
@@ -333,8 +463,10 @@ void MainWindow::createMenuBar() {
     fileMenu->addAction("E&xit", this, &QWidget::close, QKeySequence::Quit);
 
     QMenu* editMenu = menuBar->addMenu("&Edit");
-    editMenu->addAction("&Undo", this, &MainWindow::onUndo, QKeySequence::Undo);
-    editMenu->addAction("&Redo", this, &MainWindow::onRedo, QKeySequence::Redo);
+    editMenu->addAction("&Undo", QKeySequence::Undo, this, &MainWindow::onUndo);
+    auto* redoAction = editMenu->addAction("&Redo", QKeySequence::Redo, this, &MainWindow::onRedo);
+    // Add Ctrl+Y as additional redo shortcut (Cmd+Y on Mac)
+    redoAction->setShortcuts({QKeySequence::Redo, QKeySequence(Qt::CTRL | Qt::Key_Y)});
     editMenu->addSeparator();
     editMenu->addAction("Cu&t", this, &MainWindow::onCut, QKeySequence::Cut);
     editMenu->addAction("&Copy", this, &MainWindow::onCopy, QKeySequence::Copy);
@@ -358,16 +490,40 @@ void MainWindow::createMenuBar() {
     formatMenu->addAction("Autofit Row Height", m_spreadsheetView,
                           &SpreadsheetView::autofitSelectedRows);
 
+    // ===== Insert Menu =====
+    QMenu* insertMenu = menuBar->addMenu("&Insert");
+    insertMenu->addAction("&Chart...", this, &MainWindow::onInsertChart,
+                          QKeySequence(Qt::ALT | Qt::Key_F1));
+    insertMenu->addAction("&Shape...", this, &MainWindow::onInsertShape);
+    insertMenu->addAction("&Image...", this, &MainWindow::onInsertImage);
+    insertMenu->addAction("Spark&line...", this, &MainWindow::onInsertSparkline);
+    insertMenu->addSeparator();
+    insertMenu->addAction("&Row Above", m_spreadsheetView, &SpreadsheetView::insertEntireRow);
+    insertMenu->addAction("&Column Left", m_spreadsheetView, &SpreadsheetView::insertEntireColumn);
+
     QMenu* dataMenu = menuBar->addMenu("&Data");
     dataMenu->addAction("Sort &Ascending", m_spreadsheetView, &SpreadsheetView::sortAscending);
     dataMenu->addAction("Sort &Descending", m_spreadsheetView, &SpreadsheetView::sortDescending);
     dataMenu->addSeparator();
     dataMenu->addAction("&Data Validation...", this, &MainWindow::onDataValidation);
     dataMenu->addSeparator();
+    dataMenu->addAction("Create &Pivot Table...", this, &MainWindow::onCreatePivotTable);
+    dataMenu->addAction("&Refresh Pivot Table", this, &MainWindow::onRefreshPivotTable,
+                        QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
+    dataMenu->addSeparator();
     QAction* highlightAction = dataMenu->addAction("&Circle Invalid Data", this, &MainWindow::onHighlightInvalidCells);
     highlightAction->setCheckable(true);
 
     QMenu* viewMenu = menuBar->addMenu("&View");
+    m_gridlinesAction = viewMenu->addAction("Show &Gridlines");
+    m_gridlinesAction->setCheckable(true);
+    m_gridlinesAction->setChecked(true);
+    connect(m_gridlinesAction, &QAction::toggled, this, [this](bool checked) {
+        if (!m_sheets.empty() && m_activeSheetIndex < (int)m_sheets.size()) {
+            m_sheets[m_activeSheetIndex]->setShowGridlines(checked);
+        }
+        m_spreadsheetView->setGridlinesVisible(checked);
+    });
     viewMenu->addAction("&Freeze Panes", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F),
                          this, &MainWindow::onFreezePane);
     viewMenu->addSeparator();
@@ -382,6 +538,13 @@ void MainWindow::createMenuBar() {
         }
     });
     connect(m_chatDock, &QDockWidget::visibilityChanged, chatAction, &QAction::setChecked);
+
+    // ===== Tools Menu =====
+    QMenu* toolsMenu = menuBar->addMenu("&Tools");
+    toolsMenu->addAction("Macro &Editor...", this, &MainWindow::onMacroEditor,
+                         QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_M));
+    toolsMenu->addAction("Run &Last Macro", this, &MainWindow::onRunLastMacro,
+                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_M));
 }
 
 void MainWindow::createToolBar() {}
@@ -433,6 +596,10 @@ void MainWindow::connectSignals() {
     connect(m_toolbar, &Toolbar::conditionalFormatRequested, this, &MainWindow::onConditionalFormat);
     connect(m_toolbar, &Toolbar::dataValidationRequested, this, &MainWindow::onDataValidation);
 
+    // Chart and shape insertion from toolbar
+    connect(m_toolbar, &Toolbar::insertChartRequested, this, &MainWindow::onInsertChart);
+    connect(m_toolbar, &Toolbar::insertShapeRequested, this, &MainWindow::onInsertShape);
+
     // Chat assistant toggle
     connect(m_toolbar, &Toolbar::chatToggleRequested, this, [this]() {
         if (m_chatDock->isVisible()) {
@@ -483,6 +650,32 @@ void MainWindow::connectSignals() {
             }
         }
     });
+
+    // Live chart updates: refresh charts on the active sheet when data changes
+    reconnectDataChanged();
+}
+
+void MainWindow::refreshActiveCharts() {
+    for (auto* chart : m_charts) {
+        if (chart->isVisible() && chart->property("sheetIndex").toInt() == m_activeSheetIndex) {
+            chart->refreshData();
+        }
+    }
+}
+
+void MainWindow::reconnectDataChanged() {
+    if (m_dataChangedConnection)
+        disconnect(m_dataChangedConnection);
+    if (m_modelResetConnection)
+        disconnect(m_modelResetConnection);
+
+    auto* model = m_spreadsheetView->getModel();
+    if (model) {
+        m_dataChangedConnection = connect(model, &QAbstractItemModel::dataChanged,
+            this, &MainWindow::refreshActiveCharts);
+        m_modelResetConnection = connect(model, &QAbstractItemModel::modelReset,
+            this, &MainWindow::refreshActiveCharts);
+    }
 }
 
 void MainWindow::onFormatCells() {
@@ -528,11 +721,87 @@ void MainWindow::openFile(const QString& fileName) {
     QString ext = QFileInfo(fileName).suffix().toLower();
 
     if (ext == "xlsx" || ext == "xls") {
-        auto sheets = XlsxService::importFromFile(fileName);
-        if (!sheets.empty()) {
-            setSheets(sheets);
-            setWindowTitle("NativeSpreadsheet - " + QFileInfo(fileName).fileName());
-            statusBar()->showMessage("Opened: " + fileName);
+        auto result = XlsxService::importFromFile(fileName);
+        if (!result.sheets.empty()) {
+            setSheets(result.sheets);
+            setWindowTitle("Nexel - " + QFileInfo(fileName).fileName());
+
+            // Create chart widgets from imported charts
+            static const QVector<QColor> excelColors = {
+                QColor("#4472C4"), QColor("#ED7D31"), QColor("#A5A5A5"),
+                QColor("#FFC000"), QColor("#5B9BD5"), QColor("#70AD47"),
+                QColor("#264478"), QColor("#9E480E"), QColor("#636363")
+            };
+
+            for (const auto& imported : result.charts) {
+                ChartConfig config;
+
+                // Map chart type string to enum
+                if (imported.chartType == "line") config.type = ChartType::Line;
+                else if (imported.chartType == "bar") config.type = ChartType::Bar;
+                else if (imported.chartType == "scatter") config.type = ChartType::Scatter;
+                else if (imported.chartType == "pie") config.type = ChartType::Pie;
+                else if (imported.chartType == "area") config.type = ChartType::Area;
+                else if (imported.chartType == "donut") config.type = ChartType::Donut;
+                else if (imported.chartType == "histogram") config.type = ChartType::Histogram;
+                else config.type = ChartType::Column;
+
+                config.title = imported.title;
+                config.xAxisTitle = imported.xAxisTitle;
+                config.yAxisTitle = imported.yAxisTitle;
+
+                // Convert imported series to ChartSeries
+                for (int i = 0; i < imported.series.size(); ++i) {
+                    ChartSeries s;
+                    s.name = imported.series[i].name;
+                    s.yValues = imported.series[i].values;
+
+                    // Use numeric x values if available (scatter), otherwise indices
+                    if (!imported.series[i].xNumeric.isEmpty()) {
+                        s.xValues = imported.series[i].xNumeric;
+                    } else {
+                        s.xValues.resize(s.yValues.size());
+                        for (int j = 0; j < s.yValues.size(); ++j) {
+                            s.xValues[j] = j;
+                        }
+                    }
+                    s.color = excelColors[i % excelColors.size()];
+                    config.series.append(s);
+                }
+
+                int si = imported.sheetIndex;
+                if (si < 0 || si >= static_cast<int>(m_sheets.size())) continue;
+
+                auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+                chart->setSpreadsheet(m_sheets[si]);
+                chart->setConfig(config);
+                chart->setGeometry(imported.x, imported.y, imported.width, imported.height);
+
+                connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
+                connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
+                connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
+                connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
+                    int idx = c->property("sheetIndex").toInt();
+                    for (auto* other : m_charts) if (other != c && other->property("sheetIndex").toInt() == idx) other->setSelected(false);
+                    for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == idx) s->setSelected(false);
+                });
+
+                chart->setProperty("sheetIndex", si);
+                chart->setVisible(si == m_activeSheetIndex);
+                if (si == m_activeSheetIndex) {
+                    chart->show();
+                    chart->raise();
+                    chart->startEntryAnimation();
+                }
+                m_charts.append(chart);
+            }
+
+            int chartCount = static_cast<int>(result.charts.size());
+            if (chartCount > 0) {
+                statusBar()->showMessage(QString("Opened: %1 (%2 chart(s) imported)").arg(fileName).arg(chartCount));
+            } else {
+                statusBar()->showMessage("Opened: " + fileName);
+            }
         } else {
             QMessageBox::warning(this, "Open Failed", "Could not open file: " + fileName);
         }
@@ -542,7 +811,7 @@ void MainWindow::openFile(const QString& fileName) {
             spreadsheet->setSheetName(QFileInfo(fileName).baseName());
             std::vector<std::shared_ptr<Spreadsheet>> sheets = { spreadsheet };
             setSheets(sheets);
-            setWindowTitle("NativeSpreadsheet - " + QFileInfo(fileName).fileName());
+            setWindowTitle("Nexel - " + QFileInfo(fileName).fileName());
             statusBar()->showMessage("Opened: " + fileName);
         } else {
             QMessageBox::warning(this, "Open Failed", "Could not open file: " + fileName);
@@ -564,7 +833,7 @@ void MainWindow::onNewDocument() {
     setSheets(sheets);
 
     DocumentService::instance().createNewDocument("Untitled");
-    setWindowTitle("NativeSpreadsheet");
+    setWindowTitle("Nexel");
     statusBar()->showMessage("New document created");
 }
 
@@ -614,7 +883,7 @@ void MainWindow::onSaveAs() {
 
     if (success) {
         m_currentFilePath = fileName;
-        setWindowTitle("NativeSpreadsheet - " + QFileInfo(fileName).fileName());
+        setWindowTitle("Nexel - " + QFileInfo(fileName).fileName());
         statusBar()->showMessage("Saved: " + fileName);
     } else {
         QMessageBox::warning(this, "Save Failed", "Could not save file.");
@@ -626,7 +895,6 @@ void MainWindow::onUndo() {
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (sheet && sheet->getUndoManager().canUndo()) {
         sheet->getUndoManager().undo(sheet.get());
-        // Navigate to affected cell
         CellAddress target = sheet->getUndoManager().lastUndoTarget();
         auto model = m_spreadsheetView->getModel();
         if (model) {
@@ -635,6 +903,7 @@ void MainWindow::onUndo() {
             m_spreadsheetView->setCurrentIndex(idx);
             m_spreadsheetView->scrollTo(idx);
         }
+        refreshActiveCharts();
         statusBar()->showMessage("Undo");
     }
 }
@@ -644,7 +913,6 @@ void MainWindow::onRedo() {
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (sheet && sheet->getUndoManager().canRedo()) {
         sheet->getUndoManager().redo(sheet.get());
-        // Navigate to affected cell
         CellAddress target = sheet->getUndoManager().lastRedoTarget();
         auto model = m_spreadsheetView->getModel();
         if (model) {
@@ -653,6 +921,7 @@ void MainWindow::onRedo() {
             m_spreadsheetView->setCurrentIndex(idx);
             m_spreadsheetView->scrollTo(idx);
         }
+        refreshActiveCharts();
         statusBar()->showMessage("Redo");
     }
 }
@@ -1304,6 +1573,48 @@ void MainWindow::onChatActions(const QJsonArray& actions) {
             CellAddress end = parseRangeEnd(action["range"].toString());
             CellRange range(start, end);
             sheet->clearRange(range);
+
+        } else if (type == "insert_chart") {
+            insertChartFromChat(action);
+
+        } else if (type == "insert_shape") {
+            insertShapeFromChat(action);
+
+        } else if (type == "insert_sparkline") {
+            QString cellRef = action["cell"].toString();
+            QString dataRange = action["data_range"].toString();
+            if (!cellRef.isEmpty() && !dataRange.isEmpty()) {
+                SparklineConfig config;
+                QString typeStr = action["type"].toString().toLower();
+                if (typeStr == "column") config.type = SparklineType::Column;
+                else if (typeStr == "winloss") config.type = SparklineType::WinLoss;
+                else config.type = SparklineType::Line;
+                config.dataRange = dataRange;
+                if (action.contains("color")) config.lineColor = QColor(action["color"].toString());
+                config.showHighPoint = action["show_high"].toBool(false);
+                config.showLowPoint = action["show_low"].toBool(false);
+                CellAddress addr = parseCellRef(cellRef);
+                sheet->setSparkline(addr, config);
+            }
+
+        } else if (type == "insert_image") {
+            insertImageFromChat(action);
+
+        } else if (type == "run_macro") {
+            QString code = action["code"].toString();
+            if (!code.isEmpty() && m_macroEngine) {
+                auto result = m_macroEngine->execute(code);
+                if (!result.success) {
+                    statusBar()->showMessage("Macro error: " + result.error, 5000);
+                }
+            }
+
+        } else if (type == "record_macro") {
+            QString macroAction = action["action"].toString().toLower();
+            if (m_macroEngine) {
+                if (macroAction == "start") m_macroEngine->startRecording();
+                else if (macroAction == "stop") m_macroEngine->stopRecording();
+            }
         }
     }
 
@@ -1318,4 +1629,756 @@ bool MainWindow::saveCurrentDocument() {
     auto doc = DocumentService::instance().getCurrentDocument();
     if (doc) return DocumentService::instance().saveDocument();
     return true;
+}
+
+// ============== Chart and Shape Insertion ==============
+
+QString MainWindow::getSelectionRange() const {
+    if (!m_spreadsheetView) return "";
+
+    QModelIndexList selected = m_spreadsheetView->selectionModel()->selectedIndexes();
+    if (selected.isEmpty()) return "";
+
+    int minRow = INT_MAX, maxRow = 0, minCol = INT_MAX, maxCol = 0;
+    for (const auto& idx : selected) {
+        minRow = qMin(minRow, idx.row());
+        maxRow = qMax(maxRow, idx.row());
+        minCol = qMin(minCol, idx.column());
+        maxCol = qMax(maxCol, idx.column());
+    }
+
+    return CellAddress(minRow, minCol).toString() + ":" + CellAddress(maxRow, maxCol).toString();
+}
+
+void MainWindow::onInsertChart() {
+    ChartDialog dialog(this);
+    dialog.setSpreadsheet(m_sheets[m_activeSheetIndex]);
+
+    // Pre-fill with current selection
+    QString range = getSelectionRange();
+    if (!range.isEmpty()) {
+        dialog.setDataRange(range);
+    }
+
+    if (dialog.exec() == QDialog::Accepted) {
+        ChartConfig config = dialog.getConfig();
+
+        // Auto-generate titles from data headers if not specified
+        ChartWidget::autoGenerateTitles(config, m_sheets[m_activeSheetIndex]);
+
+        auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+        chart->setSpreadsheet(m_sheets[m_activeSheetIndex]);
+        chart->setConfig(config);
+
+        // Load data from spreadsheet range
+        if (!config.dataRange.isEmpty()) {
+            chart->loadDataFromRange(config.dataRange);
+        }
+
+        // Position in center of visible area
+        QRect viewRect = m_spreadsheetView->viewport()->rect();
+        int x = (viewRect.width() - 420) / 2;
+        int y = (viewRect.height() - 320) / 2;
+        chart->setGeometry(qMax(10, x), qMax(10, y), 420, 320);
+
+        connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
+        connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
+        connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
+        connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
+            int si = c->property("sheetIndex").toInt();
+            for (auto* other : m_charts) {
+                if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+            }
+            for (auto* s : m_shapes) {
+                if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+            }
+        });
+
+        chart->setProperty("sheetIndex", m_activeSheetIndex);
+        chart->show();
+        chart->raise();
+        m_charts.append(chart);
+
+        statusBar()->showMessage("Chart inserted");
+    }
+}
+
+void MainWindow::onInsertShape() {
+    InsertShapeDialog dialog(this);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        ShapeConfig config = dialog.getConfig();
+
+        auto* shape = new ShapeWidget(m_spreadsheetView->viewport());
+        shape->setConfig(config);
+
+        // Position in center of visible area
+        QRect viewRect = m_spreadsheetView->viewport()->rect();
+        int x = (viewRect.width() - 160) / 2;
+        int y = (viewRect.height() - 120) / 2;
+        shape->setGeometry(qMax(10, x), qMax(10, y), 160, 120);
+
+        connect(shape, &ShapeWidget::editRequested, this, &MainWindow::onEditShape);
+        connect(shape, &ShapeWidget::deleteRequested, this, &MainWindow::onDeleteShape);
+        connect(shape, &ShapeWidget::shapeSelected, this, [this](ShapeWidget* s) {
+            int si = s->property("sheetIndex").toInt();
+            for (auto* other : m_shapes) {
+                if (other != s && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+            }
+            for (auto* c : m_charts) {
+                if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+            }
+        });
+
+        shape->setProperty("sheetIndex", m_activeSheetIndex);
+        shape->show();
+        shape->raise();
+        m_shapes.append(shape);
+
+        statusBar()->showMessage("Shape inserted");
+    }
+}
+
+void MainWindow::onEditChart(ChartWidget* chart) {
+    if (!chart) return;
+    // Use the side panel for chart editing instead of a dialog
+    onChartPropertiesRequested(chart);
+}
+
+void MainWindow::onDeleteChart(ChartWidget* chart) {
+    if (!chart) return;
+
+    m_charts.removeOne(chart);
+    chart->hide();
+    chart->deleteLater();
+    statusBar()->showMessage("Chart deleted");
+}
+
+void MainWindow::onEditShape(ShapeWidget* shape) {
+    if (!shape) return;
+
+    ShapePropertiesDialog dialog(shape->config(), this);
+    if (dialog.exec() == QDialog::Accepted) {
+        shape->setConfig(dialog.getConfig());
+        statusBar()->showMessage("Shape updated");
+    }
+}
+
+void MainWindow::onDeleteShape(ShapeWidget* shape) {
+    if (!shape) return;
+
+    m_shapes.removeOne(shape);
+    shape->hide();
+    shape->deleteLater();
+    statusBar()->showMessage("Shape deleted");
+}
+
+// ============== Image Insertion ==============
+
+void MainWindow::onInsertImage() {
+    QString fileName = QFileDialog::getOpenFileName(this, "Insert Image", "",
+        "Image Files (*.png *.jpg *.jpeg *.bmp);;PNG (*.png);;JPEG (*.jpg *.jpeg);;BMP (*.bmp);;All Files (*)");
+    if (fileName.isEmpty()) return;
+
+    QPixmap pixmap(fileName);
+    if (pixmap.isNull()) {
+        QMessageBox::warning(this, "Insert Image", "Could not load image: " + fileName);
+        return;
+    }
+
+    auto* image = new ImageWidget(m_spreadsheetView->viewport());
+    image->setImageFromFile(fileName);
+
+    // Scale to reasonable size while maintaining aspect ratio
+    int maxW = 400, maxH = 300;
+    int w = pixmap.width(), h = pixmap.height();
+    if (w > maxW || h > maxH) {
+        double scale = qMin(static_cast<double>(maxW) / w, static_cast<double>(maxH) / h);
+        w = static_cast<int>(w * scale);
+        h = static_cast<int>(h * scale);
+    }
+
+    QRect viewRect = m_spreadsheetView->viewport()->rect();
+    int x = (viewRect.width() - w) / 2;
+    int y = (viewRect.height() - h) / 2;
+    image->setGeometry(qMax(10, x), qMax(10, y), w, h);
+
+    connect(image, &ImageWidget::editRequested, this, &MainWindow::onEditImage);
+    connect(image, &ImageWidget::deleteRequested, this, &MainWindow::onDeleteImage);
+    connect(image, &ImageWidget::imageSelected, this, [this](ImageWidget* img) {
+        int si = img->property("sheetIndex").toInt();
+        for (auto* other : m_images) {
+            if (other != img && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+        }
+        for (auto* c : m_charts) {
+            if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+        }
+        for (auto* s : m_shapes) {
+            if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+        }
+    });
+
+    image->setProperty("sheetIndex", m_activeSheetIndex);
+    image->show();
+    image->raise();
+    m_images.append(image);
+
+    statusBar()->showMessage("Image inserted: " + QFileInfo(fileName).fileName());
+}
+
+void MainWindow::onEditImage(ImageWidget* image) {
+    if (!image) return;
+
+    QString fileName = QFileDialog::getOpenFileName(this, "Replace Image", "",
+        "Image Files (*.png *.jpg *.jpeg *.bmp);;All Files (*)");
+    if (fileName.isEmpty()) return;
+
+    image->setImageFromFile(fileName);
+    statusBar()->showMessage("Image replaced");
+}
+
+void MainWindow::onDeleteImage(ImageWidget* image) {
+    if (!image) return;
+
+    m_images.removeOne(image);
+    image->hide();
+    image->deleteLater();
+    statusBar()->showMessage("Image deleted");
+}
+
+// ============== Sparkline Insertion ==============
+
+void MainWindow::onInsertSparkline() {
+    if (m_sheets.empty()) return;
+
+    SparklineDialog dialog(this);
+
+    // Pre-fill with current selection as data range
+    QString range = getSelectionRange();
+    if (!range.isEmpty()) {
+        dialog.setDataRange(range);
+    }
+
+    if (dialog.exec() == QDialog::Accepted) {
+        SparklineConfig config = dialog.getConfig();
+        QString destStr = dialog.getDestinationRange();
+
+        if (destStr.isEmpty()) {
+            QMessageBox::warning(this, "Insert Sparkline", "Please specify a destination cell.");
+            return;
+        }
+
+        // Parse destination — could be a single cell or a range
+        CellAddress destStart = parseCellRef(destStr.split(':').first());
+        auto sheet = m_sheets[m_activeSheetIndex];
+        sheet->setSparkline(destStart, config);
+
+        m_spreadsheetView->refreshView();
+        if (m_spreadsheetView->getModel())
+            m_spreadsheetView->getModel()->resetModel();
+
+        statusBar()->showMessage("Sparkline inserted");
+    }
+}
+
+// ============== Macro Editor ==============
+
+void MainWindow::onMacroEditor() {
+    if (!m_macroEngine) return;
+
+    MacroEditorDialog dialog(m_macroEngine, this);
+    dialog.exec();
+
+    // Refresh view in case macros changed cell values
+    m_spreadsheetView->refreshView();
+    if (m_spreadsheetView->getModel())
+        m_spreadsheetView->getModel()->resetModel();
+}
+
+void MainWindow::onRunLastMacro() {
+    if (!m_macroEngine) return;
+
+    auto macros = m_macroEngine->getSavedMacros();
+    if (macros.isEmpty()) {
+        statusBar()->showMessage("No saved macros to run");
+        return;
+    }
+
+    // Run the most recently saved macro
+    auto result = m_macroEngine->execute(macros.last().code);
+    if (result.success) {
+        statusBar()->showMessage("Macro executed: " + macros.last().name);
+    } else {
+        statusBar()->showMessage("Macro error: " + result.error, 5000);
+    }
+
+    m_spreadsheetView->refreshView();
+    if (m_spreadsheetView->getModel())
+        m_spreadsheetView->getModel()->resetModel();
+}
+
+// ============== Multi-select & Delete key ==============
+
+void MainWindow::deselectAllOverlays() {
+    for (auto* c : m_charts) {
+        if (c->property("sheetIndex").toInt() == m_activeSheetIndex)
+            c->setSelected(false);
+    }
+    for (auto* s : m_shapes) {
+        if (s->property("sheetIndex").toInt() == m_activeSheetIndex)
+            s->setSelected(false);
+    }
+    for (auto* img : m_images) {
+        if (img->property("sheetIndex").toInt() == m_activeSheetIndex)
+            img->setSelected(false);
+    }
+    // Hide chart properties panel when nothing is selected
+    if (m_chartPropsDock && m_chartPropsDock->isVisible()) {
+        m_chartPropsDock->hide();
+    }
+}
+
+void MainWindow::deleteSelectedOverlays() {
+    // Collect selected charts on the active sheet
+    QVector<ChartWidget*> chartsToDelete;
+    for (auto* c : m_charts) {
+        if (c->isSelected() && c->property("sheetIndex").toInt() == m_activeSheetIndex)
+            chartsToDelete.append(c);
+    }
+    for (auto* c : chartsToDelete) {
+        m_charts.removeOne(c);
+        c->hide();
+        c->deleteLater();
+    }
+
+    // Collect selected shapes on the active sheet
+    QVector<ShapeWidget*> shapesToDelete;
+    for (auto* s : m_shapes) {
+        if (s->isSelected() && s->property("sheetIndex").toInt() == m_activeSheetIndex)
+            shapesToDelete.append(s);
+    }
+    for (auto* s : shapesToDelete) {
+        m_shapes.removeOne(s);
+        s->hide();
+        s->deleteLater();
+    }
+
+    // Collect selected images on the active sheet
+    QVector<ImageWidget*> imagesToDelete;
+    for (auto* img : m_images) {
+        if (img->isSelected() && img->property("sheetIndex").toInt() == m_activeSheetIndex)
+            imagesToDelete.append(img);
+    }
+    for (auto* img : imagesToDelete) {
+        m_images.removeOne(img);
+        img->hide();
+        img->deleteLater();
+    }
+
+    int total = chartsToDelete.size() + shapesToDelete.size() + imagesToDelete.size();
+    if (total > 0) {
+        statusBar()->showMessage(QString("Deleted %1 object(s)").arg(total));
+    }
+}
+
+void MainWindow::keyPressEvent(QKeyEvent* event) {
+    // Check if any chart/shape on the active sheet is selected
+    bool hasSelectedOverlay = false;
+    for (auto* c : m_charts) {
+        if (c->isSelected() && c->property("sheetIndex").toInt() == m_activeSheetIndex)
+            { hasSelectedOverlay = true; break; }
+    }
+    if (!hasSelectedOverlay) {
+        for (auto* s : m_shapes) {
+            if (s->isSelected() && s->property("sheetIndex").toInt() == m_activeSheetIndex)
+                { hasSelectedOverlay = true; break; }
+        }
+    }
+    if (!hasSelectedOverlay) {
+        for (auto* img : m_images) {
+            if (img->isSelected() && img->property("sheetIndex").toInt() == m_activeSheetIndex)
+                { hasSelectedOverlay = true; break; }
+        }
+    }
+
+    if (hasSelectedOverlay && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
+        deleteSelectedOverlays();
+        return;
+    }
+
+    // Escape deselects all overlays
+    if (event->key() == Qt::Key_Escape) {
+        deselectAllOverlays();
+    }
+
+    QMainWindow::keyPressEvent(event);
+}
+
+bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
+    // When user clicks on the spreadsheet viewport, deselect all chart/shape overlays
+    if (obj == m_spreadsheetView->viewport() && event->type() == QEvent::MouseButtonPress) {
+        auto* me = static_cast<QMouseEvent*>(event);
+        // Check that the click is NOT on a chart or shape widget
+        QWidget* child = m_spreadsheetView->viewport()->childAt(me->pos());
+        bool clickedOverlay = false;
+        for (auto* c : m_charts) {
+            if (child == c) { clickedOverlay = true; break; }
+        }
+        if (!clickedOverlay) {
+            for (auto* s : m_shapes) {
+                if (child == s) { clickedOverlay = true; break; }
+            }
+        }
+        if (!clickedOverlay) {
+            for (auto* img : m_images) {
+                if (child == img) { clickedOverlay = true; break; }
+            }
+        }
+        if (!clickedOverlay) {
+            deselectAllOverlays();
+        }
+    }
+    return QMainWindow::eventFilter(obj, event);
+}
+
+// ============== Chat-driven Chart/Shape insertion ==============
+
+void MainWindow::insertChartFromChat(const QJsonObject& params) {
+    ChartConfig config;
+
+    // Parse chart type
+    QString typeStr = params["type"].toString().toLower();
+    if (typeStr == "line") config.type = ChartType::Line;
+    else if (typeStr == "bar") config.type = ChartType::Bar;
+    else if (typeStr == "scatter") config.type = ChartType::Scatter;
+    else if (typeStr == "pie") config.type = ChartType::Pie;
+    else if (typeStr == "area") config.type = ChartType::Area;
+    else if (typeStr == "donut") config.type = ChartType::Donut;
+    else if (typeStr == "histogram") config.type = ChartType::Histogram;
+    else config.type = ChartType::Column;
+
+    config.title = params["title"].toString();
+    config.dataRange = params["range"].toString();
+    config.xAxisTitle = params["x_axis"].toString();
+    config.yAxisTitle = params["y_axis"].toString();
+    config.themeIndex = params["theme"].toInt(0);
+    config.showLegend = !params.contains("show_legend") || params["show_legend"].toBool(true);
+    config.showGridLines = !params.contains("show_grid") || params["show_grid"].toBool(true);
+
+    // Auto-generate titles from data headers if not specified
+    ChartWidget::autoGenerateTitles(config, m_sheets[m_activeSheetIndex]);
+
+    auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+    chart->setSpreadsheet(m_sheets[m_activeSheetIndex]);
+    chart->setConfig(config);
+
+    if (!config.dataRange.isEmpty()) {
+        chart->loadDataFromRange(config.dataRange);
+    }
+
+    QRect viewRect = m_spreadsheetView->viewport()->rect();
+    int x = (viewRect.width() - 420) / 2;
+    int y = (viewRect.height() - 320) / 2;
+    chart->setGeometry(qMax(10, x), qMax(10, y), 420, 320);
+
+    connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
+    connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
+    connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
+    connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
+        int si = c->property("sheetIndex").toInt();
+        for (auto* other : m_charts) if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+        for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+    });
+
+    chart->setProperty("sheetIndex", m_activeSheetIndex);
+    chart->show();
+    chart->raise();
+    m_charts.append(chart);
+}
+
+void MainWindow::insertShapeFromChat(const QJsonObject& params) {
+    ShapeConfig config;
+
+    QString typeStr = params["type"].toString().toLower();
+    if (typeStr == "rectangle" || typeStr == "rect") config.type = ShapeType::Rectangle;
+    else if (typeStr == "rounded_rect" || typeStr == "rounded") config.type = ShapeType::RoundedRect;
+    else if (typeStr == "circle") config.type = ShapeType::Circle;
+    else if (typeStr == "ellipse") config.type = ShapeType::Ellipse;
+    else if (typeStr == "triangle") config.type = ShapeType::Triangle;
+    else if (typeStr == "star") config.type = ShapeType::Star;
+    else if (typeStr == "arrow") config.type = ShapeType::Arrow;
+    else if (typeStr == "diamond") config.type = ShapeType::Diamond;
+    else if (typeStr == "pentagon") config.type = ShapeType::Pentagon;
+    else if (typeStr == "hexagon") config.type = ShapeType::Hexagon;
+    else if (typeStr == "callout") config.type = ShapeType::Callout;
+    else if (typeStr == "line") config.type = ShapeType::Line;
+    else config.type = ShapeType::Rectangle;
+
+    if (params.contains("fill_color")) config.fillColor = QColor(params["fill_color"].toString());
+    if (params.contains("stroke_color")) config.strokeColor = QColor(params["stroke_color"].toString());
+    if (params.contains("stroke_width")) config.strokeWidth = params["stroke_width"].toInt(2);
+    if (params.contains("text")) config.text = params["text"].toString();
+    if (params.contains("text_color")) config.textColor = QColor(params["text_color"].toString());
+    if (params.contains("font_size")) config.fontSize = params["font_size"].toInt(12);
+    if (params.contains("opacity")) config.opacity = static_cast<float>(params["opacity"].toDouble(1.0));
+
+    auto* shape = new ShapeWidget(m_spreadsheetView->viewport());
+    shape->setConfig(config);
+
+    int w = params["width"].toInt(160);
+    int h = params["height"].toInt(120);
+    QRect viewRect = m_spreadsheetView->viewport()->rect();
+    int x = (viewRect.width() - w) / 2;
+    int y = (viewRect.height() - h) / 2;
+    shape->setGeometry(qMax(10, x), qMax(10, y), w, h);
+
+    connect(shape, &ShapeWidget::editRequested, this, &MainWindow::onEditShape);
+    connect(shape, &ShapeWidget::deleteRequested, this, &MainWindow::onDeleteShape);
+    connect(shape, &ShapeWidget::shapeSelected, this, [this](ShapeWidget* s) {
+        int si = s->property("sheetIndex").toInt();
+        for (auto* other : m_shapes) if (other != s && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+        for (auto* c : m_charts) if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+    });
+
+    shape->setProperty("sheetIndex", m_activeSheetIndex);
+    shape->show();
+    shape->raise();
+    m_shapes.append(shape);
+}
+
+void MainWindow::insertImageFromChat(const QJsonObject& params) {
+    QString path = params["path"].toString();
+    if (path.isEmpty()) return;
+
+    QPixmap pixmap(path);
+    if (pixmap.isNull()) return;
+
+    auto* image = new ImageWidget(m_spreadsheetView->viewport());
+    image->setImageFromFile(path);
+
+    int w = params["width"].toInt(0);
+    int h = params["height"].toInt(0);
+    if (w <= 0 || h <= 0) {
+        w = qMin(pixmap.width(), 400);
+        h = qMin(pixmap.height(), 300);
+        if (pixmap.width() > 400 || pixmap.height() > 300) {
+            double scale = qMin(400.0 / pixmap.width(), 300.0 / pixmap.height());
+            w = static_cast<int>(pixmap.width() * scale);
+            h = static_cast<int>(pixmap.height() * scale);
+        }
+    }
+
+    QRect viewRect = m_spreadsheetView->viewport()->rect();
+    int x = (viewRect.width() - w) / 2;
+    int y = (viewRect.height() - h) / 2;
+    image->setGeometry(qMax(10, x), qMax(10, y), w, h);
+
+    connect(image, &ImageWidget::editRequested, this, &MainWindow::onEditImage);
+    connect(image, &ImageWidget::deleteRequested, this, &MainWindow::onDeleteImage);
+    connect(image, &ImageWidget::imageSelected, this, [this](ImageWidget* img) {
+        int si = img->property("sheetIndex").toInt();
+        for (auto* other : m_images) if (other != img && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+        for (auto* c : m_charts) if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+        for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+    });
+
+    image->setProperty("sheetIndex", m_activeSheetIndex);
+    image->show();
+    image->raise();
+    m_images.append(image);
+}
+
+// ============== Chart Properties Panel ==============
+
+void MainWindow::onChartPropertiesRequested(ChartWidget* chart) {
+    if (!chart || !m_chartPropsPanel || !m_chartPropsDock) return;
+
+    m_chartPropsPanel->setChart(chart);
+    m_chartPropsDock->show();
+    m_chartPropsDock->raise();
+}
+
+// ============== Pivot Table ==============
+
+void MainWindow::onCreatePivotTable() {
+    if (m_sheets.empty()) return;
+
+    auto sheet = m_sheets[m_activeSheetIndex];
+
+    // Detect data range from selection or auto-detect
+    QString rangeStr = getSelectionRange();
+    CellRange sourceRange;
+    if (!rangeStr.isEmpty()) {
+        sourceRange = CellRange(rangeStr);
+    } else {
+        int maxRow = sheet->getMaxRow();
+        int maxCol = sheet->getMaxColumn();
+        if (maxRow < 0 || maxCol < 0) {
+            QMessageBox::information(this, "Pivot Table",
+                "Please select a data range or enter data first.");
+            return;
+        }
+        sourceRange = CellRange(0, 0, maxRow, maxCol);
+    }
+
+    PivotTableDialog dialog(sheet, sourceRange, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        PivotConfig config = dialog.getConfig();
+        config.sourceSheetIndex = m_activeSheetIndex;
+
+        if (config.valueFields.empty()) {
+            QMessageBox::warning(this, "Pivot Table", "Please add at least one value field.");
+            return;
+        }
+
+        PivotEngine engine;
+        engine.setSource(sheet, config);
+        PivotResult result = engine.compute();
+
+        // Create a new sheet for the pivot output
+        auto pivotSheet = std::make_shared<Spreadsheet>();
+        pivotSheet->setSheetName("Pivot - " + sheet->getSheetName());
+        engine.writeToSheet(pivotSheet, result, config);
+
+        // Store pivot config for refresh
+        pivotSheet->setPivotConfig(std::make_unique<PivotConfig>(config));
+
+        // Add the pivot sheet
+        m_sheets.push_back(pivotSheet);
+        m_sheetTabBar->addTab(pivotSheet->getSheetName());
+        int pivotSheetIdx = static_cast<int>(m_sheets.size()) - 1;
+        m_sheetTabBar->setCurrentIndex(pivotSheetIdx);
+
+        // Auto-generate chart if requested
+        if (config.autoChart && !result.rowLabels.empty()) {
+            ChartConfig chartCfg;
+            chartCfg.type = static_cast<ChartType>(config.chartType);
+            chartCfg.title = config.valueFields[0].displayName();
+            chartCfg.showLegend = true;
+            chartCfg.showGridLines = true;
+
+            // Build chart data range from pivot output
+            int headerRow = result.dataStartRow - 1;
+            if (headerRow < 0) headerRow = 0;
+            int endRow = headerRow + static_cast<int>(result.rowLabels.size());
+            int endCol = result.numRowHeaderColumns + static_cast<int>(result.columnLabels.size()) - 1;
+            chartCfg.dataRange = CellRange(headerRow, 0, endRow, endCol).toString();
+
+            auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+            chart->setSpreadsheet(pivotSheet);
+            chart->setConfig(chartCfg);
+            chart->loadDataFromRange(chartCfg.dataRange);
+
+            QRect viewRect = m_spreadsheetView->viewport()->rect();
+            chart->setGeometry(qMax(10, viewRect.width() / 2 - 50), 20, 420, 320);
+
+            connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
+            connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
+            connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
+            connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
+                int si = c->property("sheetIndex").toInt();
+                for (auto* other : m_charts) if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+                for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+            });
+
+            chart->setProperty("sheetIndex", pivotSheetIdx);
+            chart->show();
+            chart->raise();
+            chart->startEntryAnimation();
+            m_charts.append(chart);
+        }
+
+        statusBar()->showMessage("Pivot table created on sheet: " + pivotSheet->getSheetName());
+    }
+}
+
+void MainWindow::onRefreshPivotTable() {
+    if (m_sheets.empty()) return;
+
+    auto sheet = m_sheets[m_activeSheetIndex];
+    const PivotConfig* config = sheet->getPivotConfig();
+    if (!config) {
+        QMessageBox::information(this, "Refresh Pivot Table",
+            "The current sheet is not a pivot table.");
+        return;
+    }
+
+    int srcIdx = config->sourceSheetIndex;
+    if (srcIdx < 0 || srcIdx >= static_cast<int>(m_sheets.size())) {
+        QMessageBox::warning(this, "Refresh Pivot Table",
+            "Source sheet no longer exists.");
+        return;
+    }
+
+    auto sourceSheet = m_sheets[srcIdx];
+    PivotEngine engine;
+    engine.setSource(sourceSheet, *config);
+    PivotResult result = engine.compute();
+
+    // Clear and rewrite the pivot sheet
+    sheet->clearRange(CellRange(0, 0, sheet->getMaxRow() + 1, sheet->getMaxColumn() + 1));
+    engine.writeToSheet(sheet, result, *config);
+
+    m_spreadsheetView->setSpreadsheet(sheet); // refresh view
+    statusBar()->showMessage("Pivot table refreshed");
+}
+
+// ============== Template Gallery ==============
+
+void MainWindow::onTemplateGallery() {
+    TemplateGallery gallery(this);
+    if (gallery.exec() == QDialog::Accepted) {
+        applyTemplate(gallery.getResult());
+    }
+}
+
+void MainWindow::applyTemplate(const TemplateResult& result) {
+    if (result.sheets.empty()) return;
+
+    // Templates hide gridlines for a cleaner look
+    for (auto& sheet : result.sheets) {
+        sheet->setShowGridlines(false);
+    }
+
+    setSheets(result.sheets);
+    setWindowTitle("Nexel - " + result.sheets[0]->getSheetName());
+
+    // Create chart widgets from template charts
+    for (int i = 0; i < static_cast<int>(result.charts.size()); ++i) {
+        int sheetIdx = (i < static_cast<int>(result.chartSheetIndices.size()))
+                       ? result.chartSheetIndices[i] : 0;
+        if (sheetIdx >= static_cast<int>(m_sheets.size())) continue;
+
+        auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+        chart->setSpreadsheet(m_sheets[sheetIdx]);
+        chart->setConfig(result.charts[i]);
+
+        if (!result.charts[i].dataRange.isEmpty()) {
+            chart->loadDataFromRange(result.charts[i].dataRange);
+        }
+
+        int x = 450 + (i % 2) * 20;
+        int y = 20 + (i / 2) * 340;
+        chart->setGeometry(x, y, 420, 320);
+
+        connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
+        connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
+        connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
+        connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
+            int si = c->property("sheetIndex").toInt();
+            for (auto* other : m_charts) if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+            for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+        });
+
+        chart->setProperty("sheetIndex", sheetIdx);
+        chart->setVisible(sheetIdx == m_activeSheetIndex);
+        if (sheetIdx == m_activeSheetIndex) {
+            chart->show();
+            chart->raise();
+            chart->startEntryAnimation();
+        }
+        m_charts.append(chart);
+    }
+
+    statusBar()->showMessage("Template applied: " + result.sheets[0]->getSheetName());
 }

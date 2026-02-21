@@ -10,6 +10,8 @@ class SpreadsheetModel : public QAbstractTableModel {
     Q_OBJECT
 
 public:
+    static constexpr int SparklineRole = Qt::UserRole + 15;
+
     SpreadsheetModel(std::shared_ptr<Spreadsheet> spreadsheet, QObject* parent = nullptr);
     ~SpreadsheetModel() = default;
 

@@ -102,6 +102,14 @@ public:
     bool isFilterActive() const { return m_filterActive; }
     void clearAllFilters();
 
+    // Dimension management
+    void setRowHeight(int row, int height);
+    void setColumnWidth(int col, int width);
+    void applyStoredDimensions();
+
+    // Gridline visibility
+    void setGridlinesVisible(bool visible);
+
     // UI Operations
     void refreshView();
     void zoomIn();
@@ -119,6 +127,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     void currentChanged(const QModelIndex& current, const QModelIndex& previous) override;
 
 private slots:
@@ -185,6 +194,21 @@ private:
 
     // Efficient style application: only process occupied cells for large selections
     void applyStyleChange(std::function<void(CellStyle&)> modifier, const QList<int>& roles);
+
+    // Freeze pane overlay views
+    int m_frozenRow = -1;
+    int m_frozenCol = -1;
+    QTableView* m_frozenCornerView = nullptr;
+    QTableView* m_frozenRowView = nullptr;
+    QTableView* m_frozenColView = nullptr;
+    QWidget* m_freezeHLine = nullptr;
+    QWidget* m_freezeVLine = nullptr;
+    QList<QMetaObject::Connection> m_freezeConnections;
+
+    QTableView* createFreezeOverlay();
+    void setupFreezeViews();
+    void destroyFreezeViews();
+    void updateFreezeGeometry();
 };
 
 #endif // SPREADSHEETVIEW_H

@@ -653,6 +653,11 @@ static const char* TOOLBAR_STYLE_ROW2 = R"(
         background-color: #D6E4F0;
         border-color: #4A90D9;
     }
+    QToolButton::menu-indicator {
+        width: 0px;
+        height: 0px;
+        image: none;
+    }
     QToolBar::separator {
         width: 1px;
         background-color: #E0E3E8;
@@ -776,11 +781,11 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     borderBtn->setIcon(createBorderIcon());
     borderBtn->setToolTip("Borders");
     borderBtn->setPopupMode(QToolButton::MenuButtonPopup);
-    borderBtn->setFixedSize(40, 24);
+    borderBtn->setFixedSize(52, 24);
     borderBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px 4px; }"
+        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px 6px; }"
         "QToolButton:hover { background-color: #E8ECF0; border-color: #D0D5DD; }"
-        "QToolButton::menu-button { width: 13px; border-left: 1px solid #D0D5DD; }"
+        "QToolButton::menu-button { width: 14px; border-left: 1px solid #D0D5DD; }"
         "QToolButton::menu-button:hover { background-color: #D8DCE0; }"
         "QToolButton::menu-arrow { image: none; }"
     );
@@ -959,6 +964,46 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     validationBtn->setFixedSize(28, 24);
     bar->addWidget(validationBtn);
     connect(validationBtn, &QToolButton::clicked, this, &Toolbar::dataValidationRequested);
+
+    bar->addSeparator();
+
+    // ===== Insert Chart =====
+    QToolButton* chartBtn = new QToolButton(bar);
+    chartBtn->setIcon(createIcon(16, [](QPainter& p, int) {
+        // Column chart icon
+        QColor c("#4A90D9");
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        p.drawRect(2, 9, 3, 5);
+        p.drawRect(6, 5, 3, 9);
+        p.drawRect(10, 7, 3, 7);
+        // Axis lines
+        p.setPen(QPen(QColor("#555"), 1));
+        p.drawLine(1, 14, 14, 14);
+        p.drawLine(1, 2, 1, 14);
+    }));
+    chartBtn->setText("Chart");
+    chartBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    chartBtn->setToolTip("Insert Chart (Alt+F1)");
+    chartBtn->setFixedHeight(24);
+    bar->addWidget(chartBtn);
+    connect(chartBtn, &QToolButton::clicked, this, &Toolbar::insertChartRequested);
+
+    // ===== Insert Shape =====
+    QToolButton* shapeBtn = new QToolButton(bar);
+    shapeBtn->setIcon(createIcon(16, [](QPainter& p, int) {
+        // Shapes icon: circle + rectangle
+        p.setPen(QPen(QColor("#4A90D9"), 1.4));
+        p.setBrush(QColor("#4A90D9").lighter(170));
+        p.drawRoundedRect(1, 5, 9, 9, 2, 2);
+        p.drawEllipse(7, 1, 8, 8);
+    }));
+    shapeBtn->setText("Shape");
+    shapeBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    shapeBtn->setToolTip("Insert Shape");
+    shapeBtn->setFixedHeight(24);
+    bar->addWidget(shapeBtn);
+    connect(shapeBtn, &QToolButton::clicked, this, &Toolbar::insertShapeRequested);
 
     bar->addSeparator();
 

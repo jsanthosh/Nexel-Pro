@@ -61,6 +61,9 @@ signals:
     // Conditional formatting & validation
     void conditionalFormatRequested();
     void dataValidationRequested();
+    // Insert chart/shape
+    void insertChartRequested();
+    void insertShapeRequested();
     // Chat assistant
     void chatToggleRequested();
 

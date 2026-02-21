@@ -1,6 +1,7 @@
 #include "CellDelegate.h"
 #include <QLineEdit>
 #include <QPainter>
+#include <QPainterPath>
 #include <QStyleOptionViewItem>
 #include <QApplication>
 #include <QCompleter>
@@ -15,11 +16,18 @@
 static const QStringList s_formulaNames = {
     "SUM", "AVERAGE", "COUNT", "COUNTA", "MIN", "MAX",
     "IF", "IFERROR", "AND", "OR", "NOT",
-    "CONCAT", "LEN", "UPPER", "LOWER", "TRIM",
+    "CONCAT", "CONCATENATE", "LEN", "UPPER", "LOWER", "TRIM",
     "LEFT", "RIGHT", "MID", "FIND", "SUBSTITUTE", "TEXT",
     "ROUND", "ABS", "SQRT", "POWER", "MOD", "INT", "CEILING", "FLOOR",
-    "COUNTIF", "SUMIF",
+    "COUNTIF", "SUMIF", "AVERAGEIF", "COUNTBLANK", "SUMPRODUCT",
+    "MEDIAN", "MODE", "STDEV", "VAR", "LARGE", "SMALL", "RANK", "PERCENTILE",
     "NOW", "TODAY", "YEAR", "MONTH", "DAY",
+    "DATE", "HOUR", "MINUTE", "SECOND", "DATEDIF", "NETWORKDAYS", "WEEKDAY",
+    "EDATE", "EOMONTH", "DATEVALUE",
+    "VLOOKUP", "HLOOKUP", "XLOOKUP", "INDEX", "MATCH",
+    "ROUNDUP", "ROUNDDOWN", "LOG", "LN", "EXP", "RAND", "RANDBETWEEN",
+    "PROPER", "SEARCH", "REPT", "EXACT", "VALUE",
+    "ISBLANK", "ISERROR", "ISNUMBER", "ISTEXT", "CHOOSE", "SWITCH",
 };
 
 CellDelegate::CellDelegate(QObject* parent)
@@ -74,7 +82,8 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
     QLineEdit* editor = new QLineEdit(parent);
     editor->setFrame(false);
     editor->setStyleSheet(
-        "QLineEdit { background: white; padding: 1px 2px; selection-background-color: #0078D4; }");
+        "QLineEdit { background: white; padding: 1px 2px; "
+        "border: 2px solid #107C10; selection-background-color: #0078D4; }");
 
     // Formula autocomplete
     auto* completer = new QCompleter(s_formulaNames, editor);
@@ -140,6 +149,9 @@ void CellDelegate::setEditorData(QWidget* editor, const QModelIndex& index) cons
     QLineEdit* lineEdit = qobject_cast<QLineEdit*>(editor);
     if (lineEdit) {
         lineEdit->setText(index.data(Qt::EditRole).toString());
+        // Place cursor at end (not selecting all text) — like Excel
+        lineEdit->deselect();
+        lineEdit->setCursorPosition(lineEdit->text().length());
     }
 }
 
@@ -153,6 +165,7 @@ void CellDelegate::setModelData(QWidget* editor, QAbstractItemModel* model,
 
 void CellDelegate::updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option,
                                        const QModelIndex& index) const {
+    // Editor fills the full cell — its own green border replaces the delegate focus border
     editor->setGeometry(option.rect);
 }
 
@@ -218,10 +231,22 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         painter->drawText(textRect, alignment, text);
     }
 
+    // --- Sparkline rendering ---
+    QVariant sparkData = index.data(Qt::UserRole + 15); // SparklineRole
+    if (sparkData.isValid() && sparkData.canConvert<SparklineRenderData>()) {
+        auto rd = sparkData.value<SparklineRenderData>();
+        if (!rd.values.isEmpty()) {
+            QRect sparkRect = rect.adjusted(3, 3, -3, -3);
+            drawSparkline(painter, sparkRect, rd);
+        }
+    }
+
     // --- Gridlines: single thin line on right and bottom edges ---
-    painter->setPen(QPen(QColor(218, 220, 224), 1, Qt::SolidLine));
-    painter->drawLine(rect.right(), rect.top(), rect.right(), rect.bottom());
-    painter->drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom());
+    if (m_showGridlines) {
+        painter->setPen(QPen(QColor(218, 220, 224), 1, Qt::SolidLine));
+        painter->drawLine(rect.right(), rect.top(), rect.right(), rect.bottom());
+        painter->drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom());
+    }
 
     // --- Cell borders (user-defined) ---
     auto drawBorder = [&](const QVariant& borderData, int x1, int y1, int x2, int y2) {
@@ -243,9 +268,10 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
 
     // --- Focus border: green rectangle for the current cell ---
     if (hasFocus) {
+        painter->setClipRect(rect.adjusted(-1, -1, 1, 1)); // expand clip to avoid top/left clipping
         QPen focusPen(QColor(16, 124, 16), 2, Qt::SolidLine);
         painter->setPen(focusPen);
-        painter->drawRect(rect.adjusted(0, 0, -1, -1));
+        painter->drawRect(rect.adjusted(1, 1, -1, -1));
     }
 
     painter->restore();
@@ -254,4 +280,85 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
 QSize CellDelegate::sizeHint(const QStyleOptionViewItem& option,
                              const QModelIndex& index) const {
     return QStyledItemDelegate::sizeHint(option, index);
+}
+
+void CellDelegate::drawSparkline(QPainter* painter, const QRect& rect,
+                                  const SparklineRenderData& data) const {
+    if (data.values.isEmpty() || rect.width() < 4 || rect.height() < 4) return;
+
+    double range = data.maxVal - data.minVal;
+    if (range == 0) range = 1.0;
+    int n = data.values.size();
+
+    switch (data.type) {
+        case SparklineType::Line: {
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            double stepX = static_cast<double>(rect.width()) / qMax(1, n - 1);
+
+            QPainterPath path;
+            for (int i = 0; i < n; ++i) {
+                double x = rect.left() + i * stepX;
+                double y = rect.bottom() - ((data.values[i] - data.minVal) / range) * rect.height();
+                if (i == 0) path.moveTo(x, y);
+                else path.lineTo(x, y);
+            }
+            painter->setPen(QPen(data.lineColor, data.lineWidth));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawPath(path);
+
+            if (data.showHighPoint && data.highIndex >= 0) {
+                double x = rect.left() + data.highIndex * stepX;
+                double y = rect.bottom() - ((data.values[data.highIndex] - data.minVal) / range) * rect.height();
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(data.highPointColor);
+                painter->drawEllipse(QPointF(x, y), 3, 3);
+            }
+            if (data.showLowPoint && data.lowIndex >= 0) {
+                double x = rect.left() + data.lowIndex * stepX;
+                double y = rect.bottom() - ((data.values[data.lowIndex] - data.minVal) / range) * rect.height();
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(data.lowPointColor);
+                painter->drawEllipse(QPointF(x, y), 3, 3);
+            }
+            painter->setRenderHint(QPainter::Antialiasing, false);
+            break;
+        }
+        case SparklineType::Column: {
+            double barW = static_cast<double>(rect.width()) / (n * 1.4);
+            double zeroY = rect.bottom();
+            if (data.minVal < 0) {
+                zeroY = rect.bottom() - ((-data.minVal) / range) * rect.height();
+            }
+            for (int i = 0; i < n; ++i) {
+                double x = rect.left() + i * (static_cast<double>(rect.width()) / n) +
+                           (static_cast<double>(rect.width()) / n - barW) / 2;
+                double barH = (std::abs(data.values[i]) / range) * rect.height();
+                if (data.values[i] >= 0) {
+                    QRectF bar(x, zeroY - barH, barW, barH);
+                    painter->fillRect(bar, data.lineColor);
+                } else {
+                    QRectF bar(x, zeroY, barW, barH);
+                    painter->fillRect(bar, data.negativeColor);
+                }
+            }
+            break;
+        }
+        case SparklineType::WinLoss: {
+            double barW = static_cast<double>(rect.width()) / (n * 1.4);
+            double midY = rect.top() + rect.height() / 2.0;
+            double halfH = rect.height() / 2.0 - 2;
+            for (int i = 0; i < n; ++i) {
+                double x = rect.left() + i * (static_cast<double>(rect.width()) / n) +
+                           (static_cast<double>(rect.width()) / n - barW) / 2;
+                if (data.values[i] > 0) {
+                    QRectF bar(x, midY - halfH, barW, halfH);
+                    painter->fillRect(bar, data.lineColor);
+                } else if (data.values[i] < 0) {
+                    QRectF bar(x, midY, barW, halfH);
+                    painter->fillRect(bar, data.negativeColor);
+                }
+            }
+            break;
+        }
+    }
 }

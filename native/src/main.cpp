@@ -8,9 +8,9 @@
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
 
-    app.setApplicationName("NativeSpreadsheet");
+    app.setApplicationName("Nexel");
     app.setApplicationVersion("1.0.0");
-    app.setApplicationDisplayName("Native Spreadsheet - Excel Alternative");
+    app.setApplicationDisplayName("Nexel");
 
     // Initialize database
     QString appDataPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -25,6 +25,11 @@ int main(int argc, char* argv[]) {
     // Create main window
     MainWindow window;
     window.show();
+
+    // Open file passed as command-line argument
+    if (argc > 1) {
+        window.openFile(QString::fromLocal8Bit(argv[1]));
+    }
 
     return app.exec();
 }

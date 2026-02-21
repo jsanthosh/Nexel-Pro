@@ -5,6 +5,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QCloseEvent>
+#include <QKeyEvent>
 #include <QTabBar>
 #include <QToolButton>
 #include <QJsonArray>
@@ -18,6 +19,12 @@ class Toolbar;
 class FormatCellsDialog;
 class FindReplaceDialog;
 class ChatPanel;
+class ChartWidget;
+class ShapeWidget;
+class ImageWidget;
+class ChartPropertiesPanel;
+class MacroEngine;
+struct TemplateResult;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -25,11 +32,14 @@ class MainWindow : public QMainWindow {
 public:
     MainWindow(QWidget* parent = nullptr);
     ~MainWindow() = default;
+    void openFile(const QString& fileName);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private slots:
     void onNewDocument();
@@ -68,6 +78,34 @@ private slots:
     void onHighlightInvalidCells();
     void onChatActions(const QJsonArray& actions);
 
+    // Chart and Shape insertion
+    void onInsertChart();
+    void onInsertShape();
+    void onEditChart(ChartWidget* chart);
+    void onDeleteChart(ChartWidget* chart);
+    void onEditShape(ShapeWidget* shape);
+    void onDeleteShape(ShapeWidget* shape);
+    void onChartPropertiesRequested(ChartWidget* chart);
+
+    // Image insertion
+    void onInsertImage();
+    void onEditImage(ImageWidget* image);
+    void onDeleteImage(ImageWidget* image);
+
+    // Sparkline insertion
+    void onInsertSparkline();
+
+    // Macros
+    void onMacroEditor();
+    void onRunLastMacro();
+
+    // Pivot table
+    void onCreatePivotTable();
+    void onRefreshPivotTable();
+
+    // Templates
+    void onTemplateGallery();
+
 private:
     void createMenuBar();
     void createToolBar();
@@ -75,7 +113,6 @@ private:
     void createSheetTabBar();
     void connectSignals();
     bool saveCurrentDocument();
-    void openFile(const QString& fileName);
     void setSheets(const std::vector<std::shared_ptr<Spreadsheet>>& sheets);
     void switchToSheet(int index);
     int nextSheetNumber() const;
@@ -91,12 +128,34 @@ private:
     FindReplaceDialog* m_findReplaceDialog = nullptr;
     ChatPanel* m_chatPanel = nullptr;
     QDockWidget* m_chatDock = nullptr;
+    ChartPropertiesPanel* m_chartPropsPanel = nullptr;
+    QDockWidget* m_chartPropsDock = nullptr;
     QString m_currentFilePath;  // Track the file path for Ctrl+S
 
     // Multi-sheet storage
     std::vector<std::shared_ptr<Spreadsheet>> m_sheets;
     int m_activeSheetIndex = 0;
     bool m_frozenPanes = false;
+    QAction* m_gridlinesAction = nullptr;
+
+    // Charts, shapes, and images (flat lists; each widget has "sheetIndex" property)
+    QVector<ChartWidget*> m_charts;
+    QVector<ShapeWidget*> m_shapes;
+    QVector<ImageWidget*> m_images;
+    QMetaObject::Connection m_dataChangedConnection;
+    QMetaObject::Connection m_modelResetConnection;
+    QString getSelectionRange() const;
+    void deleteSelectedOverlays();
+    void deselectAllOverlays();
+    void insertChartFromChat(const QJsonObject& params);
+    void insertShapeFromChat(const QJsonObject& params);
+    void insertImageFromChat(const QJsonObject& params);
+    void reconnectDataChanged();
+    void refreshActiveCharts();
+    void applyTemplate(const TemplateResult& result);
+
+    // Macro engine
+    MacroEngine* m_macroEngine = nullptr;
 };
 
 #endif // MAINWINDOW_H

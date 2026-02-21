@@ -30,6 +30,7 @@ find_package(Qt6 COMPONENTS
     Sql
     Network
     Concurrent
+    Qml
     REQUIRED
 )
 find_package(Qt6CorePrivate QUIET)
@@ -57,6 +58,11 @@ set(CORE_SOURCES
     src/core/FillSeries.cpp
     src/core/FillSeries.h
     src/core/TableStyle.h
+    src/core/PivotEngine.cpp
+    src/core/PivotEngine.h
+    src/core/SparklineConfig.h
+    src/core/MacroEngine.cpp
+    src/core/MacroEngine.h
 )
 
 # Database Sources
@@ -105,6 +111,26 @@ set(UI_SOURCES
     src/ui/DataValidationDialog.h
     src/ui/ChatPanel.cpp
     src/ui/ChatPanel.h
+    src/ui/ChartWidget.cpp
+    src/ui/ChartWidget.h
+    src/ui/ShapeWidget.cpp
+    src/ui/ShapeWidget.h
+    src/ui/ChartDialog.cpp
+    src/ui/ChartDialog.h
+    src/ui/ShapePropertiesDialog.cpp
+    src/ui/ShapePropertiesDialog.h
+    src/ui/ChartPropertiesPanel.cpp
+    src/ui/ChartPropertiesPanel.h
+    src/ui/PivotTableDialog.cpp
+    src/ui/PivotTableDialog.h
+    src/ui/TemplateGallery.cpp
+    src/ui/TemplateGallery.h
+    src/ui/SparklineDialog.cpp
+    src/ui/SparklineDialog.h
+    src/ui/ImageWidget.cpp
+    src/ui/ImageWidget.h
+    src/ui/MacroEditorDialog.cpp
+    src/ui/MacroEditorDialog.h
 )
 
 # Main Application
@@ -130,6 +156,7 @@ target_link_libraries(NativeSpreadsheet
     Qt6::Sql
     Qt6::Network
     Qt6::Concurrent
+    Qt6::Qml
     SQLite::SQLite3
     Threads::Threads
 )
@@ -151,8 +178,8 @@ if(APPLE)
     target_sources(NativeSpreadsheet PRIVATE ${APP_ICON_MACOSX})
     set_target_properties(NativeSpreadsheet PROPERTIES
         MACOSX_BUNDLE TRUE
-        MACOSX_BUNDLE_GUI_IDENTIFIER "com.spreadsheet.native"
-        MACOSX_BUNDLE_BUNDLE_NAME "NativeSpreadsheet"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.nexel.app"
+        MACOSX_BUNDLE_BUNDLE_NAME "Nexel"
         MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
         MACOSX_BUNDLE_ICON_FILE AppIcon.icns
