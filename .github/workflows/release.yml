@@ -1,0 +1,297 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.*'
+          modules: 'qtcharts'
+
+      - name: Install dependencies
+        run: brew install sqlite3
+
+      - name: Configure
+        run: |
+          cd native
+          mkdir -p build
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$Qt6_DIR"
+
+      - name: Build
+        run: cmake --build native/build --config Release -j$(sysctl -n hw.ncpu)
+
+      - name: Install
+        run: cmake --install native/build --prefix native/install
+
+      - name: Bundle Qt frameworks
+        run: macdeployqt native/install/NativeSpreadsheet.app || true
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "Nexel" \
+            -srcfolder native/install/NativeSpreadsheet.app \
+            -ov -format UDZO \
+            Nexel-${{ github.ref_name }}-macOS-arm64.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nexel-macOS-arm64
+          path: Nexel-*.dmg
+
+  build-macos-x64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.*'
+          modules: 'qtcharts'
+
+      - name: Install dependencies
+        run: brew install sqlite3
+
+      - name: Configure
+        run: |
+          cd native
+          mkdir -p build
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$Qt6_DIR"
+
+      - name: Build
+        run: cmake --build native/build --config Release -j$(sysctl -n hw.ncpu)
+
+      - name: Install
+        run: cmake --install native/build --prefix native/install
+
+      - name: Bundle Qt frameworks
+        run: macdeployqt native/install/NativeSpreadsheet.app || true
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "Nexel" \
+            -srcfolder native/install/NativeSpreadsheet.app \
+            -ov -format UDZO \
+            Nexel-${{ github.ref_name }}-macOS-x64.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nexel-macOS-x64
+          path: Nexel-*.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.*'
+          modules: 'qtcharts'
+          arch: 'win64_msvc2019_64'
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install SQLite via vcpkg
+        run: |
+          vcpkg install sqlite3:x64-windows
+          echo "CMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" >> $env:GITHUB_ENV
+
+      - name: Configure
+        run: |
+          cd native
+          mkdir -p build
+          cmake -B build -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:CMAKE_TOOLCHAIN_FILE"
+
+      - name: Build
+        run: cmake --build native/build --config Release -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Install
+        run: cmake --install native/build --prefix native/install --config Release
+
+      - name: Deploy Qt DLLs
+        run: |
+          windeployqt native/install/bin/NativeSpreadsheet.exe --release --no-translations
+
+      - name: Package
+        run: |
+          Compress-Archive -Path native/install/* -DestinationPath Nexel-${{ github.ref_name }}-Windows-x64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nexel-Windows-x64
+          path: Nexel-*.zip
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libsqlite3-dev \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libx11-dev libx11-xcb-dev \
+            libxext-dev libxfixes-dev \
+            libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-cursor-dev \
+            libxcb-glx0-dev libxcb-keysyms1-dev \
+            libxcb-image0-dev libxcb-shm0-dev \
+            libxcb-icccm4-dev libxcb-sync-dev \
+            libxcb-xfixes0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-xinerama0-dev libxcb-xkb-dev \
+            libxkbcommon-x11-dev \
+            libdbus-1-dev \
+            fuse libfuse2
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.*'
+          modules: 'qtcharts'
+
+      - name: Configure
+        run: |
+          cd native
+          mkdir -p build
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$Qt6_DIR" \
+            -DCMAKE_INSTALL_PREFIX=/usr
+
+      - name: Build
+        run: cmake --build native/build --config Release -j$(nproc)
+
+      - name: Install
+        run: DESTDIR=native/AppDir cmake --install native/build
+
+      - name: Create AppImage
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+
+          # Create desktop file
+          mkdir -p native/AppDir/usr/share/applications
+          cat > native/AppDir/usr/share/applications/nexel.desktop << 'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Nexel
+          Comment=High-performance native spreadsheet application
+          Exec=NativeSpreadsheet
+          Icon=nexel
+          Categories=Office;Spreadsheet;
+          DESKTOP
+
+          # Create icon
+          mkdir -p native/AppDir/usr/share/icons/hicolor/256x256/apps
+          # Use a placeholder icon (the app has AppIcon.icns for macOS)
+          convert -size 256x256 xc:"#107C10" -gravity center \
+            -fill white -font Helvetica-Bold -pointsize 80 \
+            -annotate 0 "N" \
+            native/AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png 2>/dev/null || \
+          python3 -c "
+          from PIL import Image, ImageDraw, ImageFont
+          img = Image.new('RGB', (256, 256), '#107C10')
+          d = ImageDraw.Draw(img)
+          d.text((90, 60), 'N', fill='white')
+          img.save('native/AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png')
+          " 2>/dev/null || \
+          # Fallback: create a simple 1x1 PNG
+          printf '\x89PNG\r\n\x1a\n' > native/AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png
+
+          export QMAKE=$Qt6_DIR/bin/qmake
+          export LD_LIBRARY_PATH=$Qt6_DIR/lib:$LD_LIBRARY_PATH
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir native/AppDir \
+            --plugin qt \
+            --output appimage \
+            --desktop-file native/AppDir/usr/share/applications/nexel.desktop || true
+
+          # Rename output
+          mv Nexel-*.AppImage Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage 2>/dev/null || \
+          mv *.AppImage Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage 2>/dev/null || true
+
+      - name: Fallback - Create tar.gz if AppImage fails
+        if: always()
+        run: |
+          if [ ! -f Nexel-*-Linux-*.AppImage ]; then
+            tar -czf Nexel-${{ github.ref_name }}-Linux-x86_64.tar.gz -C native/AppDir usr/
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nexel-Linux-x64
+          path: |
+            Nexel-*-Linux-*
+
+  create-release:
+    needs: [build-macos, build-macos-x64, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Nexel ${{ github.ref_name }}"
+          body: |
+            ## Nexel ${{ github.ref_name }}
+
+            ### Downloads
+            | Platform | File |
+            |----------|------|
+            | macOS (Apple Silicon) | `Nexel-${{ github.ref_name }}-macOS-arm64.dmg` |
+            | macOS (Intel) | `Nexel-${{ github.ref_name }}-macOS-x64.dmg` |
+            | Windows (64-bit) | `Nexel-${{ github.ref_name }}-Windows-x64.zip` |
+            | Linux (64-bit) | `Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage` |
+
+            ### What's New in v2.0.0
+            - Formula editing stays in edit mode when selecting cell ranges
+            - Auto-complete unmatched parentheses in formulas
+            - Cursor placed at end (no text selection) when editing cells
+            - Enter key in formula bar commits and moves down
+            - Sheet-level conditional formatting manager with add/edit/delete
+            - Macro recording for cell edits and style operations
+            - Delete key deletes focused chart/image/shape overlays
+            - Text rotation toolbar (angled, vertical, rotated)
+          files: |
+            artifacts/**/*
+          draft: false
+          prerelease: false
