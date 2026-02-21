@@ -295,7 +295,8 @@ jobs:
             | Windows (64-bit) | `Nexel-${{ github.ref_name }}-Windows-x64.zip` |
             | Linux (64-bit) | `Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage` |
 
-            ### What's New in v2.0.0
+            ### What's New
+            - Fix macOS app launch crash (missing rpath for bundled Qt frameworks)
             - Formula editing stays in edit mode when selecting cell ranges
             - Auto-complete unmatched parentheses in formulas
             - Cursor placed at end (no text selection) when editing cells
