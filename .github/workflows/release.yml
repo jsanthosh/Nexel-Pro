@@ -40,10 +40,16 @@ jobs:
       - name: Bundle Qt frameworks
         run: macdeployqt native/install/NativeSpreadsheet.app || true
 
+      - name: Code sign
+        run: codesign --force --deep -s - native/install/NativeSpreadsheet.app
+
       - name: Create DMG
         run: |
+          mkdir -p /tmp/nexel-dmg
+          cp -R native/install/NativeSpreadsheet.app /tmp/nexel-dmg/Nexel.app
+          ln -s /Applications /tmp/nexel-dmg/Applications
           hdiutil create -volname "Nexel" \
-            -srcfolder native/install/NativeSpreadsheet.app \
+            -srcfolder /tmp/nexel-dmg \
             -ov -format UDZO \
             Nexel-${{ github.ref_name }}-macOS-arm64.dmg
 
@@ -84,10 +90,16 @@ jobs:
       - name: Bundle Qt frameworks
         run: macdeployqt native/install/NativeSpreadsheet.app || true
 
+      - name: Code sign
+        run: codesign --force --deep -s - native/install/NativeSpreadsheet.app
+
       - name: Create DMG
         run: |
+          mkdir -p /tmp/nexel-dmg
+          cp -R native/install/NativeSpreadsheet.app /tmp/nexel-dmg/Nexel.app
+          ln -s /Applications /tmp/nexel-dmg/Applications
           hdiutil create -volname "Nexel" \
-            -srcfolder native/install/NativeSpreadsheet.app \
+            -srcfolder /tmp/nexel-dmg \
             -ov -format UDZO \
             Nexel-${{ github.ref_name }}-macOS-x64.dmg
 
