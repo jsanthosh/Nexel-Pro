@@ -63,6 +63,62 @@ private:
     std::vector<CellSnapshot> m_after;
 };
 
+// Insert row(s) — undo deletes, redo inserts
+class InsertRowCommand : public UndoCommand {
+public:
+    InsertRowCommand(int row, int count = 1) : m_row(row), m_count(count) {}
+    void undo(Spreadsheet* sheet) override;
+    void redo(Spreadsheet* sheet) override;
+    QString description() const override { return "Insert Row"; }
+    CellAddress targetCell() const override { return CellAddress(m_row, 0); }
+private:
+    int m_row;
+    int m_count;
+};
+
+// Insert column(s) — undo deletes, redo inserts
+class InsertColumnCommand : public UndoCommand {
+public:
+    InsertColumnCommand(int col, int count = 1) : m_col(col), m_count(count) {}
+    void undo(Spreadsheet* sheet) override;
+    void redo(Spreadsheet* sheet) override;
+    QString description() const override { return "Insert Column"; }
+    CellAddress targetCell() const override { return CellAddress(0, m_col); }
+private:
+    int m_col;
+    int m_count;
+};
+
+// Delete row(s) — saves deleted cells for undo restore
+class DeleteRowCommand : public UndoCommand {
+public:
+    DeleteRowCommand(int row, int count, const std::vector<CellSnapshot>& deleted)
+        : m_row(row), m_count(count), m_deleted(deleted) {}
+    void undo(Spreadsheet* sheet) override;
+    void redo(Spreadsheet* sheet) override;
+    QString description() const override { return "Delete Row"; }
+    CellAddress targetCell() const override { return CellAddress(m_row, 0); }
+private:
+    int m_row;
+    int m_count;
+    std::vector<CellSnapshot> m_deleted;
+};
+
+// Delete column(s) — saves deleted cells for undo restore
+class DeleteColumnCommand : public UndoCommand {
+public:
+    DeleteColumnCommand(int col, int count, const std::vector<CellSnapshot>& deleted)
+        : m_col(col), m_count(count), m_deleted(deleted) {}
+    void undo(Spreadsheet* sheet) override;
+    void redo(Spreadsheet* sheet) override;
+    QString description() const override { return "Delete Column"; }
+    CellAddress targetCell() const override { return CellAddress(0, m_col); }
+private:
+    int m_col;
+    int m_count;
+    std::vector<CellSnapshot> m_deleted;
+};
+
 class UndoManager {
 public:
     UndoManager() = default;

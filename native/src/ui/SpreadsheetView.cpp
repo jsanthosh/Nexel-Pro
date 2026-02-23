@@ -1239,7 +1239,6 @@ void SpreadsheetView::insertEntireRow() {
     QModelIndex current = currentIndex();
     if (!current.isValid()) return;
 
-    // Get all selected rows
     QSet<int> rows;
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty()) {
@@ -1254,7 +1253,8 @@ void SpreadsheetView::insertEntireRow() {
     QList<int> sortedRows(rows.begin(), rows.end());
     std::sort(sortedRows.rbegin(), sortedRows.rend());
     for (int row : sortedRows) {
-        m_spreadsheet->insertRow(row);
+        m_spreadsheet->getUndoManager().execute(
+            std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
     }
     refreshView();
 }
@@ -1277,7 +1277,8 @@ void SpreadsheetView::insertEntireColumn() {
     QList<int> sortedCols(cols.begin(), cols.end());
     std::sort(sortedCols.rbegin(), sortedCols.rend());
     for (int col : sortedCols) {
-        m_spreadsheet->insertColumn(col);
+        m_spreadsheet->getUndoManager().execute(
+            std::make_unique<InsertColumnCommand>(col, 1), m_spreadsheet.get());
     }
     refreshView();
 }
@@ -1339,7 +1340,17 @@ void SpreadsheetView::deleteEntireRow() {
     QList<int> sortedRows(rows.begin(), rows.end());
     std::sort(sortedRows.rbegin(), sortedRows.rend());
     for (int row : sortedRows) {
-        m_spreadsheet->deleteRow(row);
+        // Snapshot cells in this row before deleting
+        std::vector<CellSnapshot> deleted;
+        int maxCol = m_spreadsheet->getMaxColumn();
+        for (int c = 0; c <= maxCol; ++c) {
+            auto cell = m_spreadsheet->getCellIfExists(row, c);
+            if (cell) {
+                deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(row, c)));
+            }
+        }
+        m_spreadsheet->getUndoManager().execute(
+            std::make_unique<DeleteRowCommand>(row, 1, deleted), m_spreadsheet.get());
     }
     refreshView();
 }
@@ -1362,7 +1373,17 @@ void SpreadsheetView::deleteEntireColumn() {
     QList<int> sortedCols(cols.begin(), cols.end());
     std::sort(sortedCols.rbegin(), sortedCols.rend());
     for (int col : sortedCols) {
-        m_spreadsheet->deleteColumn(col);
+        // Snapshot cells in this column before deleting
+        std::vector<CellSnapshot> deleted;
+        int maxRow = m_spreadsheet->getMaxRow();
+        for (int r = 0; r <= maxRow; ++r) {
+            auto cell = m_spreadsheet->getCellIfExists(r, col);
+            if (cell) {
+                deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(r, col)));
+            }
+        }
+        m_spreadsheet->getUndoManager().execute(
+            std::make_unique<DeleteColumnCommand>(col, 1, deleted), m_spreadsheet.get());
     }
     refreshView();
 }

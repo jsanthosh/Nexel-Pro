@@ -75,6 +75,48 @@ void StyleChangeCommand::redo(Spreadsheet* sheet) {
     }
 }
 
+// InsertRowCommand
+void InsertRowCommand::undo(Spreadsheet* sheet) {
+    sheet->deleteRow(m_row, m_count);
+}
+void InsertRowCommand::redo(Spreadsheet* sheet) {
+    sheet->insertRow(m_row, m_count);
+}
+
+// InsertColumnCommand
+void InsertColumnCommand::undo(Spreadsheet* sheet) {
+    sheet->deleteColumn(m_col, m_count);
+}
+void InsertColumnCommand::redo(Spreadsheet* sheet) {
+    sheet->insertColumn(m_col, m_count);
+}
+
+// DeleteRowCommand
+void DeleteRowCommand::undo(Spreadsheet* sheet) {
+    sheet->setAutoRecalculate(false);
+    sheet->insertRow(m_row, m_count);
+    for (const auto& snap : m_deleted) {
+        restoreCell(sheet, snap);
+    }
+    sheet->setAutoRecalculate(true);
+}
+void DeleteRowCommand::redo(Spreadsheet* sheet) {
+    sheet->deleteRow(m_row, m_count);
+}
+
+// DeleteColumnCommand
+void DeleteColumnCommand::undo(Spreadsheet* sheet) {
+    sheet->setAutoRecalculate(false);
+    sheet->insertColumn(m_col, m_count);
+    for (const auto& snap : m_deleted) {
+        restoreCell(sheet, snap);
+    }
+    sheet->setAutoRecalculate(true);
+}
+void DeleteColumnCommand::redo(Spreadsheet* sheet) {
+    sheet->deleteColumn(m_col, m_count);
+}
+
 // UndoManager
 void UndoManager::execute(std::unique_ptr<UndoCommand> cmd, Spreadsheet* sheet) {
     cmd->redo(sheet);
