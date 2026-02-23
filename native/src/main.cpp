@@ -9,7 +9,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
 
     app.setApplicationName("Nexel");
-    app.setApplicationVersion("3.0.0");
+    app.setApplicationVersion("4.0.0");
     app.setApplicationDisplayName("Nexel");
 
     // Initialize database
