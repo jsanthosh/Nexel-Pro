@@ -402,11 +402,28 @@ void ChartPropertiesPanel::applyToChart() {
     cfg.title = m_titleEdit->text();
     cfg.xAxisTitle = m_xAxisEdit->text();
     cfg.yAxisTitle = m_yAxisEdit->text();
-    cfg.themeIndex = m_themeCombo->currentIndex();
+    int newTheme = m_themeCombo->currentIndex();
+    bool themeChanged = (newTheme != cfg.themeIndex);
+    cfg.themeIndex = newTheme;
     cfg.showLegend = m_legendCheck->isChecked();
     cfg.showGridLines = m_gridCheck->isChecked();
 
+    // When theme changes, re-apply theme colors to all series
+    if (themeChanged) {
+        auto colors = ChartWidget::themeColors(newTheme);
+        for (int i = 0; i < cfg.series.size(); ++i) {
+            cfg.series[i].color = colors[i % colors.size()];
+        }
+    }
+
     m_chart->setConfig(cfg);
+
+    // Rebuild series color swatches to reflect new colors
+    if (themeChanged) {
+        m_updating = true;
+        rebuildSeriesSection();
+        m_updating = false;
+    }
 }
 
 void ChartPropertiesPanel::onPropertyChanged() {
