@@ -179,13 +179,23 @@ void SpreadsheetView::setupHeaderContextMenus() {
         int col = horizontalHeader()->logicalIndexAt(pos);
         menu.addAction("Insert Column", [this, col]() {
             if (m_spreadsheet) {
-                m_spreadsheet->insertColumn(col);
+                m_spreadsheet->getUndoManager().execute(
+                    std::make_unique<InsertColumnCommand>(col, 1), m_spreadsheet.get());
                 refreshView();
             }
         });
         menu.addAction("Delete Column", [this, col]() {
             if (m_spreadsheet) {
-                m_spreadsheet->deleteColumn(col);
+                std::vector<CellSnapshot> deleted;
+                int maxRow = m_spreadsheet->getMaxRow();
+                for (int r = 0; r <= maxRow; ++r) {
+                    auto cell = m_spreadsheet->getCellIfExists(r, col);
+                    if (cell) {
+                        deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(r, col)));
+                    }
+                }
+                m_spreadsheet->getUndoManager().execute(
+                    std::make_unique<DeleteColumnCommand>(col, 1, deleted), m_spreadsheet.get());
                 refreshView();
             }
         });
@@ -201,13 +211,23 @@ void SpreadsheetView::setupHeaderContextMenus() {
         int row = verticalHeader()->logicalIndexAt(pos);
         menu.addAction("Insert Row", [this, row]() {
             if (m_spreadsheet) {
-                m_spreadsheet->insertRow(row);
+                m_spreadsheet->getUndoManager().execute(
+                    std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
                 refreshView();
             }
         });
         menu.addAction("Delete Row", [this, row]() {
             if (m_spreadsheet) {
-                m_spreadsheet->deleteRow(row);
+                std::vector<CellSnapshot> deleted;
+                int maxCol = m_spreadsheet->getMaxColumn();
+                for (int c = 0; c <= maxCol; ++c) {
+                    auto cell = m_spreadsheet->getCellIfExists(row, c);
+                    if (cell) {
+                        deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(row, c)));
+                    }
+                }
+                m_spreadsheet->getUndoManager().execute(
+                    std::make_unique<DeleteRowCommand>(row, 1, deleted), m_spreadsheet.get());
                 refreshView();
             }
         });
