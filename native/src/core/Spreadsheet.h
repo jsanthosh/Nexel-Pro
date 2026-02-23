@@ -24,6 +24,9 @@ public:
     Spreadsheet();
     ~Spreadsheet();
 
+    // Callback for formula cells that were recalculated as dependents
+    std::function<void(const std::vector<CellAddress>&)> onDependentsRecalculated;
+
     // Cell access and modification
     std::shared_ptr<Cell> getCell(const CellAddress& addr);
     std::shared_ptr<Cell> getCell(int row, int col);

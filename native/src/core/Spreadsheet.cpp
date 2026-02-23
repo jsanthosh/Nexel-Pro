@@ -297,11 +297,16 @@ void Spreadsheet::updateDependencies(const CellAddress& addr) {
 
 void Spreadsheet::recalculateDependents(const CellAddress& addr) {
     auto order = m_depGraph.getRecalcOrder(addr);
+    std::vector<CellAddress> recalculated;
     for (const auto& depAddr : order) {
         auto cell = getCellIfExists(depAddr);
         if (cell && cell->getType() == CellType::Formula) {
             cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
+            recalculated.push_back(depAddr);
         }
+    }
+    if (!recalculated.empty() && onDependentsRecalculated) {
+        onDependentsRecalculated(recalculated);
     }
 }
 

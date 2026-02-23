@@ -43,6 +43,15 @@ struct ChartConfig {
     bool showGridLines = true;
     int themeIndex = 0;    // 0=Excel, 1=Material, 2=Solarized, 3=Dark, 4=Mono, 5=Pastel
     QVector<ChartSeries> series;
+
+    // Title formatting
+    bool titleBold = true;
+    bool titleItalic = false;
+    QColor titleColor = QColor("#333333");
+    QColor backgroundColor = Qt::white;
+
+    // Series visibility (empty = all visible)
+    QVector<bool> seriesVisible;
 };
 
 class ChartWidget : public QWidget {
@@ -69,6 +78,10 @@ public:
     // Selection state
     bool isSelected() const { return m_selected; }
     void setSelected(bool selected);
+
+    // Series visibility
+    bool isSeriesVisible(int index) const;
+    void toggleSeriesVisibility(int index);
 
 signals:
     void chartSelected(ChartWidget* chart);
@@ -114,6 +127,11 @@ private:
     enum ResizeHandle { None, TopLeft, TopRight, BottomLeft, BottomRight, Top, Bottom, Left, Right };
     ResizeHandle hitTestHandle(const QPoint& pos) const;
     void updateCursorForHandle(ResizeHandle handle);
+
+    // Legend hit testing
+    struct LegendItem { QRect rect; int seriesIndex; };
+    QVector<LegendItem> m_legendItems;
+    int legendHitTest(const QPoint& pos) const;
 
     ChartConfig m_config;
     std::shared_ptr<Spreadsheet> m_spreadsheet;

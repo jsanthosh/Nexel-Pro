@@ -11,21 +11,43 @@ const CellStyle& Cell::defaultStyle() {
 }
 
 void Cell::setValue(const QVariant& value) {
-    if (m_value != value) {
-        m_value = value;
-        m_dirty = true;
-
-        // Detect type
-        if (value.isNull() || !value.isValid()) {
+    // Detect type
+    if (value.isNull() || !value.isValid()) {
+        if (m_type != CellType::Empty) {
+            m_value = value;
             m_type = CellType::Empty;
-        } else if (value.type() == QVariant::Bool) {
-            m_type = CellType::Boolean;
-        } else if (value.type() == QVariant::Int || value.type() == QVariant::Double) {
-            m_type = CellType::Number;
-        } else if (value.type() == QVariant::Date || value.type() == QVariant::DateTime) {
-            m_type = CellType::Date;
+            m_dirty = true;
+        }
+    } else if (value.type() == QVariant::Bool) {
+        m_value = value;
+        m_type = CellType::Boolean;
+        m_dirty = true;
+    } else if (value.type() == QVariant::Int || value.type() == QVariant::Double) {
+        m_value = value;
+        m_type = CellType::Number;
+        m_dirty = true;
+    } else if (value.type() == QVariant::Date || value.type() == QVariant::DateTime) {
+        m_value = value;
+        m_type = CellType::Date;
+        m_dirty = true;
+    } else {
+        // String value — auto-detect numbers (like Excel)
+        QString str = value.toString();
+        if (str.isEmpty()) {
+            m_value = value;
+            m_type = CellType::Empty;
+            m_dirty = true;
         } else {
-            m_type = CellType::Text;
+            bool ok;
+            double num = str.toDouble(&ok);
+            if (ok) {
+                m_value = QVariant(num);
+                m_type = CellType::Number;
+            } else {
+                m_value = value;
+                m_type = CellType::Text;
+            }
+            m_dirty = true;
         }
     }
 }

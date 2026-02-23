@@ -1,10 +1,12 @@
 #include "ChartWidget.h"
+#include "MainWindow.h"
 #include "../core/Spreadsheet.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QApplication>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -62,6 +64,41 @@ void ChartWidget::setSpreadsheet(std::shared_ptr<Spreadsheet> sheet) {
 void ChartWidget::setSelected(bool selected) {
     m_selected = selected;
     update();
+}
+
+bool ChartWidget::isSeriesVisible(int index) const {
+    // For pie/donut, index refers to data points (slices), not series
+    bool isPieType = (m_config.type == ChartType::Pie || m_config.type == ChartType::Donut);
+    int count = isPieType
+        ? (m_config.series.isEmpty() ? 0 : m_config.series[0].yValues.size())
+        : m_config.series.size();
+    if (index < 0 || index >= count) return false;
+    if (m_config.seriesVisible.isEmpty()) return true;
+    if (index >= m_config.seriesVisible.size()) return true;
+    return m_config.seriesVisible[index];
+}
+
+void ChartWidget::toggleSeriesVisibility(int index) {
+    bool isPieType = (m_config.type == ChartType::Pie || m_config.type == ChartType::Donut);
+    int count = isPieType
+        ? (m_config.series.isEmpty() ? 0 : m_config.series[0].yValues.size())
+        : m_config.series.size();
+    if (index < 0 || index >= count) return;
+    if (m_config.seriesVisible.isEmpty()) {
+        m_config.seriesVisible.fill(true, count);
+    }
+    while (m_config.seriesVisible.size() < count) {
+        m_config.seriesVisible.append(true);
+    }
+    m_config.seriesVisible[index] = !m_config.seriesVisible[index];
+    update();
+}
+
+int ChartWidget::legendHitTest(const QPoint& pos) const {
+    for (const auto& item : m_legendItems) {
+        if (item.rect.contains(pos)) return item.seriesIndex;
+    }
+    return -1;
 }
 
 QVector<QColor> ChartWidget::getThemeColors() const {
@@ -218,8 +255,9 @@ void ChartWidget::computeAxisRange(double& minVal, double& maxVal, double& step)
     maxVal = 100;
 
     bool first = true;
-    for (const auto& s : m_config.series) {
-        for (double v : s.yValues) {
+    for (int si = 0; si < m_config.series.size(); ++si) {
+        if (!isSeriesVisible(si)) continue;
+        for (double v : m_config.series[si].yValues) {
             if (first) {
                 minVal = maxVal = v;
                 first = false;
@@ -386,8 +424,8 @@ void ChartWidget::drawChartBackground(QPainter& p, const QRect& area) {
     p.setBrush(QColor(0, 0, 0, 10));
     p.drawRoundedRect(area.adjusted(2, 2, 2, 2), 12, 12);
 
-    // White background with rounded corners
-    p.setBrush(Qt::white);
+    // Background with rounded corners
+    p.setBrush(m_config.backgroundColor);
     p.setPen(QPen(QColor("#D0D5DD"), 1));
     p.drawRoundedRect(area.adjusted(0, 0, -1, -1), 12, 12);
 
@@ -399,8 +437,10 @@ void ChartWidget::drawChartBackground(QPainter& p, const QRect& area) {
 
 void ChartWidget::drawTitle(QPainter& p, const QRect& area) {
     if (m_config.title.isEmpty()) return;
-    p.setPen(QColor("#333"));
-    p.setFont(QFont("Arial", 13, QFont::Bold));
+    p.setPen(m_config.titleColor);
+    QFont titleFont("Arial", 13, m_config.titleBold ? QFont::Bold : QFont::Normal);
+    titleFont.setItalic(m_config.titleItalic);
+    p.setFont(titleFont);
     p.drawText(QRect(area.left() + 10, 5, area.width() - 20, TITLE_HEIGHT),
                Qt::AlignCenter | Qt::AlignVCenter, m_config.title);
 }
@@ -484,26 +524,114 @@ void ChartWidget::drawGridLines(QPainter& p, const QRect& plotArea) {
 void ChartWidget::drawLegend(QPainter& p, const QRect& area) {
     if (m_config.series.isEmpty()) return;
 
-    p.setFont(QFont("Arial", 9));
+    m_legendItems.clear();
+    QFont baseFont("Arial", 9);
+    p.setFont(baseFont);
     int y = area.bottom() - LEGEND_HEIGHT;
     int totalWidth = 0;
 
+    // For pie/donut: show per-slice legend items using category labels
+    bool isPieType = (m_config.type == ChartType::Pie || m_config.type == ChartType::Donut);
+    if (isPieType && !m_config.series.isEmpty()) {
+        const auto& s = m_config.series[0];
+        auto colors = getThemeColors();
+        int count = s.yValues.size();
+
+        // Read category labels from spreadsheet column A
+        QStringList sliceLabels;
+        if (m_spreadsheet && !m_config.dataRange.isEmpty()) {
+            QStringList parts = m_config.dataRange.split(':');
+            if (parts.size() == 2) {
+                int sr, sc, er, ec;
+                // Inline parse — first column cells are labels
+                auto parseRef = [](const QString& ref, int& row, int& col) {
+                    QString r = ref.trimmed().toUpper();
+                    col = 0; int i = 0;
+                    while (i < r.size() && r[i].isLetter()) col = col * 26 + (r[i++].unicode() - 'A');
+                    row = r.mid(i).toInt() - 1;
+                };
+                parseRef(parts[0], sr, sc);
+                parseRef(parts[1], er, ec);
+                if (sr > er) std::swap(sr, er);
+                for (int r = sr + 1; r <= er && sliceLabels.size() < count; ++r) {
+                    auto val = m_spreadsheet->getCellValue(CellAddress(r, sc));
+                    sliceLabels.append(val.toString());
+                }
+            }
+        }
+
+        // Measure total width
+        for (int i = 0; i < count; ++i) {
+            QString label = (i < sliceLabels.size() && !sliceLabels[i].isEmpty())
+                ? sliceLabels[i] : QString("Slice %1").arg(i + 1);
+            totalWidth += 14 + p.fontMetrics().horizontalAdvance(label) + 16;
+        }
+
+        int x = (area.width() - totalWidth) / 2;
+
+        for (int i = 0; i < count; ++i) {
+            QString label = (i < sliceLabels.size() && !sliceLabels[i].isEmpty())
+                ? sliceLabels[i] : QString("Slice %1").arg(i + 1);
+
+            bool visible = isSeriesVisible(i);
+            int itemStartX = x;
+
+            p.setPen(Qt::NoPen);
+            p.setBrush(visible ? colors[i % colors.size()] : QColor("#C0C0C0"));
+            p.drawRoundedRect(x, y + 4, 10, 10, 2, 2);
+            x += 14;
+
+            QFont legendFont("Arial", 9);
+            legendFont.setStrikeOut(!visible);
+            p.setFont(legendFont);
+            p.setPen(visible ? QColor("#555") : QColor("#AAAAAA"));
+            p.drawText(x, y + 13, label);
+            int nameWidth = p.fontMetrics().horizontalAdvance(label);
+            x += nameWidth + 16;
+
+            LegendItem item;
+            item.rect = QRect(itemStartX - 2, y, x - itemStartX + 4, LEGEND_HEIGHT);
+            item.seriesIndex = i;  // For pie/donut, this is the slice index
+            m_legendItems.append(item);
+        }
+        p.setFont(baseFont);
+        return;
+    }
+
+    // Normal series-based legend
     for (const auto& s : m_config.series) {
         totalWidth += 14 + p.fontMetrics().horizontalAdvance(s.name) + 16;
     }
 
     int x = (area.width() - totalWidth) / 2;
 
-    for (const auto& s : m_config.series) {
+    for (int i = 0; i < m_config.series.size(); ++i) {
+        const auto& s = m_config.series[i];
+        bool visible = isSeriesVisible(i);
+        int itemStartX = x;
+
+        // Color swatch
         p.setPen(Qt::NoPen);
-        p.setBrush(s.color);
+        p.setBrush(visible ? s.color : QColor("#C0C0C0"));
         p.drawRoundedRect(x, y + 4, 10, 10, 2, 2);
         x += 14;
 
-        p.setPen(QColor("#555"));
+        // Series name (strikethrough if hidden)
+        QFont legendFont("Arial", 9);
+        legendFont.setStrikeOut(!visible);
+        p.setFont(legendFont);
+        p.setPen(visible ? QColor("#555") : QColor("#AAAAAA"));
         p.drawText(x, y + 13, s.name);
-        x += p.fontMetrics().horizontalAdvance(s.name) + 16;
+        int nameWidth = p.fontMetrics().horizontalAdvance(s.name);
+        x += nameWidth + 16;
+
+        // Store bounding rect for hit testing
+        LegendItem item;
+        item.rect = QRect(itemStartX - 2, y, x - itemStartX + 4, LEGEND_HEIGHT);
+        item.seriesIndex = i;
+        m_legendItems.append(item);
     }
+    p.setFont(baseFont);
 }
 
 void ChartWidget::drawSelectionHandles(QPainter& p) {
@@ -543,7 +671,9 @@ void ChartWidget::drawLineChart(QPainter& p, const QRect& plotArea) {
     p.save();
     p.setClipRect(QRect(plotArea.left(), plotArea.top() - 10, clipW + 10, plotArea.height() + 20));
 
-    for (const auto& s : m_config.series) {
+    for (int si = 0; si < m_config.series.size(); ++si) {
+        if (!isSeriesVisible(si)) continue;
+        const auto& s = m_config.series[si];
         if (s.yValues.isEmpty()) continue;
 
         QPainterPath path;
@@ -596,6 +726,7 @@ void ChartWidget::drawColumnChart(QPainter& p, const QRect& plotArea) {
     double gap = groupWidth * 0.15;
 
     for (int si = 0; si < numSeries; ++si) {
+        if (!isSeriesVisible(si)) continue;
         const auto& s = m_config.series[si];
         for (int i = 0; i < qMin(numPoints, s.yValues.size()); ++i) {
             double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
@@ -630,6 +761,7 @@ void ChartWidget::drawBarChart(QPainter& p, const QRect& plotArea) {
     double gap = groupHeight * 0.15;
 
     for (int si = 0; si < numSeries; ++si) {
+        if (!isSeriesVisible(si)) continue;
         const auto& s = m_config.series[si];
         for (int i = 0; i < qMin(numPoints, s.yValues.size()); ++i) {
             double xFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
@@ -658,8 +790,9 @@ void ChartWidget::drawScatterChart(QPainter& p, const QRect& plotArea) {
     // Compute X range
     double xMin = 0, xMax = 1;
     bool first = true;
-    for (const auto& s : m_config.series) {
-        for (double v : s.xValues) {
+    for (int si = 0; si < m_config.series.size(); ++si) {
+        if (!isSeriesVisible(si)) continue;
+        for (double v : m_config.series[si].xValues) {
             if (first) { xMin = xMax = v; first = false; }
             else { xMin = qMin(xMin, v); xMax = qMax(xMax, v); }
         }
@@ -668,7 +801,9 @@ void ChartWidget::drawScatterChart(QPainter& p, const QRect& plotArea) {
 
     int pointRadius = qMax(1, static_cast<int>(5 * m_animProgress));
 
-    for (const auto& s : m_config.series) {
+    for (int si = 0; si < m_config.series.size(); ++si) {
+        if (!isSeriesVisible(si)) continue;
+        const auto& s = m_config.series[si];
         QColor c = s.color;
         c.setAlphaF(m_animProgress);
         p.setPen(QPen(s.color.darker(110), 1.5));
@@ -694,7 +829,9 @@ void ChartWidget::drawPieChart(QPainter& p, const QRect& plotArea) {
 
     const auto& s = m_config.series[0];
     double total = 0;
-    for (double v : s.yValues) total += qMax(0.0, v);
+    for (int i = 0; i < s.yValues.size(); ++i) {
+        if (isSeriesVisible(i)) total += qMax(0.0, s.yValues[i]);
+    }
     if (total <= 0) return;
 
     auto colors = getThemeColors();
@@ -703,6 +840,7 @@ void ChartWidget::drawPieChart(QPainter& p, const QRect& plotArea) {
 
     int startAngle = 90 * 16; // Start from top
     for (int i = 0; i < s.yValues.size(); ++i) {
+        if (!isSeriesVisible(i)) continue;
         double frac = qMax(0.0, s.yValues[i]) / total;
         int spanAngle = static_cast<int>(frac * 360 * 16 * m_animProgress);
 
@@ -742,6 +880,7 @@ void ChartWidget::drawAreaChart(QPainter& p, const QRect& plotArea) {
     computeAxisRange(minVal, maxVal, step);
 
     for (int si = m_config.series.size() - 1; si >= 0; --si) {
+        if (!isSeriesVisible(si)) continue;
         const auto& s = m_config.series[si];
         if (s.yValues.isEmpty()) continue;
 
@@ -790,7 +929,9 @@ void ChartWidget::drawDonutChart(QPainter& p, const QRect& plotArea) {
 
     const auto& s = m_config.series[0];
     double total = 0;
-    for (double v : s.yValues) total += qMax(0.0, v);
+    for (int i = 0; i < s.yValues.size(); ++i) {
+        if (isSeriesVisible(i)) total += qMax(0.0, s.yValues[i]);
+    }
     if (total <= 0) return;
 
     auto colors = getThemeColors();
@@ -802,6 +943,7 @@ void ChartWidget::drawDonutChart(QPainter& p, const QRect& plotArea) {
 
     int startAngle = 90 * 16;
     for (int i = 0; i < s.yValues.size(); ++i) {
+        if (!isSeriesVisible(i)) continue;
         double frac = qMax(0.0, s.yValues[i]) / total;
         int spanAngle = static_cast<int>(frac * 360 * 16 * m_animProgress);
 
@@ -855,6 +997,16 @@ void ChartWidget::updateCursorForHandle(ResizeHandle handle) {
 
 void ChartWidget::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        // Check legend click first (before drag/select)
+        if (m_config.showLegend) {
+            int legendIdx = legendHitTest(event->pos());
+            if (legendIdx >= 0) {
+                toggleSeriesVisibility(legendIdx);
+                event->accept();
+                return;
+            }
+        }
+
         setSelected(true);
         emit chartSelected(this);
 
@@ -916,10 +1068,24 @@ void ChartWidget::mouseMoveEvent(QMouseEvent* event) {
             newPos.setX(qBound(0, newPos.x(), parentWidget()->width() - width()));
             newPos.setY(qBound(0, newPos.y(), parentWidget()->height() - height()));
         }
+        QPoint delta = newPos - pos();
         move(newPos);
+        // Group-aware drag: move siblings by same delta
+        int gid = property("overlayGroupId").toInt();
+        if (gid > 0 && parentWidget()) {
+            for (QWidget* sibling : parentWidget()->findChildren<QWidget*>()) {
+                if (sibling != this && sibling->property("overlayGroupId").toInt() == gid)
+                    sibling->move(sibling->pos() + delta);
+            }
+        }
         emit chartMoved(this);
     } else {
-        updateCursorForHandle(hitTestHandle(event->pos()));
+        // Show pointing hand cursor over legend items
+        if (m_config.showLegend && legendHitTest(event->pos()) >= 0) {
+            setCursor(Qt::PointingHandCursor);
+        } else {
+            updateCursorForHandle(hitTestHandle(event->pos()));
+        }
     }
 }
 
@@ -945,6 +1111,28 @@ void ChartWidget::contextMenuEvent(QContextMenuEvent* event) {
 
     menu.addAction("Edit Chart...", this, [this]() { emit propertiesRequested(this); });
     menu.addAction("Refresh Data", this, [this]() { refreshData(); });
+    menu.addSeparator();
+
+    // Order submenu
+    QMenu* orderMenu = menu.addMenu("Order");
+    orderMenu->setStyleSheet(menu.styleSheet());
+    auto* mw = qobject_cast<MainWindow*>(window());
+    if (mw) {
+        orderMenu->addAction("Bring to Front", this, [mw, this]() { mw->bringToFront(this); });
+        orderMenu->addAction("Send to Back", this, [mw, this]() { mw->sendToBack(this); });
+        orderMenu->addAction("Bring Forward", this, [mw, this]() { mw->bringForward(this); });
+        orderMenu->addAction("Send Backward", this, [mw, this]() { mw->sendBackward(this); });
+    }
+
+    // Group / Ungroup
+    if (mw) {
+        menu.addSeparator();
+        if (mw->selectedOverlays().size() >= 2)
+            menu.addAction("Group", mw, &MainWindow::groupSelectedOverlays);
+        if (mw->findGroupContaining(this))
+            menu.addAction("Ungroup", mw, &MainWindow::ungroupSelectedOverlays);
+    }
+
     menu.addSeparator();
     menu.addAction("Delete Chart", this, [this]() { emit deleteRequested(this); });
 

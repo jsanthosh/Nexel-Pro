@@ -687,12 +687,13 @@ void Toolbar::createActions() {
     addWidget(newBtn);
     connect(newBtn, &QToolButton::clicked, this, &Toolbar::newDocument);
 
-    QToolButton* saveBtn = new QToolButton(this);
-    saveBtn->setIcon(createSaveIcon());
-    saveBtn->setToolTip("Save Document (Ctrl+S)");
-    saveBtn->setFixedSize(30, 28);
-    addWidget(saveBtn);
-    connect(saveBtn, &QToolButton::clicked, this, &Toolbar::saveDocument);
+    m_saveBtn = new QToolButton(this);
+    m_saveBtn->setIcon(createSaveIcon());
+    m_saveBtn->setToolTip("Save Document (Ctrl+S)");
+    m_saveBtn->setFixedSize(30, 28);
+    m_saveBtn->setEnabled(false); // Disabled by default (no unsaved changes)
+    addWidget(m_saveBtn);
+    connect(m_saveBtn, &QToolButton::clicked, this, &Toolbar::saveDocument);
 
     addSeparator();
 
@@ -865,6 +866,10 @@ static const char* TOOLBAR_STYLE_ROW2 = R"(
         margin: 3px 4px;
     }
 )";
+
+void Toolbar::setSaveEnabled(bool enabled) {
+    if (m_saveBtn) m_saveBtn->setEnabled(enabled);
+}
 
 QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     QToolBar* bar = new QToolBar("Format Toolbar", parent);

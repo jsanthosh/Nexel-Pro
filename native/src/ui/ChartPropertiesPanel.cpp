@@ -93,8 +93,8 @@ ChartPropertiesPanel::ChartPropertiesPanel(QWidget* parent)
 QWidget* ChartPropertiesPanel::createSectionHeader(const QString& title) {
     QLabel* label = new QLabel(title);
     label->setStyleSheet(
-        "QLabel { color: #344054; font-size: 10px; font-weight: bold; "
-        "letter-spacing: 1px; padding: 8px 0 4px 0; }");
+        "QLabel { color: #667085; font-size: 10px; font-weight: 700; "
+        "letter-spacing: 1.2px; padding: 0; margin: 0; }");
     return label;
 }
 
@@ -103,24 +103,32 @@ void ChartPropertiesPanel::createLayout() {
     outerLayout->setContentsMargins(0, 0, 0, 0);
     outerLayout->setSpacing(0);
 
-    // Header bar
+    // Header bar with gradient
     QWidget* header = new QWidget();
-    header->setFixedHeight(40);
-    header->setStyleSheet("QWidget { background: #1B5E3B; }");
+    header->setFixedHeight(44);
+    header->setStyleSheet(
+        "QWidget { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "stop:0 #1B5E3B, stop:1 #217346); }");
     QHBoxLayout* headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(12, 0, 8, 0);
+    headerLayout->setContentsMargins(14, 0, 8, 0);
+
+    QLabel* headerIcon = new QLabel("\xF0\x9F\x93\x8A"); // chart emoji
+    headerIcon->setStyleSheet("QLabel { font-size: 16px; }");
+    headerLayout->addWidget(headerIcon);
 
     QLabel* headerTitle = new QLabel("Chart Properties");
-    headerTitle->setStyleSheet("QLabel { color: white; font-size: 13px; font-weight: bold; }");
+    headerTitle->setStyleSheet(
+        "QLabel { color: white; font-size: 13px; font-weight: 600; "
+        "letter-spacing: 0.3px; margin-left: 4px; }");
     headerLayout->addWidget(headerTitle);
     headerLayout->addStretch();
 
-    QPushButton* closeBtn = new QPushButton("\u00D7"); // ×
-    closeBtn->setFixedSize(24, 24);
+    QPushButton* closeBtn = new QPushButton("\xC3\x97"); // multiplication sign
+    closeBtn->setFixedSize(26, 26);
     closeBtn->setStyleSheet(
-        "QPushButton { background: transparent; color: white; font-size: 18px; "
-        "font-weight: bold; border: none; border-radius: 12px; }"
-        "QPushButton:hover { background: rgba(255,255,255,0.2); }");
+        "QPushButton { background: transparent; color: rgba(255,255,255,0.8); font-size: 16px; "
+        "font-weight: bold; border: none; border-radius: 13px; }"
+        "QPushButton:hover { background: rgba(255,255,255,0.15); color: white; }");
     connect(closeBtn, &QPushButton::clicked, this, &ChartPropertiesPanel::closeRequested);
     headerLayout->addWidget(closeBtn);
 
@@ -131,21 +139,25 @@ void ChartPropertiesPanel::createLayout() {
     m_scrollArea->setWidgetResizable(true);
     m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scrollArea->setStyleSheet(
-        "QScrollArea { border: none; background: #FAFBFC; }"
-        "QScrollBar:vertical { width: 6px; background: transparent; }"
-        "QScrollBar::handle:vertical { background: #C0C5CC; border-radius: 3px; min-height: 30px; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }");
+        "QScrollArea { border: none; background: #F8FAFB; }"
+        "QScrollBar:vertical { width: 5px; background: transparent; margin: 2px 0; }"
+        "QScrollBar::handle:vertical { background: #C8CDD3; border-radius: 2px; min-height: 30px; }"
+        "QScrollBar::handle:vertical:hover { background: #A0A8B0; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }");
 
     QWidget* content = new QWidget();
+    content->setStyleSheet("QWidget { background: #F8FAFB; }");
     QVBoxLayout* contentLayout = new QVBoxLayout(content);
-    contentLayout->setContentsMargins(12, 8, 12, 12);
-    contentLayout->setSpacing(2);
+    contentLayout->setContentsMargins(14, 12, 14, 14);
+    contentLayout->setSpacing(0);
 
     // ===== Chart Type Section =====
     contentLayout->addWidget(createSectionHeader("CHART TYPE"));
+    contentLayout->addSpacing(8);
 
     QGridLayout* typeGrid = new QGridLayout();
-    typeGrid->setSpacing(4);
+    typeGrid->setSpacing(6);
 
     struct TypeInfo { ChartType type; QString tip; };
     QVector<TypeInfo> types = {
@@ -161,14 +173,14 @@ void ChartPropertiesPanel::createLayout() {
 
     for (int i = 0; i < types.size(); ++i) {
         QPushButton* btn = new QPushButton();
-        btn->setFixedSize(36, 36);
+        btn->setFixedSize(40, 40);
         btn->setIconSize(QSize(28, 28));
         btn->setIcon(makeChartTypeIcon(types[i].type, false));
         btn->setToolTip(types[i].tip);
         btn->setProperty("chartType", static_cast<int>(types[i].type));
         btn->setStyleSheet(
-            "QPushButton { background: white; border: 1px solid #E0E3E8; border-radius: 6px; }"
-            "QPushButton:hover { background: #F0F2F5; border-color: #B0B5BD; }"
+            "QPushButton { background: white; border: 1.5px solid #E4E7EC; border-radius: 8px; }"
+            "QPushButton:hover { background: #F0FAF3; border-color: #86C49A; }"
             "QPushButton[selected=\"true\"] { background: #E8F5E9; border: 2px solid #217346; }");
         connect(btn, &QPushButton::clicked, this, &ChartPropertiesPanel::onChartTypeClicked);
         typeGrid->addWidget(btn, i / 4, i % 4);
@@ -176,34 +188,28 @@ void ChartPropertiesPanel::createLayout() {
     }
 
     contentLayout->addLayout(typeGrid);
-
-    // Separator
-    QFrame* sep1 = new QFrame();
-    sep1->setFrameShape(QFrame::HLine);
-    sep1->setStyleSheet("QFrame { color: #E0E3E8; margin: 6px 0; }");
-    contentLayout->addWidget(sep1);
+    contentLayout->addSpacing(14);
 
     // ===== Title & Labels =====
     contentLayout->addWidget(createSectionHeader("TITLE & LABELS"));
-
-    QGridLayout* labelGrid = new QGridLayout();
-    labelGrid->setSpacing(6);
-    labelGrid->setColumnStretch(1, 1);
+    contentLayout->addSpacing(8);
 
     auto makeLabel = [](const QString& text) {
         QLabel* l = new QLabel(text);
-        l->setStyleSheet("QLabel { color: #667085; font-size: 11px; }");
+        l->setStyleSheet("QLabel { color: #475467; font-size: 11px; font-weight: 500; }");
+        l->setFixedWidth(46);
         return l;
     };
 
     auto makeEdit = [](const QString& placeholder) {
         QLineEdit* e = new QLineEdit();
         e->setPlaceholderText(placeholder);
-        e->setFixedHeight(28);
+        e->setFixedHeight(30);
         e->setStyleSheet(
-            "QLineEdit { border: 1px solid #D0D5DD; border-radius: 4px; padding: 2px 8px; "
-            "background: white; font-size: 11px; }"
-            "QLineEdit:focus { border-color: #217346; }");
+            "QLineEdit { border: 1px solid #D0D5DD; border-radius: 6px; padding: 2px 10px; "
+            "background: white; font-size: 11px; color: #1D2939; }"
+            "QLineEdit:focus { border-color: #34A853; box-shadow: none; }"
+            "QLineEdit::placeholder { color: #98A2B3; }");
         return e;
     };
 
@@ -211,72 +217,71 @@ void ChartPropertiesPanel::createLayout() {
     m_xAxisEdit = makeEdit("X axis label");
     m_yAxisEdit = makeEdit("Y axis label");
 
-    labelGrid->addWidget(makeLabel("Title"), 0, 0);
+    QGridLayout* labelGrid = new QGridLayout();
+    labelGrid->setSpacing(6);
+    labelGrid->setColumnStretch(1, 1);
+    labelGrid->addWidget(makeLabel("Title"), 0, 0, Qt::AlignTop | Qt::AlignLeft);
     labelGrid->addWidget(m_titleEdit, 0, 1);
-    labelGrid->addWidget(makeLabel("X Axis"), 1, 0);
+    labelGrid->addWidget(makeLabel("X Axis"), 1, 0, Qt::AlignTop | Qt::AlignLeft);
     labelGrid->addWidget(m_xAxisEdit, 1, 1);
-    labelGrid->addWidget(makeLabel("Y Axis"), 2, 0);
+    labelGrid->addWidget(makeLabel("Y Axis"), 2, 0, Qt::AlignTop | Qt::AlignLeft);
     labelGrid->addWidget(m_yAxisEdit, 2, 1);
-
     contentLayout->addLayout(labelGrid);
 
     connect(m_titleEdit, &QLineEdit::textChanged, this, &ChartPropertiesPanel::onPropertyChanged);
     connect(m_xAxisEdit, &QLineEdit::textChanged, this, &ChartPropertiesPanel::onPropertyChanged);
     connect(m_yAxisEdit, &QLineEdit::textChanged, this, &ChartPropertiesPanel::onPropertyChanged);
 
-    // Separator
-    QFrame* sep2 = new QFrame();
-    sep2->setFrameShape(QFrame::HLine);
-    sep2->setStyleSheet("QFrame { color: #E0E3E8; margin: 6px 0; }");
-    contentLayout->addWidget(sep2);
+    contentLayout->addSpacing(14);
 
     // ===== Style =====
     contentLayout->addWidget(createSectionHeader("STYLE"));
+    contentLayout->addSpacing(8);
 
     QGridLayout* styleGrid = new QGridLayout();
     styleGrid->setSpacing(6);
     styleGrid->setColumnStretch(1, 1);
 
     m_themeCombo = new QComboBox();
-    m_themeCombo->setFixedHeight(28);
+    m_themeCombo->setFixedHeight(30);
     m_themeCombo->addItems({"Excel", "Material", "Solarized", "Dark", "Monochrome", "Pastel"});
     m_themeCombo->setStyleSheet(
-        "QComboBox { border: 1px solid #D0D5DD; border-radius: 4px; padding: 2px 8px; "
-        "background: white; font-size: 11px; min-height: 20px; }"
-        "QComboBox:focus { border: 1px solid #217346; }"
-        "QComboBox::drop-down { border: none; width: 18px; }"
+        "QComboBox { border: 1px solid #D0D5DD; border-radius: 6px; padding: 2px 10px; "
+        "background: white; font-size: 11px; color: #1D2939; min-height: 22px; }"
+        "QComboBox:focus { border: 1px solid #34A853; }"
+        "QComboBox::drop-down { border: none; width: 20px; }"
         "QComboBox::down-arrow { image: none; border-left: 4px solid transparent; "
-        "border-right: 4px solid transparent; border-top: 5px solid #667085; margin-right: 4px; }"
-        "QComboBox QAbstractItemView { border: 1px solid #D0D5DD; border-radius: 4px; "
-        "background: white; selection-background-color: #E8F5E9; padding: 2px; outline: none; }");
+        "border-right: 4px solid transparent; border-top: 5px solid #667085; margin-right: 6px; }"
+        "QComboBox QAbstractItemView { border: 1px solid #D0D5DD; border-radius: 6px; "
+        "background: white; selection-background-color: #E8F5E9; padding: 4px; outline: none; }");
 
-    styleGrid->addWidget(makeLabel("Theme"), 0, 0);
+    styleGrid->addWidget(makeLabel("Theme"), 0, 0, Qt::AlignTop | Qt::AlignLeft);
     styleGrid->addWidget(m_themeCombo, 0, 1);
-
     contentLayout->addLayout(styleGrid);
 
     connect(m_themeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ChartPropertiesPanel::onPropertyChanged);
 
+    contentLayout->addSpacing(6);
+
     m_legendCheck = new QCheckBox("Show Legend");
-    m_legendCheck->setStyleSheet("QCheckBox { color: #344054; font-size: 11px; spacing: 6px; }");
+    m_legendCheck->setStyleSheet(
+        "QCheckBox { color: #344054; font-size: 11px; spacing: 8px; }");
     m_gridCheck = new QCheckBox("Show Grid Lines");
-    m_gridCheck->setStyleSheet("QCheckBox { color: #344054; font-size: 11px; spacing: 6px; }");
+    m_gridCheck->setStyleSheet(m_legendCheck->styleSheet());
 
     contentLayout->addWidget(m_legendCheck);
+    contentLayout->addSpacing(2);
     contentLayout->addWidget(m_gridCheck);
 
     connect(m_legendCheck, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
     connect(m_gridCheck, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
 
-    // Separator
-    QFrame* sep3 = new QFrame();
-    sep3->setFrameShape(QFrame::HLine);
-    sep3->setStyleSheet("QFrame { color: #E0E3E8; margin: 6px 0; }");
-    contentLayout->addWidget(sep3);
+    contentLayout->addSpacing(14);
 
     // ===== Data =====
     contentLayout->addWidget(createSectionHeader("DATA"));
+    contentLayout->addSpacing(8);
 
     QHBoxLayout* dataLayout = new QHBoxLayout();
     dataLayout->setSpacing(6);
@@ -285,11 +290,13 @@ void ChartPropertiesPanel::createLayout() {
     dataLayout->addWidget(m_dataRangeEdit, 1);
 
     QPushButton* refreshBtn = new QPushButton("Refresh");
-    refreshBtn->setFixedHeight(28);
+    refreshBtn->setFixedHeight(30);
+    refreshBtn->setCursor(Qt::PointingHandCursor);
     refreshBtn->setStyleSheet(
-        "QPushButton { background: #217346; color: white; border: none; border-radius: 4px; "
-        "padding: 0 12px; font-size: 11px; font-weight: bold; }"
-        "QPushButton:hover { background: #1B5E3B; }");
+        "QPushButton { background: #217346; color: white; border: none; border-radius: 6px; "
+        "padding: 0 14px; font-size: 11px; font-weight: 600; }"
+        "QPushButton:hover { background: #1B5E3B; }"
+        "QPushButton:pressed { background: #155C30; }");
     connect(refreshBtn, &QPushButton::clicked, this, &ChartPropertiesPanel::onRefreshData);
     dataLayout->addWidget(refreshBtn);
 
@@ -297,14 +304,11 @@ void ChartPropertiesPanel::createLayout() {
 
     connect(m_dataRangeEdit, &QLineEdit::editingFinished, this, &ChartPropertiesPanel::onRefreshData);
 
-    // Separator
-    QFrame* sep4 = new QFrame();
-    sep4->setFrameShape(QFrame::HLine);
-    sep4->setStyleSheet("QFrame { color: #E0E3E8; margin: 6px 0; }");
-    contentLayout->addWidget(sep4);
+    contentLayout->addSpacing(14);
 
     // ===== Series Colors =====
     contentLayout->addWidget(createSectionHeader("SERIES COLORS"));
+    contentLayout->addSpacing(8);
 
     m_seriesContainer = new QWidget();
     m_seriesLayout = new QVBoxLayout(m_seriesContainer);
@@ -317,9 +321,7 @@ void ChartPropertiesPanel::createLayout() {
     m_scrollArea->setWidget(content);
     outerLayout->addWidget(m_scrollArea);
 
-    setStyleSheet(
-        "ChartPropertiesPanel { background: #FAFBFC; }"
-    );
+    setStyleSheet("ChartPropertiesPanel { background: #F8FAFB; }");
 }
 
 void ChartPropertiesPanel::setChart(ChartWidget* chart) {
@@ -370,19 +372,21 @@ void ChartPropertiesPanel::rebuildSeriesSection() {
     for (int i = 0; i < series.size(); ++i) {
         QHBoxLayout* row = new QHBoxLayout();
         row->setSpacing(8);
+        row->setContentsMargins(0, 0, 0, 0);
 
         QPushButton* colorBtn = new QPushButton();
-        colorBtn->setFixedSize(22, 22);
-        colorBtn->setIcon(makeColorSwatch(series[i].color, 18));
-        colorBtn->setIconSize(QSize(18, 18));
+        colorBtn->setFixedSize(26, 26);
+        colorBtn->setIcon(makeColorSwatch(series[i].color, 20));
+        colorBtn->setIconSize(QSize(20, 20));
+        colorBtn->setCursor(Qt::PointingHandCursor);
         colorBtn->setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #D0D5DD; border-radius: 4px; padding: 1px; }"
-            "QPushButton:hover { border-color: #217346; }");
+            "QPushButton { background: white; border: 1.5px solid #E4E7EC; border-radius: 6px; padding: 2px; }"
+            "QPushButton:hover { border-color: #34A853; background: #F0FAF3; }");
         colorBtn->setProperty("seriesIndex", i);
         connect(colorBtn, &QPushButton::clicked, this, &ChartPropertiesPanel::onSeriesColorClicked);
 
         QLabel* nameLabel = new QLabel(series[i].name);
-        nameLabel->setStyleSheet("QLabel { color: #344054; font-size: 11px; }");
+        nameLabel->setStyleSheet("QLabel { color: #344054; font-size: 11px; font-weight: 500; }");
 
         row->addWidget(colorBtn);
         row->addWidget(nameLabel, 1);
@@ -484,6 +488,6 @@ void ChartPropertiesPanel::onSeriesColorClicked() {
         m_chart->setConfig(cfg);
 
         // Update button icon
-        btn->setIcon(makeColorSwatch(newColor, 18));
+        btn->setIcon(makeColorSwatch(newColor, 20));
     }
 }

@@ -7,6 +7,9 @@
 #include <QBuffer>
 #include <QtCore/private/qzipreader_p.h>
 #include <QtCore/private/qzipwriter_p.h>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <algorithm>
 
 XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
@@ -119,6 +122,33 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
             chart.width = qMax(200, (ref.toCol - ref.fromCol) * 64);
             chart.height = qMax(150, (ref.toRow - ref.fromRow) * 20);
             result.charts.push_back(chart);
+        }
+    }
+
+    // Load Nexel-native chart configs if present
+    QByteArray nexelChartsData = zip.fileData("xl/nexel-charts.json");
+    if (!nexelChartsData.isEmpty()) {
+        QJsonDocument doc = QJsonDocument::fromJson(nexelChartsData);
+        if (doc.isArray()) {
+            for (const auto& val : doc.array()) {
+                QJsonObject obj = val.toObject();
+                ImportedChart chart;
+                chart.sheetIndex = obj["sheetIndex"].toInt();
+                chart.chartType = obj["chartType"].toString();
+                chart.title = obj["title"].toString();
+                chart.xAxisTitle = obj["xAxisTitle"].toString();
+                chart.yAxisTitle = obj["yAxisTitle"].toString();
+                chart.dataRange = obj["dataRange"].toString();
+                chart.themeIndex = obj["themeIndex"].toInt();
+                chart.showLegend = obj["showLegend"].toBool(true);
+                chart.showGridLines = obj["showGridLines"].toBool(true);
+                chart.x = obj["x"].toInt(50);
+                chart.y = obj["y"].toInt(50);
+                chart.width = obj["width"].toInt(420);
+                chart.height = obj["height"].toInt(320);
+                chart.isNexelNative = true;
+                result.charts.push_back(chart);
+            }
         }
     }
 
@@ -818,7 +848,8 @@ QString XlsxService::cellStyleKey(const CellStyle& style) {
 }
 
 bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& sheets,
-                                 const QString& filePath) {
+                                 const QString& filePath,
+                                 const std::vector<NexelChartExport>& charts) {
     if (sheets.empty()) return false;
 
     // Collect unique styles and build style index map
@@ -876,7 +907,16 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         });
     }
 
+    // Pre-compute which sheets have charts (for drawing references)
+    std::map<int, std::vector<int>> chartsPerSheet; // sheetIndex -> chart indices
+    for (int i = 0; i < static_cast<int>(charts.size()); ++i) {
+        if (!charts[i].dataRange.isEmpty()) {
+            chartsPerSheet[charts[i].sheetIndex].push_back(i);
+        }
+    }
+
     // Second pass: generate sheets
+    int sheetIdx = 0;
     for (const auto& sheet : sheets) {
         QByteArray sheetXml;
         QBuffer buf(&sheetXml);
@@ -889,27 +929,61 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         xml.writeAttribute("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
         xml.writeAttribute("xmlns:r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
 
+        // Column widths
+        const auto& colWidths = sheet->getColumnWidths();
+        if (!colWidths.empty()) {
+            xml.writeStartElement("cols");
+            for (const auto& [col, widthPx] : colWidths) {
+                xml.writeStartElement("col");
+                xml.writeAttribute("min", QString::number(col + 1));
+                xml.writeAttribute("max", QString::number(col + 1));
+                xml.writeAttribute("width", QString::number(widthPx / 7.5, 'f', 2));
+                xml.writeAttribute("customWidth", "1");
+                xml.writeEndElement();
+            }
+            xml.writeEndElement(); // cols
+        }
+
         // sheetData
         xml.writeStartElement("sheetData");
 
         int maxRow = sheet->getMaxRow();
         int maxCol = sheet->getMaxColumn();
 
-        for (int r = 0; r <= maxRow; ++r) {
+        // Collect rows that need custom heights
+        const auto& rowHeights = sheet->getRowHeights();
+
+        // Determine which rows to write (those with data OR custom height)
+        int maxRowForHeights = maxRow;
+        if (!rowHeights.empty()) {
+            maxRowForHeights = std::max(maxRow, rowHeights.rbegin()->first);
+        }
+
+        for (int r = 0; r <= maxRowForHeights; ++r) {
             bool hasData = false;
-            for (int c = 0; c <= maxCol; ++c) {
-                auto val = sheet->getCellValue(CellAddress(r, c));
-                if (val.isValid() && !val.toString().isEmpty()) { hasData = true; break; }
-                auto cell = sheet->getCell(CellAddress(r, c));
-                if (cell) {
-                    QString key = cellStyleKey(cell->getStyle());
-                    if (styleIndexMap.count(key) && styleIndexMap[key] != 0) { hasData = true; break; }
+            if (r <= maxRow) {
+                for (int c = 0; c <= maxCol; ++c) {
+                    auto val = sheet->getCellValue(CellAddress(r, c));
+                    if (val.isValid() && !val.toString().isEmpty()) { hasData = true; break; }
+                    auto cell = sheet->getCell(CellAddress(r, c));
+                    if (cell) {
+                        QString key = cellStyleKey(cell->getStyle());
+                        if (styleIndexMap.count(key) && styleIndexMap[key] != 0) { hasData = true; break; }
+                    }
                 }
             }
-            if (!hasData) continue;
+
+            bool hasCustomHeight = rowHeights.count(r) > 0;
+            if (!hasData && !hasCustomHeight) continue;
 
             xml.writeStartElement("row");
             xml.writeAttribute("r", QString::number(r + 1));
+
+            if (hasCustomHeight) {
+                double htPoints = rowHeights.at(r) / 1.333;
+                xml.writeAttribute("ht", QString::number(htPoints, 'f', 2));
+                xml.writeAttribute("customHeight", "1");
+            }
 
             for (int c = 0; c <= maxCol; ++c) {
                 CellAddress addr(r, c);
@@ -994,19 +1068,39 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             xml.writeEndElement(); // mergeCells
         }
 
+        // Drawing reference (for sheets with charts)
+        if (chartsPerSheet.count(sheetIdx)) {
+            xml.writeStartElement("drawing");
+            xml.writeAttribute("r:id", "rId1");
+            xml.writeEndElement();
+        }
+
         xml.writeEndElement(); // worksheet
         xml.writeEndDocument();
         buf.close();
         sheetXmls.push_back(sheetXml);
+        sheetIdx++;
     }
 
     // Build the ZIP
     int sheetCount = static_cast<int>(sheets.size());
 
+    // Compute chart/drawing info for content types
+    int totalChartCount = 0;
+    std::vector<int> drawingSheetNums; // 1-based sheet numbers with drawings
+    for (auto& [si, indices] : chartsPerSheet) {
+        if (si < sheetCount) {
+            totalChartCount += static_cast<int>(indices.size());
+            drawingSheetNums.push_back(si + 1);
+        }
+    }
+
     QZipWriter zip(filePath);
     if (zip.status() != QZipWriter::NoError) return false;
 
-    zip.addFile("[Content_Types].xml", generateContentTypes(sheetCount));
+    zip.addFile("[Content_Types].xml",
+                generateContentTypes(sheetCount, !sharedStrings.isEmpty(),
+                                     totalChartCount, drawingSheetNums));
     zip.addFile("_rels/.rels", generateRels());
     zip.addFile("xl/workbook.xml", generateWorkbook(sheets));
     zip.addFile("xl/_rels/workbook.xml.rels", generateWorkbookRels(sheetCount));
@@ -1020,11 +1114,65 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         zip.addFile(QString("xl/worksheets/sheet%1.xml").arg(i + 1), sheetXmls[i]);
     }
 
+    // Generate OOXML chart parts (so Excel can display them)
+    int globalChartNum = 1;
+    for (auto& [si, indices] : chartsPerSheet) {
+        if (si >= sheetCount) continue;
+        QString sheetName = sheets[si]->getSheetName();
+        int startNum = globalChartNum;
+
+        // Generate chart XML files
+        for (int ci : indices) {
+            zip.addFile(QString("xl/charts/chart%1.xml").arg(globalChartNum),
+                        generateChartXml(charts[ci], sheetName));
+            globalChartNum++;
+        }
+
+        int chartCountForSheet = static_cast<int>(indices.size());
+
+        // Drawing XML
+        zip.addFile(QString("xl/drawings/drawing%1.xml").arg(si + 1),
+                    generateDrawingXml(charts, indices));
+
+        // Drawing relationships (maps rIdN -> chartN.xml)
+        zip.addFile(QString("xl/drawings/_rels/drawing%1.xml.rels").arg(si + 1),
+                    generateDrawingRels(chartCountForSheet, startNum));
+
+        // Sheet relationships (maps rId1 -> drawingN.xml)
+        zip.addFile(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(si + 1),
+                    generateSheetRels(si + 1));
+    }
+
+    // Save Nexel chart configs as custom JSON part (for Nexel round-trip)
+    if (!charts.empty()) {
+        QJsonArray chartsArray;
+        for (const auto& c : charts) {
+            QJsonObject obj;
+            obj["sheetIndex"] = c.sheetIndex;
+            obj["chartType"] = c.chartType;
+            obj["title"] = c.title;
+            obj["xAxisTitle"] = c.xAxisTitle;
+            obj["yAxisTitle"] = c.yAxisTitle;
+            obj["dataRange"] = c.dataRange;
+            obj["themeIndex"] = c.themeIndex;
+            obj["showLegend"] = c.showLegend;
+            obj["showGridLines"] = c.showGridLines;
+            obj["x"] = c.x;
+            obj["y"] = c.y;
+            obj["width"] = c.width;
+            obj["height"] = c.height;
+            chartsArray.append(obj);
+        }
+        QJsonDocument doc(chartsArray);
+        zip.addFile("xl/nexel-charts.json", doc.toJson(QJsonDocument::Compact));
+    }
+
     zip.close();
     return true;
 }
 
-QByteArray XlsxService::generateContentTypes(int sheetCount) {
+QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrings,
+                                               int chartCount, const std::vector<int>& drawingSheetNums) {
     QByteArray data;
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
@@ -1044,6 +1192,13 @@ QByteArray XlsxService::generateContentTypes(int sheetCount) {
     xml.writeAttribute("ContentType", "application/xml");
     xml.writeEndElement();
 
+    if (chartCount > 0) {
+        xml.writeStartElement("Default");
+        xml.writeAttribute("Extension", "json");
+        xml.writeAttribute("ContentType", "application/json");
+        xml.writeEndElement();
+    }
+
     xml.writeStartElement("Override");
     xml.writeAttribute("PartName", "/xl/workbook.xml");
     xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml");
@@ -1054,15 +1209,33 @@ QByteArray XlsxService::generateContentTypes(int sheetCount) {
     xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml");
     xml.writeEndElement();
 
-    xml.writeStartElement("Override");
-    xml.writeAttribute("PartName", "/xl/sharedStrings.xml");
-    xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml");
-    xml.writeEndElement();
+    if (hasSharedStrings) {
+        xml.writeStartElement("Override");
+        xml.writeAttribute("PartName", "/xl/sharedStrings.xml");
+        xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml");
+        xml.writeEndElement();
+    }
 
     for (int i = 0; i < sheetCount; ++i) {
         xml.writeStartElement("Override");
         xml.writeAttribute("PartName", QString("/xl/worksheets/sheet%1.xml").arg(i + 1));
         xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml");
+        xml.writeEndElement();
+    }
+
+    // OOXML chart content types
+    for (int i = 1; i <= chartCount; ++i) {
+        xml.writeStartElement("Override");
+        xml.writeAttribute("PartName", QString("/xl/charts/chart%1.xml").arg(i));
+        xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.drawingml.chart+xml");
+        xml.writeEndElement();
+    }
+
+    // Drawing content types
+    for (int sheetNum : drawingSheetNums) {
+        xml.writeStartElement("Override");
+        xml.writeAttribute("PartName", QString("/xl/drawings/drawing%1.xml").arg(sheetNum));
+        xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.drawing+xml");
         xml.writeEndElement();
     }
 
@@ -1696,4 +1869,245 @@ ImportedChart XlsxService::parseChartXml(const QByteArray& chartXml) {
     }
 
     return chart;
+}
+
+// ========== OOXML Chart Export Helpers ==========
+
+static QString xmlEsc(const QString& str) {
+    QString s = str;
+    s.replace("&", "&amp;");
+    s.replace("<", "&lt;");
+    s.replace(">", "&gt;");
+    s.replace("\"", "&quot;");
+    return s;
+}
+
+QVector<QColor> XlsxService::chartThemeColors(int themeIndex) {
+    static const QVector<QVector<QColor>> palettes = {
+        { QColor("#4472C4"), QColor("#ED7D31"), QColor("#A5A5A5"), QColor("#FFC000"), QColor("#5B9BD5"), QColor("#70AD47") },
+        { QColor("#2196F3"), QColor("#FF5722"), QColor("#4CAF50"), QColor("#FFC107"), QColor("#9C27B0"), QColor("#00BCD4") },
+        { QColor("#268BD2"), QColor("#DC322F"), QColor("#859900"), QColor("#B58900"), QColor("#6C71C4"), QColor("#2AA198") },
+        { QColor("#00C8FF"), QColor("#FF6384"), QColor("#36A2EB"), QColor("#FFCE56"), QColor("#9966FF"), QColor("#FF9F40") },
+        { QColor("#333333"), QColor("#666666"), QColor("#999999"), QColor("#BBBBBB"), QColor("#444444"), QColor("#777777") },
+        { QColor("#A8D8EA"), QColor("#FFB7B2"), QColor("#B5EAD7"), QColor("#FFDAC1"), QColor("#C7CEEA"), QColor("#E2F0CB") },
+    };
+    int idx = qBound(0, themeIndex, static_cast<int>(palettes.size()) - 1);
+    return palettes[idx];
+}
+
+QByteArray XlsxService::generateChartXml(const NexelChartExport& chart, const QString& sheetName) {
+    // Parse data range (e.g. "A1:D10")
+    QStringList parts = chart.dataRange.split(':');
+    if (parts.size() != 2) return QByteArray();
+
+    // Parse cell references
+    auto parseCellRef = [](const QString& ref, int& row, int& col) {
+        int i = 0;
+        while (i < ref.length() && ref[i].isLetter()) i++;
+        QString letters = ref.left(i);
+        col = 0;
+        for (int j = 0; j < letters.length(); ++j)
+            col = col * 26 + (letters[j].toUpper().unicode() - 'A' + 1);
+        col -= 1;
+        row = ref.mid(i).toInt() - 1;
+    };
+
+    int startRow, startCol, endRow, endCol;
+    parseCellRef(parts[0].trimmed(), startRow, startCol);
+    parseCellRef(parts[1].trimmed(), endRow, endCol);
+    if (startRow > endRow) std::swap(startRow, endRow);
+    if (startCol > endCol) std::swap(startCol, endCol);
+
+    int numSeries = endCol - startCol; // first column = categories
+    if (numSeries < 1) return QByteArray();
+
+    // Sheet reference (quote if contains spaces)
+    QString sheetRef = sheetName.contains(' ') ? "'" + sheetName + "'" : sheetName;
+
+    // Determine chart type XML
+    QString chartElem, chartAttrs;
+    bool hasAxes = true, isScatter = false;
+
+    if (chart.chartType == "column") {
+        chartElem = "c:barChart";
+        chartAttrs = "<c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>";
+    } else if (chart.chartType == "bar") {
+        chartElem = "c:barChart";
+        chartAttrs = "<c:barDir val=\"bar\"/><c:grouping val=\"clustered\"/>";
+    } else if (chart.chartType == "line") {
+        chartElem = "c:lineChart";
+        chartAttrs = "<c:grouping val=\"standard\"/>";
+    } else if (chart.chartType == "area") {
+        chartElem = "c:areaChart";
+        chartAttrs = "<c:grouping val=\"standard\"/>";
+    } else if (chart.chartType == "scatter") {
+        chartElem = "c:scatterChart";
+        chartAttrs = "<c:scatterStyle val=\"lineMarker\"/>";
+        isScatter = true;
+    } else if (chart.chartType == "pie") {
+        chartElem = "c:pieChart";
+        hasAxes = false;
+    } else if (chart.chartType == "donut") {
+        chartElem = "c:doughnutChart";
+        hasAxes = false;
+    } else {
+        chartElem = "c:barChart";
+        chartAttrs = "<c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>";
+    }
+
+    auto colors = chartThemeColors(chart.themeIndex);
+
+    QString x;
+    x += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+    x += "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" "
+         "xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" "
+         "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\n";
+    x += "<c:chart>\n";
+
+    // Title
+    if (!chart.title.isEmpty()) {
+        x += "<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>"
+           + xmlEsc(chart.title) + "</a:t></a:r></a:p></c:rich></c:tx><c:overlay val=\"0\"/></c:title>\n";
+    }
+    x += "<c:autoTitleDeleted val=\"0\"/>\n";
+    x += "<c:plotArea>\n<c:layout/>\n";
+
+    // Chart type element
+    x += "<" + chartElem + ">\n" + chartAttrs + "\n";
+
+    // Series
+    QString catCol = columnIndexToLetter(startCol);
+    for (int i = 0; i < numSeries; ++i) {
+        int colIdx = startCol + 1 + i;
+        QString serCol = columnIndexToLetter(colIdx);
+        QColor clr = colors[i % colors.size()];
+        QString hex = clr.name().mid(1).toUpper();
+
+        x += "<c:ser>\n";
+        x += QString("<c:idx val=\"%1\"/><c:order val=\"%1\"/>\n").arg(i);
+
+        // Series name from header
+        x += "<c:tx><c:strRef><c:f>" + xmlEsc(sheetRef) + "!$" + serCol + "$"
+           + QString::number(startRow + 1) + "</c:f></c:strRef></c:tx>\n";
+
+        // Series color
+        x += "<c:spPr><a:solidFill><a:srgbClr val=\"" + hex + "\"/></a:solidFill></c:spPr>\n";
+
+        QString catRange = xmlEsc(sheetRef) + "!$" + catCol + "$" + QString::number(startRow + 2)
+                         + ":$" + catCol + "$" + QString::number(endRow + 1);
+        QString valRange = xmlEsc(sheetRef) + "!$" + serCol + "$" + QString::number(startRow + 2)
+                         + ":$" + serCol + "$" + QString::number(endRow + 1);
+
+        if (isScatter) {
+            x += "<c:xVal><c:numRef><c:f>" + catRange + "</c:f></c:numRef></c:xVal>\n";
+            x += "<c:yVal><c:numRef><c:f>" + valRange + "</c:f></c:numRef></c:yVal>\n";
+        } else {
+            x += "<c:cat><c:strRef><c:f>" + catRange + "</c:f></c:strRef></c:cat>\n";
+            x += "<c:val><c:numRef><c:f>" + valRange + "</c:f></c:numRef></c:val>\n";
+        }
+
+        x += "</c:ser>\n";
+    }
+
+    if (hasAxes) {
+        x += "<c:axId val=\"111111111\"/><c:axId val=\"222222222\"/>\n";
+    }
+    if (chart.chartType == "donut") {
+        x += "<c:holeSize val=\"50\"/>\n";
+    }
+    x += "</" + chartElem + ">\n";
+
+    // Axes
+    if (hasAxes) {
+        if (isScatter) {
+            x += "<c:valAx><c:axId val=\"111111111\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling>"
+                 "<c:delete val=\"0\"/><c:axPos val=\"b\"/><c:crossAx val=\"222222222\"/></c:valAx>\n";
+            x += "<c:valAx><c:axId val=\"222222222\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling>"
+                 "<c:delete val=\"0\"/><c:axPos val=\"l\"/><c:crossAx val=\"111111111\"/></c:valAx>\n";
+        } else {
+            x += "<c:catAx><c:axId val=\"111111111\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling>"
+                 "<c:delete val=\"0\"/><c:axPos val=\"b\"/><c:crossAx val=\"222222222\"/></c:catAx>\n";
+            x += "<c:valAx><c:axId val=\"222222222\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling>"
+                 "<c:delete val=\"0\"/><c:axPos val=\"l\"/><c:crossAx val=\"111111111\"/></c:valAx>\n";
+        }
+    }
+    x += "</c:plotArea>\n";
+
+    if (chart.showLegend) {
+        x += "<c:legend><c:legendPos val=\"r\"/><c:overlay val=\"0\"/></c:legend>\n";
+    }
+    x += "<c:plotVisOnly val=\"1\"/>\n";
+    x += "</c:chart>\n</c:chartSpace>\n";
+
+    return x.toUtf8();
+}
+
+QByteArray XlsxService::generateDrawingXml(const std::vector<NexelChartExport>& allCharts,
+                                            const std::vector<int>& chartIndices) {
+    QString x;
+    x += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+    x += "<xdr:wsDr xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" "
+         "xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" "
+         "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\n";
+
+    for (int i = 0; i < static_cast<int>(chartIndices.size()); ++i) {
+        const auto& c = allCharts[chartIndices[i]];
+        // Convert pixel position to approximate column/row (default col ~64px, row ~20px)
+        int fromCol = c.x / 64;
+        int fromRow = c.y / 20;
+        int toCol = (c.x + c.width) / 64;
+        int toRow = (c.y + c.height) / 20;
+        int fromColOff = (c.x % 64) * 9525; // EMU
+        int fromRowOff = (c.y % 20) * 9525;
+        int toColOff = ((c.x + c.width) % 64) * 9525;
+        int toRowOff = ((c.y + c.height) % 20) * 9525;
+
+        x += "<xdr:twoCellAnchor>\n";
+        x += QString("<xdr:from><xdr:col>%1</xdr:col><xdr:colOff>%2</xdr:colOff>"
+                     "<xdr:row>%3</xdr:row><xdr:rowOff>%4</xdr:rowOff></xdr:from>\n")
+             .arg(fromCol).arg(fromColOff).arg(fromRow).arg(fromRowOff);
+        x += QString("<xdr:to><xdr:col>%1</xdr:col><xdr:colOff>%2</xdr:colOff>"
+                     "<xdr:row>%3</xdr:row><xdr:rowOff>%4</xdr:rowOff></xdr:to>\n")
+             .arg(toCol).arg(toColOff).arg(toRow).arg(toRowOff);
+
+        x += "<xdr:graphicFrame macro=\"\">\n";
+        x += QString("<xdr:nvGraphicFramePr><xdr:cNvPr id=\"%1\" name=\"Chart %1\"/>"
+                     "<xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>\n").arg(i + 1);
+        x += "<xdr:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/></xdr:xfrm>\n";
+        x += "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\">"
+             "<c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" "
+             "r:id=\"rId" + QString::number(i + 1) + "\"/>"
+             "</a:graphicData></a:graphic>\n";
+        x += "</xdr:graphicFrame>\n";
+        x += "<xdr:clientData/>\n";
+        x += "</xdr:twoCellAnchor>\n";
+    }
+
+    x += "</xdr:wsDr>\n";
+    return x.toUtf8();
+}
+
+QByteArray XlsxService::generateDrawingRels(int chartCount, int startChartNum) {
+    QString x;
+    x += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+    x += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n";
+    for (int i = 0; i < chartCount; ++i) {
+        x += QString("<Relationship Id=\"rId%1\" "
+                     "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart\" "
+                     "Target=\"../charts/chart%2.xml\"/>\n")
+             .arg(i + 1).arg(startChartNum + i);
+    }
+    x += "</Relationships>\n";
+    return x.toUtf8();
+}
+
+QByteArray XlsxService::generateSheetRels(int drawingNum) {
+    QString x;
+    x += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+    x += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n";
+    x += QString("<Relationship Id=\"rId1\" "
+                 "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" "
+                 "Target=\"../drawings/drawing%1.xml\"/>\n").arg(drawingNum);
+    x += "</Relationships>\n";
+    return x.toUtf8();
 }

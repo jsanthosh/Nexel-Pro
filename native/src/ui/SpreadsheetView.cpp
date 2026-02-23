@@ -47,6 +47,15 @@ void SpreadsheetView::setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet) {
 
     m_spreadsheet = spreadsheet;
 
+    // Register callback for formula recalculation flash animation
+    if (m_spreadsheet) {
+        m_spreadsheet->onDependentsRecalculated = [this](const std::vector<CellAddress>& cells) {
+            for (const auto& addr : cells) {
+                startCellFlashAnimation(addr.row, addr.col);
+            }
+        };
+    }
+
     if (m_model) {
         delete m_model;
     }
@@ -63,6 +72,7 @@ void SpreadsheetView::initializeView() {
     setModel(m_model);
 
     m_delegate = new CellDelegate(this);
+    m_delegate->setSpreadsheetView(this);
     setItemDelegate(m_delegate);
 
     // Column/row sizing
@@ -451,6 +461,8 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
         QModelIndex bottomRight = m_model->index(maxRow, maxCol);
         emit m_model->dataChanged(topLeft, bottomRight, {roles.begin(), roles.end()});
     }
+    // Force viewport repaint to ensure visual update
+    viewport()->update();
 }
 
 // Helper: get the selection bounding range string for macro recording (e.g. "A1:D10")
@@ -2616,4 +2628,69 @@ void SpreadsheetView::onCellDoubleClicked(const QModelIndex& index) {
 void SpreadsheetView::onDataChanged(const QModelIndex& topLeft, const QModelIndex& bottomRight) {
     update(topLeft);
     update(bottomRight);
+}
+
+// --- Formula cell flash animation ---
+// Uses a single QVariantAnimation (1.0→0.0 over 2500ms).
+// The raw value is remapped in cellAnimationProgress():
+//   rawProgress > 0.2  →  visual = 1.0  (hold phase, first 2000ms)
+//   rawProgress ≤ 0.2  →  visual = rawProgress/0.2  (fade-out, last 500ms)
+
+double SpreadsheetView::cellAnimationProgress(int row, int col) const {
+    auto it = m_cellAnimations.find({row, col});
+    if (it == m_cellAnimations.end()) return 0.0;
+    double raw = it->rawProgress;
+    if (raw > 0.2) return 1.0;        // hold phase
+    return raw / 0.2;                  // fade-out phase (maps 0.2→0 to 1.0→0)
+}
+
+void SpreadsheetView::startCellFlashAnimation(int row, int col) {
+    auto key = QPair<int,int>(row, col);
+
+    // Cleanup existing animation for this cell
+    auto it = m_cellAnimations.find(key);
+    if (it != m_cellAnimations.end()) {
+        if (it->animation) {
+            it->animation->stop();
+            it->animation->deleteLater();
+        }
+        m_cellAnimations.erase(it);
+    }
+
+    // Single animation: 1.0 → 0.0 over 2500ms (linear)
+    // The remapping in cellAnimationProgress creates the hold+fade effect
+    auto* anim = new QVariantAnimation(this);
+    anim->setDuration(2500);
+    anim->setStartValue(1.0);
+    anim->setEndValue(0.0);
+    anim->setEasingCurve(QEasingCurve::Linear);
+
+    CellAnim ca;
+    ca.animation = anim;
+    ca.rawProgress = 1.0;
+    m_cellAnimations[key] = ca;
+
+    // Force immediate repaint so yellow shows right away
+    if (m_model) {
+        QModelIndex idx = m_model->index(row, col);
+        update(visualRect(idx));
+    }
+
+    connect(anim, &QVariantAnimation::valueChanged, this, [this, key](const QVariant& v) {
+        auto it = m_cellAnimations.find(key);
+        if (it != m_cellAnimations.end()) {
+            it->rawProgress = v.toDouble();
+        }
+        if (m_model) {
+            QModelIndex idx = m_model->index(key.first, key.second);
+            update(visualRect(idx));
+        }
+    });
+
+    connect(anim, &QVariantAnimation::finished, this, [this, key, anim]() {
+        m_cellAnimations.remove(key);
+        anim->deleteLater();
+    });
+
+    anim->start();
 }

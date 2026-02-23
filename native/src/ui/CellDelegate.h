@@ -4,11 +4,14 @@
 #include <QStyledItemDelegate>
 #include "../core/SparklineConfig.h"
 
+class SpreadsheetView;
+
 class CellDelegate : public QStyledItemDelegate {
     Q_OBJECT
 
 public:
     explicit CellDelegate(QObject* parent = nullptr);
+    void setSpreadsheetView(SpreadsheetView* view) { m_spreadsheetView = view; }
 
     QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
                          const QModelIndex& index) const override;
@@ -36,6 +39,7 @@ signals:
 private:
     bool m_showGridlines = true;
     bool m_formulaEditMode = false;
+    SpreadsheetView* m_spreadsheetView = nullptr;
     void drawSparkline(QPainter* painter, const QRect& rect, const SparklineRenderData& data) const;
 };
 

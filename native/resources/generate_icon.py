@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Nexel app icon — professional spreadsheet icon design."""
+"""Generate Nexel app icon — bold spreadsheet with chart cards on the left."""
 
 from PIL import Image, ImageDraw, ImageFont
 import os
@@ -19,174 +19,248 @@ def rounded_rectangle_mask(size, radius):
 
 def draw_icon(size=SIZE):
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
 
-    # Background: deep green gradient (top-left bright → bottom-right dark)
+    # Background: clean deep green
     for y in range(size):
         t = y / size
-        r = int(18 * (1 - t * 0.4))
-        g = int(120 - 50 * t)
-        b = int(65 - 25 * t)
-        draw.line([(0, y), (size - 1, y)], fill=(r, g, b, 255))
+        r = int(20 + 15 * t)
+        g = int(100 - 20 * t)
+        b = int(60 - 10 * t)
+        for x in range(size):
+            img.putpixel((x, y), (r, g, b, 255))
 
-    # Subtle lighter overlay in top-center for depth
-    overlay = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    ov_draw = ImageDraw.Draw(overlay)
-    cx, cy = size // 2, int(size * 0.3)
-    max_r = int(size * 0.55)
-    for radius in range(max_r, 0, -3):
-        alpha = int(18 * (1 - radius / max_r))
-        ov_draw.ellipse(
-            [cx - radius, cy - radius, cx + radius, cy + radius],
-            fill=(100, 200, 130, alpha)
-        )
-    img = Image.alpha_composite(img, overlay)
     draw = ImageDraw.Draw(img)
 
-    # === Grid parameters ===
-    margin = int(size * 0.13)
-    grid_left = margin
-    grid_top = margin
-    grid_right = size - margin
-    grid_bottom = size - int(size * 0.25)
-
-    num_cols = 4
-    num_rows = 4
-    cell_w = (grid_right - grid_left) / num_cols
-    cell_h = (grid_bottom - grid_top) / num_rows
-    gap = 4
-    radius = 10
-
-    # === Draw cells ===
-    for row in range(num_rows):
-        for col in range(num_cols):
-            x1 = grid_left + col * cell_w + gap
-            y1 = grid_top + row * cell_h + gap
-            x2 = grid_left + (col + 1) * cell_w - gap
-            y2 = grid_top + (row + 1) * cell_h - gap
-
-            if row == 0:
-                # Header: solid vibrant green
-                fill = (30, 155, 85, 240)
-            else:
-                # Data cells: frosted glass with alternating tint
-                if row % 2 == 1:
-                    fill = (255, 255, 255, 95)
-                else:
-                    fill = (255, 255, 255, 70)
-
-            draw.rounded_rectangle([x1, y1, x2, y2], radius=radius, fill=fill)
-
-    # === Selected cell highlight (B2) ===
-    sel_r, sel_c = 1, 1
-    sx1 = grid_left + sel_c * cell_w + gap
-    sy1 = grid_top + sel_r * cell_h + gap
-    sx2 = grid_left + (sel_c + 1) * cell_w - gap
-    sy2 = grid_top + (sel_r + 1) * cell_h - gap
-    # Bright cell fill
-    draw.rounded_rectangle([sx1, sy1, sx2, sy2], radius=radius, fill=(255, 255, 255, 180))
-    # Green selection border
-    draw.rounded_rectangle(
-        [sx1 - 2, sy1 - 2, sx2 + 2, sy2 + 2],
-        radius=radius + 2, outline=(16, 200, 90, 255), width=5
-    )
-
-    # === Header text (A B C D) ===
+    # === FONTS ===
     try:
-        hdr_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size * 0.052))
+        font_hdr = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size * 0.028))
+        font_num = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size * 0.022))
+        font_sel = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size * 0.030))
     except Exception:
-        hdr_font = ImageFont.load_default()
+        font_hdr = ImageFont.load_default()
+        font_num = font_hdr
+        font_sel = font_hdr
 
-    for col, lbl in enumerate("ABCD"):
-        cx = grid_left + col * cell_w + cell_w / 2
-        cy = grid_top + cell_h / 2
-        bbox = draw.textbbox((0, 0), lbl, font=hdr_font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text((cx - tw / 2, cy - th / 2 - 2), lbl,
-                  fill=(255, 255, 255, 255), font=hdr_font)
-
-    # === Cell data: small colored horizontal bars (abstract data) ===
-    # These look good at any icon size — better than tiny text
-    bar_data = [
-        # (row, col, width_fraction, color)
-        (1, 0, 0.65, (255, 255, 255, 160)),
-        (1, 2, 0.50, (255, 255, 255, 140)),
-        (1, 3, 0.75, (255, 255, 255, 160)),
-        (2, 0, 0.80, (255, 255, 255, 150)),
-        (2, 1, 0.45, (255, 255, 255, 130)),
-        (2, 2, 0.60, (255, 255, 255, 150)),
-        (2, 3, 0.40, (255, 255, 255, 120)),
-        (3, 0, 0.55, (255, 255, 255, 140)),
-        (3, 1, 0.70, (255, 255, 255, 160)),
-        (3, 2, 0.85, (255, 255, 255, 170)),
-        (3, 3, 0.50, (255, 255, 255, 130)),
-    ]
-    bar_h = int(size * 0.016)
-    for row, col, frac, color in bar_data:
-        cx = grid_left + col * cell_w + cell_w / 2
-        cy = grid_top + row * cell_h + cell_h / 2
-        bw = (cell_w - gap * 4) * frac
-        draw.rounded_rectangle(
-            [cx - bw / 2, cy - bar_h / 2, cx + bw / 2, cy + bar_h / 2],
-            radius=bar_h // 2, fill=color
-        )
-
-    # Selected cell: show "42" as a value (visible even at small sizes)
-    try:
-        val_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size * 0.055))
-    except Exception:
-        val_font = hdr_font
-    val_text = "42"
-    bbox = draw.textbbox((0, 0), val_text, font=val_font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    vcx = grid_left + sel_c * cell_w + cell_w / 2
-    vcy = grid_top + sel_r * cell_h + cell_h / 2
-    draw.text((vcx - tw / 2, vcy - th / 2 - 1), val_text,
-              fill=(16, 110, 60, 255), font=val_font)
-
-    # === Mini bar chart in bottom area ===
-    chart_left = grid_left + int(size * 0.04)
-    chart_right = grid_right - int(size * 0.04)
-    chart_bottom = grid_bottom + int(size * 0.13)
-    chart_top = grid_bottom + int(size * 0.03)
-    chart_h = chart_bottom - chart_top
-
-    bar_values = [0.4, 0.7, 0.5, 0.9, 0.6, 0.8, 0.45, 0.95]
-    n = len(bar_values)
-    total_w = chart_right - chart_left
-    bw = total_w / n * 0.65
-    spacing = total_w / n
-
-    for i, v in enumerate(bar_values):
-        bx = chart_left + i * spacing + (spacing - bw) / 2
-        bh = v * chart_h
-        by = chart_bottom - bh
-        # Gradient-like effect: lighter bars for higher values
-        alpha = int(120 + 100 * v)
-        draw.rounded_rectangle(
-            [bx, by, bx + bw, chart_bottom],
-            radius=4,
-            fill=(120, 230, 160, min(alpha, 255))
-        )
-
-    # === "Nexel" text ===
-    try:
-        title_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size * 0.095))
-    except Exception:
-        title_font = ImageFont.load_default()
-
-    text = "Nexel"
-    bbox = draw.textbbox((0, 0), text, font=title_font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    tx = (size - tw) / 2
-    ty = chart_bottom + int(size * 0.025)
+    # ==========================================
+    #  TABLE CARD — top-right, ~75% of the icon
+    # ==========================================
+    t_left = int(size * 0.26)
+    t_top = int(size * 0.08)
+    t_right = size - int(size * 0.06)
+    t_bottom = size - int(size * 0.08)
+    t_rad = int(size * 0.035)
 
     # Shadow
-    draw.text((tx + 2, ty + 2), text, fill=(0, 30, 15, 70), font=title_font)
-    # Text
-    draw.text((tx, ty), text, fill=(255, 255, 255, 255), font=title_font)
+    shadow = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    s_draw = ImageDraw.Draw(shadow)
+    for i in range(20):
+        a = int(25 * (1 - i / 20))
+        s_draw.rounded_rectangle(
+            [t_left + i, t_top + i + 6, t_right + i, t_bottom + i + 6],
+            radius=t_rad + i, fill=(0, 0, 0, a)
+        )
+    img = Image.alpha_composite(img, shadow)
+    draw = ImageDraw.Draw(img)
 
-    # Apply mask
+    # Card
+    draw.rounded_rectangle([t_left, t_top, t_right, t_bottom],
+                           radius=t_rad, fill=(255, 255, 255, 252))
+
+    tw = t_right - t_left
+    th = t_bottom - t_top
+
+    # Grid dimensions
+    ncols = 4
+    nrows = 9
+    hdr_h = int(th * 0.08)
+    cell_w = tw / ncols
+    d_top = t_top + hdr_h
+    cell_h = (t_bottom - d_top) / nrows
+
+    # Header bar
+    hdr_ov = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    hd = ImageDraw.Draw(hdr_ov)
+    hd.rounded_rectangle([t_left, t_top, t_right, t_top + hdr_h],
+                         radius=t_rad, fill=(33, 115, 70, 40))
+    hd.rectangle([t_left, t_top + t_rad, t_right, t_top + hdr_h],
+                 fill=(33, 115, 70, 40))
+    img = Image.alpha_composite(img, hdr_ov)
+    draw = ImageDraw.Draw(img)
+
+    # Header labels
+    for ci, lbl in enumerate("ABCD"):
+        cx = t_left + int((ci + 0.5) * cell_w)
+        cy = t_top + hdr_h // 2
+        bb = draw.textbbox((0, 0), lbl, font=font_hdr)
+        tw2, th2 = bb[2] - bb[0], bb[3] - bb[1]
+        draw.text((cx - tw2 // 2, cy - th2 // 2 - 1), lbl,
+                  fill=(33, 115, 70, 180), font=font_hdr)
+
+    # Grid lines
+    gc = (180, 190, 185, 40)
+    draw.line([(t_left + 4, d_top), (t_right - 4, d_top)],
+              fill=(33, 115, 70, 55), width=2)
+    for r in range(1, nrows + 1):
+        y = d_top + int(r * cell_h)
+        if y < t_bottom:
+            draw.line([(t_left + 4, y), (t_right - 4, y)], fill=gc, width=1)
+    for c in range(1, ncols):
+        x = t_left + int(c * cell_w)
+        draw.line([(x, t_top + 4), (x, t_bottom - 4)], fill=gc, width=1)
+
+    # Alternating rows
+    row_ov = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    rd = ImageDraw.Draw(row_ov)
+    for r in range(nrows):
+        if r % 2 == 0:
+            y1 = d_top + int(r * cell_h)
+            y2 = d_top + int((r + 1) * cell_h)
+            if y2 <= t_bottom:
+                rd.rectangle([t_left + 1, y1 + 1, t_right - 1, y2 - 1],
+                             fill=(33, 115, 70, 6))
+    img = Image.alpha_composite(img, row_ov)
+    draw = ImageDraw.Draw(img)
+
+    # Cell numbers (subtle grey text in cells)
+    import random
+    random.seed(99)
+    num_color = (100, 110, 105, 110)
+    for r in range(nrows):
+        for c in range(ncols):
+            cx = t_left + int((c + 0.5) * cell_w)
+            cy = d_top + int((r + 0.5) * cell_h)
+            val = str(random.randint(10, 999))
+            bb = draw.textbbox((0, 0), val, font=font_num)
+            tw2, th2 = bb[2] - bb[0], bb[3] - bb[1]
+            draw.text((cx - tw2 // 2, cy - th2 // 2), val,
+                      fill=num_color, font=font_num)
+
+    # Selected cell (B3) — bright green border
+    sr, sc = 2, 1
+    sx1 = t_left + int(sc * cell_w) + 1
+    sy1 = d_top + int(sr * cell_h) + 1
+    sx2 = t_left + int((sc + 1) * cell_w) - 1
+    sy2 = d_top + int((sr + 1) * cell_h) - 1
+    draw.rounded_rectangle([sx1, sy1, sx2, sy2], radius=4, fill=(255, 255, 255, 230))
+    draw.rounded_rectangle([sx1 - 2, sy1 - 2, sx2 + 2, sy2 + 2],
+                           radius=6, outline=(34, 197, 94, 255), width=4)
+    sel_val = "42"
+    bb = draw.textbbox((0, 0), sel_val, font=font_sel)
+    tw2, th2 = bb[2] - bb[0], bb[3] - bb[1]
+    draw.text(((sx1 + sx2) // 2 - tw2 // 2, (sy1 + sy2) // 2 - th2 // 2),
+              sel_val, fill=(33, 115, 70, 255), font=font_sel)
+
+    # ==========================================
+    #  CHART CARDS — left side, overlapping table
+    # ==========================================
+    chart_ov = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    cd = ImageDraw.Draw(chart_ov)
+
+    # --- BAR CHART (upper card) ---
+    bc_l, bc_t = int(size * 0.05), int(size * 0.09)
+    bc_r, bc_b = int(size * 0.38), int(size * 0.47)
+    cr = 20
+
+    # Shadow
+    for i in range(14):
+        a = int(30 * (1 - i / 14))
+        cd.rounded_rectangle([bc_l + i - 1, bc_t + i + 4, bc_r + i - 1, bc_b + i + 4],
+                             radius=cr + i, fill=(0, 0, 0, a))
+    # Card bg
+    cd.rounded_rectangle([bc_l, bc_t, bc_r, bc_b], radius=cr, fill=(255, 255, 255, 245))
+
+    # Bars
+    ba_l = bc_l + 18
+    ba_r = bc_r - 14
+    ba_t = bc_t + 18
+    ba_b = bc_b - 14
+    ba_w = ba_r - ba_l
+    ba_h = ba_b - ba_t
+
+    # Axis
+    cd.line([(ba_l, ba_b), (ba_r, ba_b)], fill=(200, 200, 200, 80), width=2)
+
+    vals = [0.42, 0.75, 0.55, 0.92, 0.68, 0.85]
+    colors = [
+        (59, 130, 246),   # blue
+        (34, 197, 94),    # green
+        (251, 191, 36),   # amber
+        (239, 68, 68),    # red
+        (139, 92, 246),   # purple
+        (14, 165, 233),   # sky
+    ]
+    nb = len(vals)
+    bsp = ba_w / nb
+    bw = bsp * 0.65
+
+    for i, (v, clr) in enumerate(zip(vals, colors)):
+        bx = ba_l + i * bsp + (bsp - bw) / 2
+        bh = v * (ba_h - 4)
+        by = ba_b - bh
+        cd.rounded_rectangle([bx, by, bx + bw, ba_b], radius=5,
+                             fill=(*clr, 210))
+
+    # Guide lines
+    for f in [0.33, 0.66]:
+        gy = ba_b - f * (ba_h - 4)
+        cd.line([(ba_l, gy), (ba_r, gy)], fill=(200, 200, 200, 40), width=1)
+
+    # --- LINE/AREA CHART (lower card) ---
+    lc_l, lc_t = int(size * 0.04), int(size * 0.52)
+    lc_r, lc_b = int(size * 0.40), int(size * 0.90)
+
+    # Shadow
+    for i in range(14):
+        a = int(30 * (1 - i / 14))
+        cd.rounded_rectangle([lc_l + i - 1, lc_t + i + 4, lc_r + i - 1, lc_b + i + 4],
+                             radius=cr + i, fill=(0, 0, 0, a))
+    # Card bg
+    cd.rounded_rectangle([lc_l, lc_t, lc_r, lc_b], radius=cr, fill=(255, 255, 255, 245))
+
+    la_l = lc_l + 18
+    la_r = lc_r - 14
+    la_t = lc_t + 18
+    la_b = lc_b - 14
+    la_w = la_r - la_l
+    la_h = la_b - la_t
+
+    # Axis
+    cd.line([(la_l, la_b), (la_r, la_b)], fill=(200, 200, 200, 80), width=2)
+
+    # Guide lines
+    for f in [0.33, 0.66]:
+        gy = la_b - f * (la_h - 4)
+        cd.line([(la_l, gy), (la_r, gy)], fill=(200, 200, 200, 40), width=1)
+
+    # Two line series
+    series = [
+        ([0.25, 0.40, 0.35, 0.60, 0.52, 0.75, 0.88], (59, 130, 246), 45),
+        ([0.45, 0.38, 0.52, 0.44, 0.62, 0.58, 0.70], (34, 197, 94), 35),
+    ]
+    for lv, lc_color, aa in series:
+        npts = len(lv)
+        pts = []
+        for i, v in enumerate(lv):
+            px = la_l + 6 + i * (la_w - 12) / (npts - 1)
+            py = la_b - 4 - v * (la_h - 10)
+            pts.append((int(px), int(py)))
+
+        # Area fill
+        poly = [(pts[0][0], la_b)] + pts + [(pts[-1][0], la_b)]
+        cd.polygon(poly, fill=(*lc_color, aa))
+
+        # Line
+        for i in range(len(pts) - 1):
+            cd.line([pts[i], pts[i + 1]], fill=(*lc_color, 230), width=3)
+
+        # Dots
+        for px, py in pts:
+            cd.ellipse([px - 5, py - 5, px + 5, py + 5], fill=(255, 255, 255, 245))
+            cd.ellipse([px - 3, py - 3, px + 3, py + 3], fill=(*lc_color, 240))
+
+    img = Image.alpha_composite(img, chart_ov)
+
+    # Apply rounded mask
     mask = rounded_rectangle_mask(size, CORNER_RADIUS)
     img.putalpha(mask)
     return img

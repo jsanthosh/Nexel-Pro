@@ -5,6 +5,8 @@
 #include <QAbstractTableModel>
 #include <QColor>
 #include <QMenu>
+#include <QVariantAnimation>
+#include <QTimer>
 #include <memory>
 #include <functional>
 #include "../core/Cell.h"
@@ -113,6 +115,9 @@ public:
     void setRowHeight(int row, int height);
     void setColumnWidth(int col, int width);
     void applyStoredDimensions();
+
+    // Formula recalc flash animation
+    double cellAnimationProgress(int row, int col) const;
 
     // Gridline visibility
     void setGridlinesVisible(bool visible);
@@ -233,6 +238,14 @@ private:
     void setupFreezeViews();
     void destroyFreezeViews();
     void updateFreezeGeometry();
+
+    // Formula cell flash: single animation 1.0→0.0 over 2.5s, remapped in paint
+    struct CellAnim {
+        QVariantAnimation* animation = nullptr;
+        double rawProgress = 0.0;  // 1.0→0.0 linearly over 2.5s
+    };
+    QMap<QPair<int,int>, CellAnim> m_cellAnimations;
+    void startCellFlashAnimation(int row, int col);
 
     // Chart data range highlight state
     struct ChartRangeHighlight {

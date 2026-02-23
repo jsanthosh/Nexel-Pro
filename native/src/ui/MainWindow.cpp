@@ -49,6 +49,7 @@
 #include <QtConcurrent>
 #include <QFutureWatcher>
 #include <QElapsedTimer>
+#include <QApplication>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
@@ -250,6 +251,7 @@ void MainWindow::switchToSheet(int index) {
     for (auto* img : m_images) {
         img->setVisible(img->property("sheetIndex").toInt() == index);
     }
+    applyZOrder();
 
     // Update macro engine's spreadsheet reference
     if (m_macroEngine) {
@@ -291,6 +293,7 @@ void MainWindow::onAddSheet() {
     m_sheets.push_back(sheet);
     m_sheetTabBar->addTab(name);
     m_sheetTabBar->setCurrentIndex(m_sheetTabBar->count() - 1);
+    setDirty();
     statusBar()->showMessage("Added: " + name);
 }
 
@@ -312,6 +315,7 @@ void MainWindow::onDeleteSheet() {
     // Delete charts/shapes/images belonging to the deleted sheet
     for (int i = m_charts.size() - 1; i >= 0; --i) {
         if (m_charts[i]->property("sheetIndex").toInt() == idx) {
+            removeOverlay(m_charts[i]);
             m_charts[i]->hide();
             m_charts[i]->deleteLater();
             m_charts.removeAt(i);
@@ -319,6 +323,7 @@ void MainWindow::onDeleteSheet() {
     }
     for (int i = m_shapes.size() - 1; i >= 0; --i) {
         if (m_shapes[i]->property("sheetIndex").toInt() == idx) {
+            removeOverlay(m_shapes[i]);
             m_shapes[i]->hide();
             m_shapes[i]->deleteLater();
             m_shapes.removeAt(i);
@@ -326,6 +331,7 @@ void MainWindow::onDeleteSheet() {
     }
     for (int i = m_images.size() - 1; i >= 0; --i) {
         if (m_images[i]->property("sheetIndex").toInt() == idx) {
+            removeOverlay(m_images[i]);
             m_images[i]->hide();
             m_images[i]->deleteLater();
             m_images.removeAt(i);
@@ -354,6 +360,7 @@ void MainWindow::onDeleteSheet() {
     int newIdx = qMin(idx, static_cast<int>(m_sheets.size()) - 1);
     m_sheetTabBar->setCurrentIndex(newIdx);
     switchToSheet(newIdx);
+    setDirty();
     statusBar()->showMessage("Deleted: " + name);
 }
 
@@ -424,6 +431,8 @@ void MainWindow::setSheets(const std::vector<std::shared_ptr<Spreadsheet>>& shee
     m_shapes.clear();
     for (auto* img : m_images) { img->hide(); img->deleteLater(); }
     m_images.clear();
+    m_overlayZOrder.clear();
+    m_overlayGroups.clear();
 
     m_sheets = sheets;
     m_activeSheetIndex = 0;
@@ -514,6 +523,34 @@ void MainWindow::createMenuBar() {
     insertMenu->addAction("&Row Above", m_spreadsheetView, &SpreadsheetView::insertEntireRow);
     insertMenu->addAction("&Column Left", m_spreadsheetView, &SpreadsheetView::insertEntireColumn);
 
+    // ===== Arrange Menu =====
+    QMenu* arrangeMenu = menuBar->addMenu("&Arrange");
+    arrangeMenu->addAction("Bring to &Front", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_BracketRight),
+        this, [this]() {
+            auto sel = selectedOverlays();
+            for (auto* w : sel) bringToFront(w);
+        });
+    arrangeMenu->addAction("Send to &Back", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_BracketLeft),
+        this, [this]() {
+            auto sel = selectedOverlays();
+            for (auto* w : sel) sendToBack(w);
+        });
+    arrangeMenu->addAction("Bring For&ward", QKeySequence(Qt::CTRL | Qt::Key_BracketRight),
+        this, [this]() {
+            auto sel = selectedOverlays();
+            for (auto* w : sel) bringForward(w);
+        });
+    arrangeMenu->addAction("Send Back&ward", QKeySequence(Qt::CTRL | Qt::Key_BracketLeft),
+        this, [this]() {
+            auto sel = selectedOverlays();
+            for (auto* w : sel) sendBackward(w);
+        });
+    arrangeMenu->addSeparator();
+    arrangeMenu->addAction("&Group", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G),
+        this, &MainWindow::groupSelectedOverlays);
+    arrangeMenu->addAction("&Ungroup", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::ALT | Qt::Key_G),
+        this, &MainWindow::ungroupSelectedOverlays);
+
     QMenu* dataMenu = menuBar->addMenu("&Data");
     dataMenu->addAction("Sort &Ascending", m_spreadsheetView, &SpreadsheetView::sortAscending);
     dataMenu->addAction("Sort &Descending", m_spreadsheetView, &SpreadsheetView::sortDescending);
@@ -575,15 +612,51 @@ void MainWindow::connectSignals() {
     connect(m_toolbar, &Toolbar::undo, this, &MainWindow::onUndo);
     connect(m_toolbar, &Toolbar::redo, this, &MainWindow::onRedo);
 
-    connect(m_toolbar, &Toolbar::bold, m_spreadsheetView, &SpreadsheetView::applyBold);
-    connect(m_toolbar, &Toolbar::italic, m_spreadsheetView, &SpreadsheetView::applyItalic);
+    connect(m_toolbar, &Toolbar::bold, this, [this]() {
+        if (m_selectedChart) {
+            auto cfg = m_selectedChart->config();
+            cfg.titleBold = !cfg.titleBold;
+            m_selectedChart->setConfig(cfg);
+            setDirty();
+        } else {
+            m_spreadsheetView->applyBold();
+        }
+    });
+    connect(m_toolbar, &Toolbar::italic, this, [this]() {
+        if (m_selectedChart) {
+            auto cfg = m_selectedChart->config();
+            cfg.titleItalic = !cfg.titleItalic;
+            m_selectedChart->setConfig(cfg);
+            setDirty();
+        } else {
+            m_spreadsheetView->applyItalic();
+        }
+    });
     connect(m_toolbar, &Toolbar::underline, m_spreadsheetView, &SpreadsheetView::applyUnderline);
     connect(m_toolbar, &Toolbar::strikethrough, m_spreadsheetView, &SpreadsheetView::applyStrikethrough);
     connect(m_toolbar, &Toolbar::fontFamilyChanged, m_spreadsheetView, &SpreadsheetView::applyFontFamily);
     connect(m_toolbar, &Toolbar::fontSizeChanged, m_spreadsheetView, &SpreadsheetView::applyFontSize);
 
-    connect(m_toolbar, &Toolbar::foregroundColorChanged, m_spreadsheetView, &SpreadsheetView::applyForegroundColor);
-    connect(m_toolbar, &Toolbar::backgroundColorChanged, m_spreadsheetView, &SpreadsheetView::applyBackgroundColor);
+    connect(m_toolbar, &Toolbar::foregroundColorChanged, this, [this](const QColor& color) {
+        if (m_selectedChart) {
+            auto cfg = m_selectedChart->config();
+            cfg.titleColor = color;
+            m_selectedChart->setConfig(cfg);
+            setDirty();
+        } else {
+            m_spreadsheetView->applyForegroundColor(color);
+        }
+    });
+    connect(m_toolbar, &Toolbar::backgroundColorChanged, this, [this](const QColor& color) {
+        if (m_selectedChart) {
+            auto cfg = m_selectedChart->config();
+            cfg.backgroundColor = color;
+            m_selectedChart->setConfig(cfg);
+            setDirty();
+        } else {
+            m_spreadsheetView->applyBackgroundColor(color);
+        }
+    });
 
     connect(m_toolbar, &Toolbar::hAlignChanged, m_spreadsheetView, &SpreadsheetView::applyHAlign);
     connect(m_toolbar, &Toolbar::vAlignChanged, m_spreadsheetView, &SpreadsheetView::applyVAlign);
@@ -711,7 +784,7 @@ void MainWindow::reconnectDataChanged() {
     auto* model = m_spreadsheetView->getModel();
     if (model) {
         m_dataChangedConnection = connect(model, &QAbstractItemModel::dataChanged,
-            this, &MainWindow::refreshActiveCharts);
+            this, [this]() { refreshActiveCharts(); setDirty(); });
         m_modelResetConnection = connect(model, &QAbstractItemModel::modelReset,
             this, &MainWindow::refreshActiveCharts);
     }
@@ -823,50 +896,63 @@ void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& f
             config.xAxisTitle = imported.xAxisTitle;
             config.yAxisTitle = imported.yAxisTitle;
 
-            for (int i = 0; i < imported.series.size(); ++i) {
-                ChartSeries s;
-                s.name = imported.series[i].name;
-                s.yValues = imported.series[i].values;
-
-                if (!imported.series[i].xNumeric.isEmpty()) {
-                    s.xValues = imported.series[i].xNumeric;
-                } else {
-                    s.xValues.resize(s.yValues.size());
-                    for (int j = 0; j < s.yValues.size(); ++j) {
-                        s.xValues[j] = j;
-                    }
-                }
-                s.color = excelColors[i % excelColors.size()];
-                config.series.append(s);
-            }
-
             int si = imported.sheetIndex;
             if (si < 0 || si >= static_cast<int>(m_sheets.size())) continue;
 
             auto* chart = new ChartWidget(m_spreadsheetView->viewport());
             chart->setSpreadsheet(m_sheets[si]);
-            chart->setConfig(config);
+
+            if (imported.isNexelNative && !imported.dataRange.isEmpty()) {
+                // Nexel-native chart: restore from dataRange
+                config.dataRange = imported.dataRange;
+                config.themeIndex = imported.themeIndex;
+                config.showLegend = imported.showLegend;
+                config.showGridLines = imported.showGridLines;
+                chart->setConfig(config);
+                chart->loadDataFromRange(imported.dataRange);
+            } else {
+                // Excel-imported chart: use inline series data
+                for (int i = 0; i < imported.series.size(); ++i) {
+                    ChartSeries s;
+                    s.name = imported.series[i].name;
+                    s.yValues = imported.series[i].values;
+
+                    if (!imported.series[i].xNumeric.isEmpty()) {
+                        s.xValues = imported.series[i].xNumeric;
+                    } else {
+                        s.xValues.resize(s.yValues.size());
+                        for (int j = 0; j < s.yValues.size(); ++j) {
+                            s.xValues[j] = j;
+                        }
+                    }
+                    s.color = excelColors[i % excelColors.size()];
+                    config.series.append(s);
+                }
+                chart->setConfig(config);
+            }
+
             chart->setGeometry(imported.x, imported.y, imported.width, imported.height);
 
             connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
             connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
             connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
-            connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
-                int idx = c->property("sheetIndex").toInt();
-                for (auto* other : m_charts) if (other != c && other->property("sheetIndex").toInt() == idx) other->setSelected(false);
-                for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == idx) s->setSelected(false);
-                highlightChartDataRange(c);
-            });
+            connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
 
             chart->setProperty("sheetIndex", si);
             chart->setVisible(si == m_activeSheetIndex);
             if (si == m_activeSheetIndex) {
                 chart->show();
-                chart->raise();
                 chart->startEntryAnimation();
             }
             m_charts.append(chart);
+            addOverlay(chart);
         }
+        applyZOrder();
+
+        m_currentFilePath = fileName;
+        m_dirty = false;
+        m_toolbar->setSaveEnabled(false);
+        updateWindowTitle();
 
         int chartCount = static_cast<int>(result.charts.size());
         double secs = elapsedMs / 1000.0;
@@ -888,7 +974,10 @@ void MainWindow::finishCsvOpen(const std::shared_ptr<Spreadsheet>& spreadsheet,
         spreadsheet->setSheetName(QFileInfo(fileName).baseName());
         std::vector<std::shared_ptr<Spreadsheet>> sheets = { spreadsheet };
         setSheets(sheets);
-        setWindowTitle("Nexel - " + QFileInfo(fileName).fileName());
+        m_currentFilePath = fileName;
+        m_dirty = false;
+        m_toolbar->setSaveEnabled(false);
+        updateWindowTitle();
         double secs = elapsedMs / 1000.0;
         statusBar()->showMessage(QString("Opened: %1 in %2s")
             .arg(QFileInfo(fileName).fileName()).arg(secs, 0, 'f', 1));
@@ -898,10 +987,14 @@ void MainWindow::finishCsvOpen(const std::shared_ptr<Spreadsheet>& spreadsheet,
 }
 
 void MainWindow::onNewDocument() {
-    if (DocumentService::instance().getCurrentDocument()) {
-        if (QMessageBox::question(this, "New Document", "Save current document before creating new one?")
-            == QMessageBox::Yes) {
+    if (m_dirty) {
+        auto result = QMessageBox::question(this, "Unsaved Changes",
+            "Do you want to save your changes before creating a new document?",
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+        if (result == QMessageBox::Save) {
             onSaveDocument();
+        } else if (result == QMessageBox::Cancel) {
+            return;
         }
     }
 
@@ -910,8 +1003,11 @@ void MainWindow::onNewDocument() {
     std::vector<std::shared_ptr<Spreadsheet>> sheets = { sheet };
     setSheets(sheets);
 
+    m_currentFilePath.clear();
+    m_dirty = false;
+    m_toolbar->setSaveEnabled(false);
     DocumentService::instance().createNewDocument("Untitled");
-    setWindowTitle("Nexel");
+    updateWindowTitle();
     statusBar()->showMessage("New document created");
 }
 
@@ -919,6 +1015,20 @@ void MainWindow::onOpenDocument() {
     QString fileName = QFileDialog::getOpenFileName(this, "Open Document", "",
         "All Spreadsheet Files (*.xlsx *.csv *.txt);;Excel Files (*.xlsx);;CSV Files (*.csv);;All Files (*)");
     openFile(fileName);
+}
+
+static QString chartTypeToString(ChartType type) {
+    switch (type) {
+        case ChartType::Column: return "column";
+        case ChartType::Bar: return "bar";
+        case ChartType::Line: return "line";
+        case ChartType::Area: return "area";
+        case ChartType::Scatter: return "scatter";
+        case ChartType::Pie: return "pie";
+        case ChartType::Donut: return "donut";
+        case ChartType::Histogram: return "histogram";
+    }
+    return "column";
 }
 
 void MainWindow::onSaveDocument() {
@@ -931,13 +1041,36 @@ void MainWindow::onSaveDocument() {
     bool success = false;
 
     if (ext == "xlsx" || ext == "xls") {
-        success = XlsxService::exportToFile(m_sheets, m_currentFilePath);
+        // Collect chart configs for saving
+        std::vector<NexelChartExport> chartExports;
+        for (auto* chart : m_charts) {
+            NexelChartExport ce;
+            auto cfg = chart->config();
+            ce.sheetIndex = chart->property("sheetIndex").toInt();
+            ce.chartType = chartTypeToString(cfg.type);
+            ce.title = cfg.title;
+            ce.xAxisTitle = cfg.xAxisTitle;
+            ce.yAxisTitle = cfg.yAxisTitle;
+            ce.dataRange = cfg.dataRange;
+            ce.themeIndex = cfg.themeIndex;
+            ce.showLegend = cfg.showLegend;
+            ce.showGridLines = cfg.showGridLines;
+            ce.x = chart->x();
+            ce.y = chart->y();
+            ce.width = chart->width();
+            ce.height = chart->height();
+            chartExports.push_back(ce);
+        }
+        success = XlsxService::exportToFile(m_sheets, m_currentFilePath, chartExports);
     } else {
         auto spreadsheet = m_spreadsheetView->getSpreadsheet();
         if (spreadsheet) success = CsvService::exportToFile(*spreadsheet, m_currentFilePath);
     }
 
     if (success) {
+        m_dirty = false;
+        updateWindowTitle();
+        m_toolbar->setSaveEnabled(false);
         statusBar()->showMessage("Saved: " + m_currentFilePath);
     } else {
         QMessageBox::warning(this, "Save Failed", "Could not save file.");
@@ -953,7 +1086,27 @@ void MainWindow::onSaveAs() {
     bool success = false;
 
     if (ext == "xlsx") {
-        success = XlsxService::exportToFile(m_sheets, fileName);
+        // Collect chart configs for saving
+        std::vector<NexelChartExport> chartExports;
+        for (auto* chart : m_charts) {
+            NexelChartExport ce;
+            auto cfg = chart->config();
+            ce.sheetIndex = chart->property("sheetIndex").toInt();
+            ce.chartType = chartTypeToString(cfg.type);
+            ce.title = cfg.title;
+            ce.xAxisTitle = cfg.xAxisTitle;
+            ce.yAxisTitle = cfg.yAxisTitle;
+            ce.dataRange = cfg.dataRange;
+            ce.themeIndex = cfg.themeIndex;
+            ce.showLegend = cfg.showLegend;
+            ce.showGridLines = cfg.showGridLines;
+            ce.x = chart->x();
+            ce.y = chart->y();
+            ce.width = chart->width();
+            ce.height = chart->height();
+            chartExports.push_back(ce);
+        }
+        success = XlsxService::exportToFile(m_sheets, fileName, chartExports);
     } else {
         auto spreadsheet = m_spreadsheetView->getSpreadsheet();
         if (spreadsheet) success = CsvService::exportToFile(*spreadsheet, fileName);
@@ -961,7 +1114,9 @@ void MainWindow::onSaveAs() {
 
     if (success) {
         m_currentFilePath = fileName;
-        setWindowTitle("Nexel - " + QFileInfo(fileName).fileName());
+        m_dirty = false;
+        updateWindowTitle();
+        m_toolbar->setSaveEnabled(false);
         statusBar()->showMessage("Saved: " + fileName);
     } else {
         QMessageBox::warning(this, "Save Failed", "Could not save file.");
@@ -982,6 +1137,7 @@ void MainWindow::onUndo() {
             m_spreadsheetView->scrollTo(idx);
         }
         refreshActiveCharts();
+        setDirty();
         statusBar()->showMessage("Undo");
     }
 }
@@ -1000,6 +1156,7 @@ void MainWindow::onRedo() {
             m_spreadsheetView->scrollTo(idx);
         }
         refreshActiveCharts();
+        setDirty();
         statusBar()->showMessage("Redo");
     }
 }
@@ -1030,8 +1187,23 @@ void MainWindow::onExportCsv() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    if (saveCurrentDocument()) event->accept();
-    else event->ignore();
+    if (!m_dirty) {
+        event->accept();
+        return;
+    }
+
+    auto result = QMessageBox::question(this, "Unsaved Changes",
+        "Do you want to save your changes before closing?",
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+
+    if (result == QMessageBox::Save) {
+        onSaveDocument();
+        event->accept();
+    } else if (result == QMessageBox::Discard) {
+        event->accept();
+    } else {
+        event->ignore();
+    }
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
@@ -1743,6 +1915,24 @@ bool MainWindow::saveCurrentDocument() {
     return true;
 }
 
+void MainWindow::setDirty(bool dirty) {
+    if (m_dirty == dirty) return;
+    m_dirty = dirty;
+    m_toolbar->setSaveEnabled(dirty);
+    updateWindowTitle();
+}
+
+void MainWindow::updateWindowTitle() {
+    QString title = "Nexel";
+    if (!m_currentFilePath.isEmpty()) {
+        title += " - " + QFileInfo(m_currentFilePath).fileName();
+    }
+    if (m_dirty) {
+        title += " *";
+    }
+    setWindowTitle(title);
+}
+
 // ============== Chart and Shape Insertion ==============
 
 QString MainWindow::getSelectionRange() const {
@@ -1796,22 +1986,15 @@ void MainWindow::onInsertChart() {
         connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
         connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
         connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
-        connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
-            int si = c->property("sheetIndex").toInt();
-            for (auto* other : m_charts) {
-                if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
-            }
-            for (auto* s : m_shapes) {
-                if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
-            }
-            highlightChartDataRange(c);
-        });
+        connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
 
         chart->setProperty("sheetIndex", m_activeSheetIndex);
         chart->show();
-        chart->raise();
         m_charts.append(chart);
+        addOverlay(chart);
+        applyZOrder();
 
+        setDirty();
         statusBar()->showMessage("Chart inserted");
     }
 }
@@ -1835,19 +2018,34 @@ void MainWindow::onInsertShape() {
         connect(shape, &ShapeWidget::deleteRequested, this, &MainWindow::onDeleteShape);
         connect(shape, &ShapeWidget::shapeSelected, this, [this](ShapeWidget* s) {
             int si = s->property("sheetIndex").toInt();
-            for (auto* other : m_shapes) {
-                if (other != s && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+            bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
+            if (!multiSelect) {
+                for (auto* other : m_shapes)
+                    if (other != s && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+                for (auto* c : m_charts)
+                    if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+                for (auto* img : m_images)
+                    if (img->property("sheetIndex").toInt() == si) img->setSelected(false);
             }
-            for (auto* c : m_charts) {
-                if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+            // Group-aware: select all group members
+            OverlayGroup* grp = findGroupContaining(s);
+            if (grp) {
+                for (auto* w : grp->members) {
+                    if (auto* chart = qobject_cast<ChartWidget*>(w)) chart->setSelected(true);
+                    else if (auto* shape2 = qobject_cast<ShapeWidget*>(w)) shape2->setSelected(true);
+                    else if (auto* img = qobject_cast<ImageWidget*>(w)) img->setSelected(true);
+                }
             }
+            m_selectedChart = nullptr;
         });
 
         shape->setProperty("sheetIndex", m_activeSheetIndex);
         shape->show();
-        shape->raise();
         m_shapes.append(shape);
+        addOverlay(shape);
+        applyZOrder();
 
+        setDirty();
         statusBar()->showMessage("Shape inserted");
     }
 }
@@ -1884,9 +2082,12 @@ void MainWindow::onEditChart(ChartWidget* chart) {
 void MainWindow::onDeleteChart(ChartWidget* chart) {
     if (!chart) return;
 
+    if (chart == m_selectedChart) m_selectedChart = nullptr;
+    removeOverlay(chart);
     m_charts.removeOne(chart);
     chart->hide();
     chart->deleteLater();
+    setDirty();
     statusBar()->showMessage("Chart deleted");
 }
 
@@ -1903,9 +2104,11 @@ void MainWindow::onEditShape(ShapeWidget* shape) {
 void MainWindow::onDeleteShape(ShapeWidget* shape) {
     if (!shape) return;
 
+    removeOverlay(shape);
     m_shapes.removeOne(shape);
     shape->hide();
     shape->deleteLater();
+    setDirty();
     statusBar()->showMessage("Shape deleted");
 }
 
@@ -1943,21 +2146,32 @@ void MainWindow::onInsertImage() {
     connect(image, &ImageWidget::deleteRequested, this, &MainWindow::onDeleteImage);
     connect(image, &ImageWidget::imageSelected, this, [this](ImageWidget* img) {
         int si = img->property("sheetIndex").toInt();
-        for (auto* other : m_images) {
-            if (other != img && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+        bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
+        if (!multiSelect) {
+            for (auto* other : m_images)
+                if (other != img && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+            for (auto* c : m_charts)
+                if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+            for (auto* s : m_shapes)
+                if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
         }
-        for (auto* c : m_charts) {
-            if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+        // Group-aware: select all group members
+        OverlayGroup* grp = findGroupContaining(img);
+        if (grp) {
+            for (auto* w : grp->members) {
+                if (auto* chart = qobject_cast<ChartWidget*>(w)) chart->setSelected(true);
+                else if (auto* shape = qobject_cast<ShapeWidget*>(w)) shape->setSelected(true);
+                else if (auto* img2 = qobject_cast<ImageWidget*>(w)) img2->setSelected(true);
+            }
         }
-        for (auto* s : m_shapes) {
-            if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
-        }
+        m_selectedChart = nullptr;
     });
 
     image->setProperty("sheetIndex", m_activeSheetIndex);
     image->show();
-    image->raise();
     m_images.append(image);
+    addOverlay(image);
+    applyZOrder();
 
     statusBar()->showMessage("Image inserted: " + QFileInfo(fileName).fileName());
 }
@@ -1976,6 +2190,7 @@ void MainWindow::onEditImage(ImageWidget* image) {
 void MainWindow::onDeleteImage(ImageWidget* image) {
     if (!image) return;
 
+    removeOverlay(image);
     m_images.removeOne(image);
     image->hide();
     image->deleteLater();
@@ -2055,6 +2270,34 @@ void MainWindow::onRunLastMacro() {
 
 // ============== Multi-select & Delete key ==============
 
+void MainWindow::onChartSelected(ChartWidget* c) {
+    int si = c->property("sheetIndex").toInt();
+    bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
+
+    if (!multiSelect) {
+        for (auto* other : m_charts)
+            if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+        for (auto* s : m_shapes)
+            if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+        for (auto* img : m_images)
+            if (img->property("sheetIndex").toInt() == si) img->setSelected(false);
+    }
+
+    // If widget is in a group, select all group members
+    OverlayGroup* grp = findGroupContaining(c);
+    if (grp) {
+        for (auto* w : grp->members) {
+            if (auto* chart = qobject_cast<ChartWidget*>(w)) chart->setSelected(true);
+            else if (auto* shape = qobject_cast<ShapeWidget*>(w)) shape->setSelected(true);
+            else if (auto* img = qobject_cast<ImageWidget*>(w)) img->setSelected(true);
+        }
+    }
+
+    m_spreadsheetView->selectionModel()->clearSelection();
+    highlightChartDataRange(c);
+    m_selectedChart = c;
+}
+
 void MainWindow::deselectAllOverlays() {
     for (auto* c : m_charts) {
         if (c->property("sheetIndex").toInt() == m_activeSheetIndex)
@@ -2070,6 +2313,7 @@ void MainWindow::deselectAllOverlays() {
     }
     // Clear chart data range highlights
     m_spreadsheetView->clearChartRangeHighlight();
+    m_selectedChart = nullptr;
 
     // Hide chart properties panel when nothing is selected
     if (m_chartPropsDock && m_chartPropsDock->isVisible()) {
@@ -2085,6 +2329,7 @@ void MainWindow::deleteSelectedOverlays() {
             chartsToDelete.append(c);
     }
     for (auto* c : chartsToDelete) {
+        removeOverlay(c);
         m_charts.removeOne(c);
         c->hide();
         c->deleteLater();
@@ -2097,6 +2342,7 @@ void MainWindow::deleteSelectedOverlays() {
             shapesToDelete.append(s);
     }
     for (auto* s : shapesToDelete) {
+        removeOverlay(s);
         m_shapes.removeOne(s);
         s->hide();
         s->deleteLater();
@@ -2109,6 +2355,7 @@ void MainWindow::deleteSelectedOverlays() {
             imagesToDelete.append(img);
     }
     for (auto* img : imagesToDelete) {
+        removeOverlay(img);
         m_images.removeOne(img);
         img->hide();
         img->deleteLater();
@@ -2117,6 +2364,138 @@ void MainWindow::deleteSelectedOverlays() {
     int total = chartsToDelete.size() + shapesToDelete.size() + imagesToDelete.size();
     if (total > 0) {
         statusBar()->showMessage(QString("Deleted %1 object(s)").arg(total));
+    }
+}
+
+// ============== Overlay Z-Order & Grouping ==============
+
+void MainWindow::addOverlay(QWidget* w) {
+    if (!m_overlayZOrder.contains(w))
+        m_overlayZOrder.append(w);
+}
+
+void MainWindow::removeOverlay(QWidget* w) {
+    m_overlayZOrder.removeAll(w);
+    // Also remove from any group
+    for (int g = m_overlayGroups.size() - 1; g >= 0; --g) {
+        m_overlayGroups[g].members.removeAll(w);
+        if (m_overlayGroups[g].members.size() <= 1)
+            m_overlayGroups.removeAt(g);
+    }
+}
+
+void MainWindow::applyZOrder() {
+    // Raise overlays on the active sheet in z-order (index 0 = back, last = front)
+    for (auto* w : m_overlayZOrder) {
+        if (w->property("sheetIndex").toInt() == m_activeSheetIndex && w->isVisible())
+            w->raise();
+    }
+}
+
+void MainWindow::bringToFront(QWidget* w) {
+    m_overlayZOrder.removeAll(w);
+    m_overlayZOrder.append(w);
+    applyZOrder();
+    setDirty();
+}
+
+void MainWindow::sendToBack(QWidget* w) {
+    m_overlayZOrder.removeAll(w);
+    m_overlayZOrder.prepend(w);
+    applyZOrder();
+    setDirty();
+}
+
+void MainWindow::bringForward(QWidget* w) {
+    int idx = m_overlayZOrder.indexOf(w);
+    if (idx < 0 || idx >= m_overlayZOrder.size() - 1) return;
+    m_overlayZOrder.swapItemsAt(idx, idx + 1);
+    applyZOrder();
+    setDirty();
+}
+
+void MainWindow::sendBackward(QWidget* w) {
+    int idx = m_overlayZOrder.indexOf(w);
+    if (idx <= 0) return;
+    m_overlayZOrder.swapItemsAt(idx, idx - 1);
+    applyZOrder();
+    setDirty();
+}
+
+QVector<QWidget*> MainWindow::selectedOverlays() const {
+    QVector<QWidget*> sel;
+    for (auto* c : m_charts) {
+        if (c->isSelected() && c->property("sheetIndex").toInt() == m_activeSheetIndex)
+            sel.append(c);
+    }
+    for (auto* s : m_shapes) {
+        if (s->isSelected() && s->property("sheetIndex").toInt() == m_activeSheetIndex)
+            sel.append(s);
+    }
+    for (auto* img : m_images) {
+        if (img->isSelected() && img->property("sheetIndex").toInt() == m_activeSheetIndex)
+            sel.append(img);
+    }
+    return sel;
+}
+
+OverlayGroup* MainWindow::findGroupContaining(QWidget* w) {
+    for (auto& grp : m_overlayGroups) {
+        if (grp.members.contains(w))
+            return &grp;
+    }
+    return nullptr;
+}
+
+void MainWindow::groupSelectedOverlays() {
+    QVector<QWidget*> sel = selectedOverlays();
+    if (sel.size() < 2) {
+        statusBar()->showMessage("Select at least 2 overlays to group");
+        return;
+    }
+
+    // Remove selected widgets from any existing groups
+    for (auto* w : sel) {
+        for (int g = m_overlayGroups.size() - 1; g >= 0; --g) {
+            m_overlayGroups[g].members.removeAll(w);
+            if (m_overlayGroups[g].members.size() <= 1)
+                m_overlayGroups.removeAt(g);
+        }
+    }
+
+    OverlayGroup grp;
+    grp.id = m_nextGroupId++;
+    grp.members = sel;
+    m_overlayGroups.append(grp);
+
+    // Tag each widget with group id
+    for (auto* w : sel)
+        w->setProperty("overlayGroupId", grp.id);
+
+    statusBar()->showMessage(QString("Grouped %1 objects").arg(sel.size()));
+    setDirty();
+}
+
+void MainWindow::ungroupSelectedOverlays() {
+    QVector<QWidget*> sel = selectedOverlays();
+    QSet<int> groupsToRemove;
+
+    for (auto* w : sel) {
+        int gid = w->property("overlayGroupId").toInt();
+        if (gid > 0) groupsToRemove.insert(gid);
+    }
+
+    for (int g = m_overlayGroups.size() - 1; g >= 0; --g) {
+        if (groupsToRemove.contains(m_overlayGroups[g].id)) {
+            for (auto* w : m_overlayGroups[g].members)
+                w->setProperty("overlayGroupId", 0);
+            m_overlayGroups.removeAt(g);
+        }
+    }
+
+    if (!groupsToRemove.isEmpty()) {
+        statusBar()->showMessage("Ungrouped");
+        setDirty();
     }
 }
 
@@ -2223,17 +2602,13 @@ void MainWindow::insertChartFromChat(const QJsonObject& params) {
     connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
     connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
     connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
-    connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
-        int si = c->property("sheetIndex").toInt();
-        for (auto* other : m_charts) if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
-        for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
-        highlightChartDataRange(c);
-    });
+    connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
 
     chart->setProperty("sheetIndex", m_activeSheetIndex);
     chart->show();
-    chart->raise();
     m_charts.append(chart);
+    addOverlay(chart);
+    applyZOrder();
 }
 
 void MainWindow::insertShapeFromChat(const QJsonObject& params) {
@@ -2276,14 +2651,28 @@ void MainWindow::insertShapeFromChat(const QJsonObject& params) {
     connect(shape, &ShapeWidget::deleteRequested, this, &MainWindow::onDeleteShape);
     connect(shape, &ShapeWidget::shapeSelected, this, [this](ShapeWidget* s) {
         int si = s->property("sheetIndex").toInt();
-        for (auto* other : m_shapes) if (other != s && other->property("sheetIndex").toInt() == si) other->setSelected(false);
-        for (auto* c : m_charts) if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+        bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
+        if (!multiSelect) {
+            for (auto* other : m_shapes) if (other != s && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+            for (auto* c : m_charts) if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+            for (auto* img : m_images) if (img->property("sheetIndex").toInt() == si) img->setSelected(false);
+        }
+        OverlayGroup* grp = findGroupContaining(s);
+        if (grp) {
+            for (auto* w : grp->members) {
+                if (auto* chart = qobject_cast<ChartWidget*>(w)) chart->setSelected(true);
+                else if (auto* shape2 = qobject_cast<ShapeWidget*>(w)) shape2->setSelected(true);
+                else if (auto* img = qobject_cast<ImageWidget*>(w)) img->setSelected(true);
+            }
+        }
+        m_selectedChart = nullptr;
     });
 
     shape->setProperty("sheetIndex", m_activeSheetIndex);
     shape->show();
-    shape->raise();
     m_shapes.append(shape);
+    addOverlay(shape);
+    applyZOrder();
 }
 
 void MainWindow::insertImageFromChat(const QJsonObject& params) {
@@ -2317,15 +2706,28 @@ void MainWindow::insertImageFromChat(const QJsonObject& params) {
     connect(image, &ImageWidget::deleteRequested, this, &MainWindow::onDeleteImage);
     connect(image, &ImageWidget::imageSelected, this, [this](ImageWidget* img) {
         int si = img->property("sheetIndex").toInt();
-        for (auto* other : m_images) if (other != img && other->property("sheetIndex").toInt() == si) other->setSelected(false);
-        for (auto* c : m_charts) if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
-        for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+        bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
+        if (!multiSelect) {
+            for (auto* other : m_images) if (other != img && other->property("sheetIndex").toInt() == si) other->setSelected(false);
+            for (auto* c : m_charts) if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
+            for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
+        }
+        OverlayGroup* grp = findGroupContaining(img);
+        if (grp) {
+            for (auto* w : grp->members) {
+                if (auto* chart = qobject_cast<ChartWidget*>(w)) chart->setSelected(true);
+                else if (auto* shape = qobject_cast<ShapeWidget*>(w)) shape->setSelected(true);
+                else if (auto* img2 = qobject_cast<ImageWidget*>(w)) img2->setSelected(true);
+            }
+        }
+        m_selectedChart = nullptr;
     });
 
     image->setProperty("sheetIndex", m_activeSheetIndex);
     image->show();
-    image->raise();
     m_images.append(image);
+    addOverlay(image);
+    applyZOrder();
 }
 
 // ============== Chart Properties Panel ==============
@@ -2415,18 +2817,14 @@ void MainWindow::onCreatePivotTable() {
             connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
             connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
             connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
-            connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
-                int si = c->property("sheetIndex").toInt();
-                for (auto* other : m_charts) if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
-                for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
-                highlightChartDataRange(c);
-            });
+            connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
 
             chart->setProperty("sheetIndex", pivotSheetIdx);
             chart->show();
-            chart->raise();
             chart->startEntryAnimation();
             m_charts.append(chart);
+            addOverlay(chart);
+            applyZOrder();
         }
 
         statusBar()->showMessage("Pivot table created on sheet: " + pivotSheet->getSheetName());
@@ -2505,22 +2903,18 @@ void MainWindow::applyTemplate(const TemplateResult& result) {
         connect(chart, &ChartWidget::editRequested, this, &MainWindow::onEditChart);
         connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
         connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
-        connect(chart, &ChartWidget::chartSelected, this, [this](ChartWidget* c) {
-            int si = c->property("sheetIndex").toInt();
-            for (auto* other : m_charts) if (other != c && other->property("sheetIndex").toInt() == si) other->setSelected(false);
-            for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
-            highlightChartDataRange(c);
-        });
+        connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
 
         chart->setProperty("sheetIndex", sheetIdx);
         chart->setVisible(sheetIdx == m_activeSheetIndex);
         if (sheetIdx == m_activeSheetIndex) {
             chart->show();
-            chart->raise();
             chart->startEntryAnimation();
         }
         m_charts.append(chart);
+        addOverlay(chart);
     }
+    applyZOrder();
 
     statusBar()->showMessage("Template applied: " + result.sheets[0]->getSheetName());
 }

@@ -1,4 +1,5 @@
 #include "CellDelegate.h"
+#include "SpreadsheetView.h"
 #include <QLineEdit>
 #include <QPainter>
 #include <QPainterPath>
@@ -205,6 +206,15 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         painter->fillRect(rect, QColor(198, 217, 240, 60));
     } else {
         painter->fillRect(rect, bgColor);
+    }
+
+    // --- Formula recalc flash overlay (bright yellow, fade-in then hold then fade-out) ---
+    if (m_spreadsheetView) {
+        double flashProgress = m_spreadsheetView->cellAnimationProgress(index.row(), index.column());
+        if (flashProgress > 0.01) {
+            int alpha = static_cast<int>(130 * flashProgress);
+            painter->fillRect(rect, QColor(255, 243, 100, alpha));
+        }
     }
 
     // --- Text ---

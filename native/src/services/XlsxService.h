@@ -26,6 +26,26 @@ struct ImportedChart {
     QString yAxisTitle;
     QVector<ImportedChartSeries> series;
     int x = 50, y = 50, width = 420, height = 320;
+    // Nexel-native fields (for round-tripping our own charts)
+    QString dataRange;          // e.g. "A1:D10"
+    int themeIndex = 0;
+    bool showLegend = true;
+    bool showGridLines = true;
+    bool isNexelNative = false; // true if saved by Nexel (has dataRange)
+};
+
+// Chart config for export (matches ChartWidget runtime state)
+struct NexelChartExport {
+    int sheetIndex = 0;
+    QString chartType;
+    QString title;
+    QString xAxisTitle;
+    QString yAxisTitle;
+    QString dataRange;
+    int themeIndex = 0;
+    bool showLegend = true;
+    bool showGridLines = true;
+    int x = 50, y = 50, width = 420, height = 320;
 };
 
 struct XlsxImportResult {
@@ -38,13 +58,15 @@ public:
     // Returns a vector of sheets (one per worksheet in the xlsx file)
     static XlsxImportResult importFromFile(const QString& filePath);
 
-    // Export sheets to XLSX with all formatting
-    static bool exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& sheets, const QString& filePath);
+    // Export sheets to XLSX with all formatting (optionally including chart configs)
+    static bool exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& sheets, const QString& filePath,
+                             const std::vector<NexelChartExport>& charts = {});
 
 private:
     // Export helpers
     static QString columnIndexToLetter(int col);
-    static QByteArray generateContentTypes(int sheetCount);
+    static QByteArray generateContentTypes(int sheetCount, bool hasSharedStrings,
+                                             int chartCount, const std::vector<int>& drawingSheetNums);
     static QByteArray generateRels();
     static QByteArray generateWorkbook(const std::vector<std::shared_ptr<Spreadsheet>>& sheets);
     static QByteArray generateWorkbookRels(int sheetCount);
@@ -54,6 +76,14 @@ private:
                                      QStringList& sharedStrings);
     static QByteArray generateSharedStrings(const QStringList& sharedStrings);
     static QString cellStyleKey(const CellStyle& style);
+
+    // OOXML chart export helpers
+    static QByteArray generateChartXml(const NexelChartExport& chart, const QString& sheetName);
+    static QByteArray generateDrawingXml(const std::vector<NexelChartExport>& allCharts,
+                                          const std::vector<int>& chartIndices);
+    static QByteArray generateDrawingRels(int chartCount, int startChartNum);
+    static QByteArray generateSheetRels(int drawingNum);
+    static QVector<QColor> chartThemeColors(int themeIndex);
 
     struct SheetInfo {
         QString name;

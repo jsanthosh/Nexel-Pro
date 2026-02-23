@@ -1,10 +1,12 @@
 #include "ImageWidget.h"
+#include "MainWindow.h"
 
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QContextMenuEvent>
 #include <QMenu>
+#include <QApplication>
 #include <QBuffer>
 #include <QFile>
 
@@ -272,7 +274,16 @@ void ImageWidget::mouseMoveEvent(QMouseEvent* event)
 
     if (m_dragging) {
         QPoint newPos = mapToParent(event->pos()) - m_dragOffset;
+        QPoint delta = newPos - pos();
         move(newPos);
+        // Group-aware drag: move siblings by same delta
+        int gid = property("overlayGroupId").toInt();
+        if (gid > 0 && parentWidget()) {
+            for (QWidget* sibling : parentWidget()->findChildren<QWidget*>()) {
+                if (sibling != this && sibling->property("overlayGroupId").toInt() == gid)
+                    sibling->move(sibling->pos() + delta);
+            }
+        }
         emit imageMoved(this);
         return;
     }
@@ -305,14 +316,40 @@ void ImageWidget::mouseDoubleClickEvent(QMouseEvent* /*event*/)
 void ImageWidget::contextMenuEvent(QContextMenuEvent* event)
 {
     QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; }"
+        "QMenu::item { padding: 6px 20px; border-radius: 4px; }"
+        "QMenu::item:selected { background-color: #E8F0FE; }"
+        "QMenu::separator { height: 1px; background: #E0E3E8; margin: 3px 8px; }"
+    );
 
-    QAction* changeAction = menu.addAction(QStringLiteral("Change Image..."));
-    connect(changeAction, &QAction::triggered, this, [this]() {
+    menu.addAction(QStringLiteral("Change Image..."), this, [this]() {
         emit editRequested(this);
     });
+    menu.addSeparator();
 
-    QAction* deleteAction = menu.addAction(QStringLiteral("Delete Image"));
-    connect(deleteAction, &QAction::triggered, this, [this]() {
+    // Order submenu
+    QMenu* orderMenu = menu.addMenu("Order");
+    orderMenu->setStyleSheet(menu.styleSheet());
+    auto* mw = qobject_cast<MainWindow*>(window());
+    if (mw) {
+        orderMenu->addAction("Bring to Front", this, [mw, this]() { mw->bringToFront(this); });
+        orderMenu->addAction("Send to Back", this, [mw, this]() { mw->sendToBack(this); });
+        orderMenu->addAction("Bring Forward", this, [mw, this]() { mw->bringForward(this); });
+        orderMenu->addAction("Send Backward", this, [mw, this]() { mw->sendBackward(this); });
+    }
+
+    // Group / Ungroup
+    if (mw) {
+        menu.addSeparator();
+        if (mw->selectedOverlays().size() >= 2)
+            menu.addAction("Group", mw, &MainWindow::groupSelectedOverlays);
+        if (mw->findGroupContaining(this))
+            menu.addAction("Ungroup", mw, &MainWindow::ungroupSelectedOverlays);
+    }
+
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("Delete Image"), this, [this]() {
         emit deleteRequested(this);
     });
 

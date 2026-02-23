@@ -1,10 +1,12 @@
 #include "ShapeWidget.h"
+#include "MainWindow.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QInputDialog>
+#include <QApplication>
 #include <QtMath>
 #include <cmath>
 
@@ -264,7 +266,16 @@ void ShapeWidget::mouseMoveEvent(QMouseEvent* event) {
             newPos.setX(qBound(0, newPos.x(), parentWidget()->width() - width()));
             newPos.setY(qBound(0, newPos.y(), parentWidget()->height() - height()));
         }
+        QPoint delta = newPos - pos();
         move(newPos);
+        // Group-aware drag: move siblings by same delta
+        int gid = property("overlayGroupId").toInt();
+        if (gid > 0 && parentWidget()) {
+            for (QWidget* sibling : parentWidget()->findChildren<QWidget*>()) {
+                if (sibling != this && sibling->property("overlayGroupId").toInt() == gid)
+                    sibling->move(sibling->pos() + delta);
+            }
+        }
         emit shapeMoved(this);
     } else if (m_selected) {
         ResizeHandle h = hitTestHandle(event->pos());
@@ -311,6 +322,28 @@ void ShapeWidget::contextMenuEvent(QContextMenuEvent* event) {
         if (ok) { m_config.text = text; update(); }
     });
     menu.addAction("Edit Shape...", this, [this]() { emit editRequested(this); });
+    menu.addSeparator();
+
+    // Order submenu
+    QMenu* orderMenu = menu.addMenu("Order");
+    orderMenu->setStyleSheet(menu.styleSheet());
+    auto* mw = qobject_cast<MainWindow*>(window());
+    if (mw) {
+        orderMenu->addAction("Bring to Front", this, [mw, this]() { mw->bringToFront(this); });
+        orderMenu->addAction("Send to Back", this, [mw, this]() { mw->sendToBack(this); });
+        orderMenu->addAction("Bring Forward", this, [mw, this]() { mw->bringForward(this); });
+        orderMenu->addAction("Send Backward", this, [mw, this]() { mw->sendBackward(this); });
+    }
+
+    // Group / Ungroup
+    if (mw) {
+        menu.addSeparator();
+        if (mw->selectedOverlays().size() >= 2)
+            menu.addAction("Group", mw, &MainWindow::groupSelectedOverlays);
+        if (mw->findGroupContaining(this))
+            menu.addAction("Ungroup", mw, &MainWindow::ungroupSelectedOverlays);
+    }
+
     menu.addSeparator();
     menu.addAction("Delete Shape", this, [this]() { emit deleteRequested(this); });
 

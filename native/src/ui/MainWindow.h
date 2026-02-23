@@ -27,6 +27,12 @@ class ChartPropertiesPanel;
 class MacroEngine;
 struct TemplateResult;
 
+// Overlay group: a set of widgets that move/select together
+struct OverlayGroup {
+    int id;
+    QVector<QWidget*> members;
+};
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -34,6 +40,18 @@ public:
     MainWindow(QWidget* parent = nullptr);
     ~MainWindow() = default;
     void openFile(const QString& fileName);
+
+    // Z-order operations (called from widget context menus)
+    void bringToFront(QWidget* w);
+    void sendToBack(QWidget* w);
+    void bringForward(QWidget* w);
+    void sendBackward(QWidget* w);
+
+    // Grouping operations
+    void groupSelectedOverlays();
+    void ungroupSelectedOverlays();
+    OverlayGroup* findGroupContaining(QWidget* w);
+    QVector<QWidget*> selectedOverlays() const;
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -87,6 +105,7 @@ private slots:
     void onEditShape(ShapeWidget* shape);
     void onDeleteShape(ShapeWidget* shape);
     void onChartPropertiesRequested(ChartWidget* chart);
+    void onChartSelected(ChartWidget* chart);
 
     // Image insertion
     void onInsertImage();
@@ -137,17 +156,29 @@ private:
     std::vector<std::shared_ptr<Spreadsheet>> m_sheets;
     int m_activeSheetIndex = 0;
     bool m_frozenPanes = false;
+    bool m_dirty = false;
     QAction* m_gridlinesAction = nullptr;
 
     // Charts, shapes, and images (flat lists; each widget has "sheetIndex" property)
+    ChartWidget* m_selectedChart = nullptr;
     QVector<ChartWidget*> m_charts;
     QVector<ShapeWidget*> m_shapes;
     QVector<ImageWidget*> m_images;
+
+    // Unified z-order list (index 0 = back, last = front)
+    QVector<QWidget*> m_overlayZOrder;
+
+    // Grouping
+    QVector<OverlayGroup> m_overlayGroups;
+    int m_nextGroupId = 1;
     QMetaObject::Connection m_dataChangedConnection;
     QMetaObject::Connection m_modelResetConnection;
     QString getSelectionRange() const;
     void deleteSelectedOverlays();
     void deselectAllOverlays();
+    void addOverlay(QWidget* w);
+    void removeOverlay(QWidget* w);
+    void applyZOrder();
     void insertChartFromChat(const QJsonObject& params);
     void insertShapeFromChat(const QJsonObject& params);
     void insertImageFromChat(const QJsonObject& params);
@@ -155,6 +186,8 @@ private:
     void refreshActiveCharts();
     void applyTemplate(const TemplateResult& result);
     void highlightChartDataRange(ChartWidget* chart);
+    void setDirty(bool dirty = true);
+    void updateWindowTitle();
 
     // Background import completion handlers
     void finishXlsxOpen(const XlsxImportResult& result, const QString& fileName, qint64 elapsedMs);

@@ -18,6 +18,9 @@ public:
     // Creates and returns a second toolbar for row 2 (layout, borders, data, chat)
     QToolBar* createSecondaryToolbar(QWidget* parent);
 
+    // Enable/disable save button based on dirty state
+    void setSaveEnabled(bool enabled);
+
 signals:
     // File
     void newDocument();
@@ -74,6 +77,7 @@ private:
 
     QFontComboBox* m_fontCombo = nullptr;
     QSpinBox* m_fontSizeSpinBox = nullptr;
+    QToolButton* m_saveBtn = nullptr;
     QColor m_lastFgColor = QColor("#000000");
     QColor m_lastBgColor = QColor("#FFFF00");
 
