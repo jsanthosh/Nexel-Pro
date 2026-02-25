@@ -1,6 +1,8 @@
 #include "ChartWidget.h"
+#include "Theme.h"
 #include "MainWindow.h"
 #include "../core/Spreadsheet.h"
+#include "../core/DocumentTheme.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
@@ -11,19 +13,20 @@
 #include <algorithm>
 #include <cmath>
 
-// --- Theme color palettes ---
-static const QVector<QVector<QColor>> kThemePalettes = {
-    // 0: Excel
+// --- Chart color palettes (index 0 is "Document Theme", resolved at runtime) ---
+// Indices 1-6 are fixed palettes; index 0 falls through to document theme accents.
+static const QVector<QVector<QColor>> kFixedPalettes = {
+    // 1: Excel (fallback for Document Theme when no spreadsheet available)
     { QColor("#4472C4"), QColor("#ED7D31"), QColor("#A5A5A5"), QColor("#FFC000"), QColor("#5B9BD5"), QColor("#70AD47") },
-    // 1: Material
+    // 2: Material
     { QColor("#2196F3"), QColor("#FF5722"), QColor("#4CAF50"), QColor("#FFC107"), QColor("#9C27B0"), QColor("#00BCD4") },
-    // 2: Solarized
+    // 3: Solarized
     { QColor("#268BD2"), QColor("#DC322F"), QColor("#859900"), QColor("#B58900"), QColor("#6C71C4"), QColor("#2AA198") },
-    // 3: Dark
+    // 4: Dark
     { QColor("#00C8FF"), QColor("#FF6384"), QColor("#36A2EB"), QColor("#FFCE56"), QColor("#9966FF"), QColor("#FF9F40") },
-    // 4: Monochrome
+    // 5: Monochrome
     { QColor("#333333"), QColor("#666666"), QColor("#999999"), QColor("#BBBBBB"), QColor("#444444"), QColor("#777777") },
-    // 5: Pastel
+    // 6: Pastel
     { QColor("#A8D8EA"), QColor("#FFB7B2"), QColor("#B5EAD7"), QColor("#FFDAC1"), QColor("#C7CEEA"), QColor("#E2F0CB") },
 };
 
@@ -102,12 +105,24 @@ int ChartWidget::legendHitTest(const QPoint& pos) const {
 }
 
 QVector<QColor> ChartWidget::getThemeColors() const {
+    // Index 0 = Document Theme: pull accent colors from spreadsheet
+    if (m_config.themeIndex == 0 && m_spreadsheet) {
+        const auto& dt = m_spreadsheet->getDocumentTheme();
+        return { dt.colors[4], dt.colors[5], dt.colors[6],
+                 dt.colors[7], dt.colors[8], dt.colors[9] };
+    }
     return themeColors(m_config.themeIndex);
 }
 
 QVector<QColor> ChartWidget::themeColors(int themeIndex) {
-    int idx = qBound(0, themeIndex, static_cast<int>(kThemePalettes.size()) - 1);
-    return kThemePalettes[idx];
+    // Index 0 = Document Theme (use default Office accents as fallback for static calls)
+    if (themeIndex == 0) {
+        const auto& dt = defaultDocumentTheme();
+        return { dt.colors[4], dt.colors[5], dt.colors[6],
+                 dt.colors[7], dt.colors[8], dt.colors[9] };
+    }
+    int idx = qBound(0, themeIndex - 1, static_cast<int>(kFixedPalettes.size()) - 1);
+    return kFixedPalettes[idx];
 }
 
 // --- Parse cell references and load data from spreadsheet ---
@@ -635,12 +650,13 @@ void ChartWidget::drawLegend(QPainter& p, const QRect& area) {
 }
 
 void ChartWidget::drawSelectionHandles(QPainter& p) {
-    p.setPen(QPen(QColor("#4A90D9"), 2));
+    QColor handleColor = ThemeManager::instance().currentTheme().selectionHandleColor;
+    p.setPen(QPen(handleColor, 2));
     p.setBrush(Qt::NoBrush);
     p.drawRect(rect().adjusted(1, 1, -2, -2));
 
     // Corner and edge handles
-    p.setPen(QPen(QColor("#4A90D9"), 1));
+    p.setPen(QPen(handleColor, 1));
     p.setBrush(Qt::white);
 
     auto drawHandle = [&](int cx, int cy) {
@@ -1102,12 +1118,15 @@ void ChartWidget::mouseDoubleClickEvent(QMouseEvent*) {
 
 void ChartWidget::contextMenuEvent(QContextMenuEvent* event) {
     QMenu menu(this);
-    menu.setStyleSheet(
-        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; }"
-        "QMenu::item { padding: 6px 20px; border-radius: 4px; }"
-        "QMenu::item:selected { background-color: #E8F0FE; }"
-        "QMenu::separator { height: 1px; background: #E0E3E8; margin: 3px 8px; }"
-    );
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        menu.setStyleSheet(QString(
+            "QMenu { background: %1; border: 1px solid %2; border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; border-radius: 4px; }"
+            "QMenu::item:selected { background-color: %3; }"
+            "QMenu::separator { height: 1px; background: %2; margin: 3px 8px; }")
+            .arg(t.popupBackground.name(), t.popupBorder.name(), t.popupItemSelected.name()));
+    }
 
     menu.addAction("Edit Chart...", this, [this]() { emit propertiesRequested(this); });
     menu.addAction("Refresh Data", this, [this]() { refreshData(); });

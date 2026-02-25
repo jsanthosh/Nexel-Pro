@@ -14,6 +14,7 @@ class QLabel;
 class QFontComboBox;
 class QColorDialog;
 class QPushButton;
+struct DocumentTheme;
 
 class FormatCellsDialog : public QDialog {
     Q_OBJECT
@@ -22,6 +23,9 @@ public:
     FormatCellsDialog(const CellStyle& style, QWidget* parent = nullptr);
     CellStyle getStyle() const;
 
+    // Set document theme for theme-aware color picker
+    void setDocumentTheme(const DocumentTheme* theme) { m_docTheme = theme; }
+
 private:
     void createNumberTab(QWidget* tab);
     void createFontTab(QWidget* tab);
@@ -29,8 +33,10 @@ private:
     void createFillTab(QWidget* tab);
     void updatePreview();
     void loadStyle(const CellStyle& style);
+    void pickColor(const QString& title, QString& colorStr, QPushButton* btn);
 
     CellStyle m_style;
+    const DocumentTheme* m_docTheme = nullptr;
 
     // Number tab
     QListWidget* m_categoryList = nullptr;
@@ -49,7 +55,7 @@ private:
     QCheckBox* m_underlineCheck = nullptr;
     QCheckBox* m_strikethroughCheck = nullptr;
     QPushButton* m_fontColorBtn = nullptr;
-    QColor m_fontColor;
+    QString m_fontColorStr;
 
     // Alignment tab
     QComboBox* m_hAlignCombo = nullptr;
@@ -57,7 +63,7 @@ private:
 
     // Fill tab
     QPushButton* m_fillColorBtn = nullptr;
-    QColor m_fillColor;
+    QString m_fillColorStr;
 };
 
 #endif // FORMATCELLSDIALOG_H

@@ -437,6 +437,24 @@ void Spreadsheet::deleteCellsShiftUp(const CellRange& range) {
     m_maxRowColDirty = true;
 }
 
+// ============== Document Theme ==============
+void Spreadsheet::setDocumentTheme(const DocumentTheme& theme) {
+    m_documentTheme = theme;
+
+    // Re-theme existing tables: regenerate table themes from the new document theme
+    // and re-assign each table to its corresponding accent-based theme
+    auto newThemes = generateTableThemes(theme);
+    for (auto& table : m_tables) {
+        // Try to match the table's current theme name to a generated theme
+        for (const auto& nt : newThemes) {
+            if (nt.name == table.theme.name) {
+                table.theme = nt;
+                break;
+            }
+        }
+    }
+}
+
 // ============== Table Support ==============
 void Spreadsheet::addTable(const SpreadsheetTable& table) { m_tables.push_back(table); }
 

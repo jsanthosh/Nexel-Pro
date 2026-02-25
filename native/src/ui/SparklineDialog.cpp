@@ -1,4 +1,5 @@
 #include "SparklineDialog.h"
+#include "Theme.h"
 
 #include <QCheckBox>
 #include <QColorDialog>
@@ -15,13 +16,7 @@ SparklineDialog::SparklineDialog(QWidget* parent)
 {
     setWindowTitle("Insert Sparkline");
     resize(420, 380);
-    setStyleSheet(
-        "QDialog { background: white; }"
-        "QLabel { color: #344054; font-size: 13px; }"
-        "QLineEdit { padding: 8px; border: 1px solid #D0D5DD; border-radius: 6px; font-size: 13px; }"
-        "QComboBox { padding: 6px 10px; border: 1px solid #D0D5DD; border-radius: 6px; }"
-        "QPushButton { padding: 8px 20px; border-radius: 6px; font-size: 13px; font-weight: 500; }"
-        "QCheckBox { font-size: 13px; color: #344054; }");
+    setStyleSheet(ThemeManager::dialogStylesheet());
     createLayout();
 }
 

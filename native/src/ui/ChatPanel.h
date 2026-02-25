@@ -22,6 +22,7 @@ public:
 
     void setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet);
     void setApiKey(const QString& apiKey);
+    void onThemeChanged();
 
 signals:
     void insertFormula(const QString& formula);

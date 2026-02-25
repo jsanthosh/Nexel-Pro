@@ -1,4 +1,5 @@
 #include "ConditionalFormatDialog.h"
+#include "Theme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -89,7 +90,8 @@ ConditionalFormatDialog::ConditionalFormatDialog(const CellRange& defaultRange,
 
     QHBoxLayout* actionBtns = new QHBoxLayout();
     QPushButton* addBtn = new QPushButton("Add Rule", this);
-    addBtn->setStyleSheet("QPushButton { background-color: #107C10; color: white; padding: 5px 16px; border-radius: 3px; }");
+    addBtn->setStyleSheet(QString("QPushButton { background-color: %1; color: white; padding: 5px 16px; border-radius: 3px; }")
+        .arg(ThemeManager::instance().currentTheme().accentDark.name()));
     actionBtns->addWidget(addBtn);
 
     m_updateBtn = new QPushButton("Update Selected", this);
@@ -147,11 +149,7 @@ ConditionalFormatDialog::ConditionalFormatDialog(const CellRange& defaultRange,
     populateRuleList();
     updateValueFieldsVisibility();
 
-    setStyleSheet(
-        "QGroupBox { font-weight: bold; border: 1px solid #D0D0D0; border-radius: 4px; "
-        "margin-top: 8px; padding-top: 16px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 }
 
 void ConditionalFormatDialog::populateRuleList() {

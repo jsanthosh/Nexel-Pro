@@ -4,6 +4,7 @@
 #include <QStyledItemDelegate>
 #include <QPainter>
 #include <QApplication>
+#include "Theme.h"
 
 // Custom roles for formula popup items
 enum FormulaPopupRole {
@@ -27,12 +28,13 @@ public:
         bool hovered = option.state & QStyle::State_MouseOver;
 
         // Background
+        const auto& theme = ThemeManager::instance().currentTheme();
         if (selected) {
-            painter->fillRect(option.rect, QColor("#E8F0FE"));
+            painter->fillRect(option.rect, theme.popupItemSelected);
         } else if (hovered) {
-            painter->fillRect(option.rect, QColor("#F5F5F5"));
+            painter->fillRect(option.rect, theme.popupItemSelected.lighter(120));
         } else {
-            painter->fillRect(option.rect, Qt::white);
+            painter->fillRect(option.rect, theme.popupBackground);
         }
 
         QRect rect = option.rect.adjusted(8, 0, -8, 0);
@@ -46,9 +48,9 @@ public:
         painter->setFont(fxFont);
         QRect fxRect(rect.left(), y + (h - 18) / 2, 22, 18);
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor("#E8F0FE"));
+        painter->setBrush(theme.popupItemSelected);
         painter->drawRoundedRect(fxRect, 3, 3);
-        painter->setPen(QColor("#4285F4"));
+        painter->setPen(theme.accentPrimary);
         painter->drawText(fxRect, Qt::AlignCenter, "fx");
 
         // Draw function name (bold)
@@ -74,7 +76,7 @@ public:
         painter->drawText(QRect(descX, y, rect.right() - descX, h), Qt::AlignVCenter, elidedDesc);
 
         // Bottom separator line
-        painter->setPen(QColor("#F0F0F0"));
+        painter->setPen(theme.popupBorder);
         painter->drawLine(option.rect.left() + 8, option.rect.bottom(),
                           option.rect.right() - 8, option.rect.bottom());
 

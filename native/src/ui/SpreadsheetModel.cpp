@@ -6,6 +6,7 @@
 #include "../core/ConditionalFormatting.h"
 #include "../core/SparklineConfig.h"
 #include "../core/MacroEngine.h"
+#include "../core/DocumentTheme.h"
 #include <QFont>
 #include <QMessageBox>
 #include <QApplication>
@@ -268,7 +269,11 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             if (table && table->hasHeaderRow && index.row() == table->range.getStart().row) {
                 return table->theme.headerFg;
             }
-            return QColor(style.foregroundColor);
+            QColor fg(style.foregroundColor);
+            if (!fg.isValid()) {
+                fg = m_spreadsheet->getDocumentTheme().resolveColor(style.foregroundColor);
+            }
+            return fg.isValid() ? QVariant(fg) : QVariant();
         }
         case Qt::BackgroundRole: {
             // Check table first (common case for styled regions)
@@ -299,7 +304,14 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             CellAddress addr(index.row(), index.column());
             auto cellValue = m_spreadsheet->getCellValue(addr);
             CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle);
-            return QColor(style.backgroundColor);
+            QColor bg(style.backgroundColor);
+            if (!bg.isValid()) {
+                bg = m_spreadsheet->getDocumentTheme().resolveColor(style.backgroundColor);
+            }
+            if (bg.isValid() && bg != QColor("#FFFFFF") && bg != Qt::white) {
+                return bg;
+            }
+            return QVariant();
         }
         case Qt::TextAlignmentRole: {
             // Vertical alignment
@@ -347,22 +359,38 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
         }
         case Qt::UserRole + 11: { // Border top
             const auto& b = cell->getStyle().borderTop;
-            if (b.enabled) return QString("%1,%2,%3").arg(b.width).arg(b.color).arg(b.penStyle);
+            if (b.enabled) {
+                QString resolvedColor = DocumentTheme::isThemeColor(b.color)
+                    ? m_spreadsheet->getDocumentTheme().resolveColor(b.color).name() : b.color;
+                return QString("%1,%2,%3").arg(b.width).arg(resolvedColor).arg(b.penStyle);
+            }
             return QVariant();
         }
         case Qt::UserRole + 12: { // Border bottom
             const auto& b = cell->getStyle().borderBottom;
-            if (b.enabled) return QString("%1,%2,%3").arg(b.width).arg(b.color).arg(b.penStyle);
+            if (b.enabled) {
+                QString resolvedColor = DocumentTheme::isThemeColor(b.color)
+                    ? m_spreadsheet->getDocumentTheme().resolveColor(b.color).name() : b.color;
+                return QString("%1,%2,%3").arg(b.width).arg(resolvedColor).arg(b.penStyle);
+            }
             return QVariant();
         }
         case Qt::UserRole + 13: { // Border left
             const auto& b = cell->getStyle().borderLeft;
-            if (b.enabled) return QString("%1,%2,%3").arg(b.width).arg(b.color).arg(b.penStyle);
+            if (b.enabled) {
+                QString resolvedColor = DocumentTheme::isThemeColor(b.color)
+                    ? m_spreadsheet->getDocumentTheme().resolveColor(b.color).name() : b.color;
+                return QString("%1,%2,%3").arg(b.width).arg(resolvedColor).arg(b.penStyle);
+            }
             return QVariant();
         }
         case Qt::UserRole + 14: { // Border right
             const auto& b = cell->getStyle().borderRight;
-            if (b.enabled) return QString("%1,%2,%3").arg(b.width).arg(b.color).arg(b.penStyle);
+            if (b.enabled) {
+                QString resolvedColor = DocumentTheme::isThemeColor(b.color)
+                    ? m_spreadsheet->getDocumentTheme().resolveColor(b.color).name() : b.color;
+                return QString("%1,%2,%3").arg(b.width).arg(resolvedColor).arg(b.penStyle);
+            }
             return QVariant();
         }
         case Qt::UserRole + 16: { // Text rotation

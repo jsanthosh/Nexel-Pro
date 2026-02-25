@@ -2,6 +2,7 @@
 #include <QStandardPaths>
 #include <QDir>
 #include "ui/MainWindow.h"
+#include "ui/Theme.h"
 #include "database/DatabaseManager.h"
 #include "services/DocumentService.h"
 
@@ -22,8 +23,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Load saved theme
+    ThemeManager::instance().loadSavedTheme();
+
     // Create main window
     MainWindow window;
+    ThemeManager::instance().applyTheme(&window);
     window.show();
 
     // Open file passed as command-line argument

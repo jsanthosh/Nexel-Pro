@@ -1,4 +1,5 @@
 #include "DataValidationDialog.h"
+#include "Theme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -121,11 +122,7 @@ DataValidationDialog::DataValidationDialog(const CellRange& range, QWidget* pare
 
     updateFieldVisibility();
 
-    setStyleSheet(
-        "QTabWidget::pane { border: 1px solid #D0D0D0; }"
-        "QTabBar::tab { padding: 6px 16px; }"
-        "QTabBar::tab:selected { font-weight: bold; border-bottom: 2px solid #217346; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 }
 
 void DataValidationDialog::onTypeChanged(int) {

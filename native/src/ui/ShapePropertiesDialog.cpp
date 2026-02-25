@@ -1,4 +1,5 @@
 #include "ShapePropertiesDialog.h"
+#include "Theme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -130,11 +131,14 @@ void ShapePropertiesDialog::createLayout() {
     QDialogButtonBox* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText("Apply");
-    buttons->button(QDialogButtonBox::Ok)->setStyleSheet(
-        "QPushButton { background: #217346; color: white; border: none; border-radius: 4px; "
-        "padding: 8px 24px; font-weight: bold; }"
-        "QPushButton:hover { background: #1B5E3B; }"
-    );
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        buttons->button(QDialogButtonBox::Ok)->setStyleSheet(QString(
+            "QPushButton { background: %1; color: white; border: none; border-radius: 4px; "
+            "padding: 8px 24px; font-weight: bold; }"
+            "QPushButton:hover { background: %2; }")
+            .arg(t.accentDark.name(), t.accentDarker.name()));
+    }
     buttons->button(QDialogButtonBox::Cancel)->setStyleSheet(
         "QPushButton { background: #F0F2F5; border: 1px solid #D0D5DD; border-radius: 4px; padding: 8px 20px; }"
         "QPushButton:hover { background: #E8ECF0; }"

@@ -1,5 +1,7 @@
 #include "FormatCellsDialog.h"
 #include "../core/NumberFormat.h"
+#include "../core/DocumentTheme.h"
+#include "Theme.h"
 #include <QTabWidget>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -16,6 +18,204 @@
 #include <QDialogButtonBox>
 #include <QColorDialog>
 #include <QStackedWidget>
+#include <QMenu>
+#include <QWidgetAction>
+#include <QFrame>
+#include <QPainter>
+
+// --- Minimal color swatch widget for the theme-aware picker ---
+namespace {
+class FmtColorSwatch : public QWidget {
+public:
+    QColor color;
+    bool selected = false;
+    bool hovered = false;
+    std::function<void()> onClick;
+
+    FmtColorSwatch(const QColor& c, QWidget* parent) : QWidget(parent), color(c) {
+        setFixedSize(18, 18);
+        setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_Hover, true);
+        setMouseTracking(true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        QRect r = rect();
+        p.fillRect(r, color);
+        if (selected) {
+            p.setPen(QPen(ThemeManager::instance().currentTheme().accentDark, 2));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+        } else if (hovered) {
+            p.setPen(QPen(QColor("#333333"), 2));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+        } else if (color.lightness() > 220) {
+            p.setPen(QPen(QColor("#D0D0D0"), 1));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+        }
+    }
+    void enterEvent(QEnterEvent*) override { hovered = true; update(); }
+    void leaveEvent(QEvent*) override { hovered = false; update(); }
+    void mousePressEvent(QMouseEvent*) override { if (onClick) onClick(); }
+};
+} // anonymous namespace
+
+// Theme-aware color picker (shared logic for font and fill color buttons)
+void FormatCellsDialog::pickColor(const QString& title, QString& colorStr, QPushButton* btn) {
+    const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
+
+    static const QColor standardColors[] = {
+        QColor("#C00000"), QColor("#FF0000"), QColor("#FFC000"), QColor("#FFFF00"),
+        QColor("#92D050"), QColor("#00B050"), QColor("#00B0F0"), QColor("#0070C0"),
+        QColor("#002060"), QColor("#7030A0"),
+    };
+    static const QColor grayscale[] = {
+        QColor("#000000"), QColor("#1A1A1A"), QColor("#333333"), QColor("#4D4D4D"),
+        QColor("#666666"), QColor("#808080"), QColor("#999999"), QColor("#B3B3B3"),
+        QColor("#D9D9D9"), QColor("#FFFFFF"),
+    };
+    static const int COLS = 10;
+
+    QColor currentColor = dt.resolveAnyColor(colorStr);
+
+    QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu { background: #FFFFFF; border: 1px solid #E0E0E0; padding: 0px; border-radius: 6px; }");
+
+    QWidget* container = new QWidget(&menu);
+    QVBoxLayout* layout = new QVBoxLayout(container);
+    layout->setContentsMargins(10, 8, 10, 8);
+    layout->setSpacing(0);
+
+    // Theme Colors header
+    QLabel* themeLabel = new QLabel("Theme Colors", container);
+    themeLabel->setStyleSheet("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #666; padding-bottom: 4px;");
+    layout->addWidget(themeLabel);
+
+    QString pickedStr;
+    bool picked = false;
+
+    // Theme color grid: 6 rows × 10 columns
+    QGridLayout* grid = new QGridLayout();
+    grid->setSpacing(3);
+    grid->setContentsMargins(0, 0, 0, 0);
+    for (int r = 0; r < kThemeTintCount; ++r) {
+        for (int c = 0; c < COLS; ++c) {
+            QColor swatchColor = DocumentTheme::applyTint(dt.colors[c], kThemeTints[r]);
+            FmtColorSwatch* swatch = new FmtColorSwatch(swatchColor, container);
+            swatch->selected = currentColor.isValid() && (swatchColor == currentColor);
+            swatch->setToolTip(themeColorName(c, kThemeTints[r]));
+            swatch->onClick = [&pickedStr, &picked, &menu, c, r]() {
+                pickedStr = DocumentTheme::makeThemeColorStr(c, kThemeTints[r]);
+                picked = true;
+                menu.close();
+            };
+            grid->addWidget(swatch, r, c);
+        }
+    }
+    layout->addLayout(grid);
+
+    // Separator
+    layout->addSpacing(6);
+    QFrame* sep1 = new QFrame(container);
+    sep1->setFrameShape(QFrame::HLine);
+    sep1->setStyleSheet("background: #E8E8E8; max-height: 1px;");
+    layout->addWidget(sep1);
+    layout->addSpacing(4);
+
+    // Standard Colors
+    QLabel* stdLabel = new QLabel("Standard Colors", container);
+    stdLabel->setStyleSheet("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #666; padding-bottom: 4px;");
+    layout->addWidget(stdLabel);
+    QHBoxLayout* stdRow = new QHBoxLayout();
+    stdRow->setSpacing(3);
+    stdRow->setContentsMargins(0, 0, 0, 0);
+    for (int c = 0; c < COLS; ++c) {
+        FmtColorSwatch* swatch = new FmtColorSwatch(standardColors[c], container);
+        swatch->selected = currentColor.isValid() && (standardColors[c] == currentColor);
+        swatch->onClick = [&pickedStr, &picked, &menu, c]() {
+            pickedStr = standardColors[c].name();
+            picked = true;
+            menu.close();
+        };
+        stdRow->addWidget(swatch);
+    }
+    layout->addLayout(stdRow);
+    layout->addSpacing(4);
+
+    // Grayscale
+    QHBoxLayout* grayRow = new QHBoxLayout();
+    grayRow->setSpacing(3);
+    grayRow->setContentsMargins(0, 0, 0, 0);
+    for (int c = 0; c < COLS; ++c) {
+        FmtColorSwatch* swatch = new FmtColorSwatch(grayscale[c], container);
+        swatch->selected = currentColor.isValid() && (grayscale[c] == currentColor);
+        swatch->onClick = [&pickedStr, &picked, &menu, c]() {
+            pickedStr = grayscale[c].name();
+            picked = true;
+            menu.close();
+        };
+        grayRow->addWidget(swatch);
+    }
+    layout->addLayout(grayRow);
+
+    // Separator + actions
+    layout->addSpacing(6);
+    QFrame* sep2 = new QFrame(container);
+    sep2->setFrameShape(QFrame::HLine);
+    sep2->setStyleSheet("background: #E8E8E8; max-height: 1px;");
+    layout->addWidget(sep2);
+    layout->addSpacing(4);
+
+    // No Fill (for fill picker only)
+    if (title.contains("Fill")) {
+        QPushButton* noFillBtn = new QPushButton("No Fill", container);
+        noFillBtn->setFixedHeight(26);
+        noFillBtn->setCursor(Qt::PointingHandCursor);
+        noFillBtn->setStyleSheet(
+            "QPushButton { background: transparent; border: none; font: 12px 'Segoe UI', sans-serif;"
+            "  color: #444; text-align: left; padding-left: 2px; }"
+            "QPushButton:hover { background: #F0F4F8; border-radius: 3px; }");
+        connect(noFillBtn, &QPushButton::clicked, &menu, [&pickedStr, &picked, &menu]() {
+            pickedStr = "#FFFFFF";
+            picked = true;
+            menu.close();
+        });
+        layout->addWidget(noFillBtn);
+    }
+
+    // Custom Color
+    QPushButton* customBtn = new QPushButton("Custom Color...", container);
+    customBtn->setFixedHeight(26);
+    customBtn->setCursor(Qt::PointingHandCursor);
+    customBtn->setStyleSheet(
+        "QPushButton { background: transparent; border: none; font: 12px 'Segoe UI', sans-serif;"
+        "  color: #2980B9; text-align: left; padding-left: 2px; }"
+        "QPushButton:hover { background: #F0F4F8; border-radius: 3px; }");
+    connect(customBtn, &QPushButton::clicked, &menu, [&pickedStr, &picked, &menu, this, currentColor, title]() {
+        menu.close();
+        QColor custom = QColorDialog::getColor(currentColor, this, title);
+        if (custom.isValid()) {
+            pickedStr = custom.name();
+            picked = true;
+        }
+    });
+    layout->addWidget(customBtn);
+
+    QWidgetAction* wa = new QWidgetAction(&menu);
+    wa->setDefaultWidget(container);
+    menu.addAction(wa);
+
+    menu.exec(QCursor::pos());
+
+    if (picked) {
+        colorStr = pickedStr;
+        QColor displayColor = dt.resolveAnyColor(pickedStr);
+        btn->setStyleSheet(QString("background-color: %1;").arg(displayColor.name()));
+    }
+}
 
 FormatCellsDialog::FormatCellsDialog(const CellStyle& style, QWidget* parent)
     : QDialog(parent), m_style(style) {
@@ -197,12 +397,7 @@ void FormatCellsDialog::createFontTab(QWidget* tab) {
     layout->addLayout(colorRow, 3, 0, 1, 3);
 
     connect(m_fontColorBtn, &QPushButton::clicked, this, [this]() {
-        QColor c = QColorDialog::getColor(m_fontColor, this, "Font Color");
-        if (c.isValid()) {
-            m_fontColor = c;
-            m_fontColorBtn->setStyleSheet(
-                QString("background-color: %1;").arg(c.name()));
-        }
+        pickColor("Font Color", m_fontColorStr, m_fontColorBtn);
     });
 
     layout->setRowStretch(4, 1);
@@ -241,12 +436,7 @@ void FormatCellsDialog::createFillTab(QWidget* tab) {
     layout->addLayout(colorRow);
 
     connect(m_fillColorBtn, &QPushButton::clicked, this, [this]() {
-        QColor c = QColorDialog::getColor(m_fillColor, this, "Fill Color");
-        if (c.isValid()) {
-            m_fillColor = c;
-            m_fillColorBtn->setStyleSheet(
-                QString("background-color: %1;").arg(c.name()));
-        }
+        pickColor("Fill Color", m_fillColorStr, m_fillColorBtn);
     });
 
     layout->addStretch();
@@ -280,18 +470,21 @@ void FormatCellsDialog::loadStyle(const CellStyle& style) {
     m_italicCheck->setChecked(style.italic);
     m_underlineCheck->setChecked(style.underline);
     m_strikethroughCheck->setChecked(style.strikethrough);
-    m_fontColor = QColor(style.foregroundColor);
+    m_fontColorStr = style.foregroundColor;
+    const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
+    QColor fgDisplay = dt.resolveAnyColor(m_fontColorStr);
     m_fontColorBtn->setStyleSheet(
-        QString("background-color: %1;").arg(m_fontColor.name()));
+        QString("background-color: %1;").arg(fgDisplay.name()));
 
     // Alignment
     m_hAlignCombo->setCurrentIndex(static_cast<int>(style.hAlign));
     m_vAlignCombo->setCurrentIndex(static_cast<int>(style.vAlign));
 
     // Fill
-    m_fillColor = QColor(style.backgroundColor);
+    m_fillColorStr = style.backgroundColor;
+    QColor bgDisplay = dt.resolveAnyColor(m_fillColorStr);
     m_fillColorBtn->setStyleSheet(
-        QString("background-color: %1;").arg(m_fillColor.name()));
+        QString("background-color: %1;").arg(bgDisplay.name()));
 
     updatePreview();
 }
@@ -312,14 +505,14 @@ CellStyle FormatCellsDialog::getStyle() const {
     style.italic = m_italicCheck->isChecked();
     style.underline = m_underlineCheck->isChecked();
     style.strikethrough = m_strikethroughCheck->isChecked();
-    style.foregroundColor = m_fontColor.name();
+    style.foregroundColor = m_fontColorStr;
 
     // Alignment
     style.hAlign = static_cast<HorizontalAlignment>(m_hAlignCombo->currentData().toInt());
     style.vAlign = static_cast<VerticalAlignment>(m_vAlignCombo->currentData().toInt());
 
     // Fill
-    style.backgroundColor = m_fillColor.name();
+    style.backgroundColor = m_fillColorStr;
 
     return style;
 }

@@ -4,6 +4,7 @@
 #include <QToolBar>
 #include <QColor>
 #include "../core/Cell.h"
+#include "../core/DocumentTheme.h"
 
 class QFontComboBox;
 class QSpinBox;
@@ -24,6 +25,13 @@ public:
     // Sync toolbar state to reflect the given cell style (updates checked states, font, colors, etc.)
     void syncToStyle(const CellStyle& style);
 
+    // Theme support
+    void onThemeChanged();
+
+    // Document theme (for color picker)
+    void setDocumentTheme(const DocumentTheme* theme) { m_docTheme = theme; }
+    const DocumentTheme* documentTheme() const { return m_docTheme; }
+
 signals:
     // File
     void newDocument();
@@ -40,9 +48,9 @@ signals:
     void strikethrough();
     void fontFamilyChanged(const QString& family);
     void fontSizeChanged(int size);
-    // Colors
-    void foregroundColorChanged(const QColor& color);
-    void backgroundColorChanged(const QColor& color);
+    // Colors (colorStr can be "theme:4:0.4" or "#RRGGBB")
+    void foregroundColorChanged(const QString& colorStr, const QColor& displayColor);
+    void backgroundColorChanged(const QString& colorStr, const QColor& displayColor);
     // Alignment
     void hAlignChanged(HorizontalAlignment align);
     void vAlignChanged(VerticalAlignment align);
@@ -92,8 +100,12 @@ private:
     QSpinBox* m_fontSizeSpinBox = nullptr;
     QToolButton* m_saveBtn = nullptr;
     QColor m_lastFgColor = QColor("#000000");
+    QString m_lastFgColorStr = "#000000";
     QColor m_lastBgColor = QColor("#34A853");
+    QString m_lastBgColorStr = "#34A853";
     QColor m_lastBorderColor = QColor("#000000");
+    QString m_lastBorderColorStr = "#000000";
+    const DocumentTheme* m_docTheme = nullptr;
     int m_lastBorderWidth = 1; // 1=thin, 2=medium, 3=thick
     int m_lastBorderPenStyle = 0; // 0=solid, 1=dashed, 2=dotted
 
@@ -113,6 +125,7 @@ private:
     QToolButton* m_vAlignTopBtn = nullptr;
     QToolButton* m_vAlignMiddleBtn = nullptr;
     QToolButton* m_vAlignBottomBtn = nullptr;
+    QToolBar* m_secondaryToolbar = nullptr;
 };
 
 #endif // TOOLBAR_H

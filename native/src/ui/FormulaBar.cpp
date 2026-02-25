@@ -1,5 +1,6 @@
 #include "FormulaBar.h"
 #include "FormulaPopupDelegate.h"
+#include "Theme.h"
 #include "../core/FormulaMetadata.h"
 #include <QHBoxLayout>
 #include <QLabel>
@@ -15,7 +16,8 @@ FormulaBar::FormulaBar(QWidget* parent)
     // Cell address label
     m_cellAddressLabel = new QLabel("A1", this);
     m_cellAddressLabel->setMinimumWidth(50);
-    m_cellAddressLabel->setStyleSheet("border: 1px solid #d0d0d0; padding: 2px;");
+    m_cellAddressLabel->setStyleSheet(QString("border: 1px solid %1; padding: 2px;")
+        .arg(ThemeManager::instance().currentTheme().formulaInputBorder.name()));
     layout->addWidget(m_cellAddressLabel);
 
     // Formula/Content input
@@ -28,17 +30,7 @@ FormulaBar::FormulaBar(QWidget* parent)
     connect(m_formulaEdit, &QLineEdit::textEdited, this, &FormulaBar::onTextEdited);
     connect(m_formulaEdit, &QLineEdit::returnPressed, this, &FormulaBar::returnPressed);
 
-    setStyleSheet(
-        "QWidget {"
-        "   background-color: #ffffff;"
-        "   border-bottom: 1px solid #e0e0e0;"
-        "}"
-        "QLineEdit {"
-        "   border: 1px solid #d0d0d0;"
-        "   padding: 3px;"
-        "   border-radius: 3px;"
-        "}"
-    );
+    applyThemeStyle();
 
     setupAutocomplete();
 }
@@ -98,31 +90,35 @@ void FormulaBar::setupAutocomplete() {
     m_popup->setFocusPolicy(Qt::NoFocus);
     m_popup->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_popup->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_popup->setStyleSheet(
-        "QListWidget { background: white; border: 1px solid #C0C0C0; outline: none; "
+    m_popup->setStyleSheet(QString(
+        "QListWidget { background: white; border: 1px solid %1; outline: none; "
         "border-radius: 6px; }"
         "QListWidget::item { padding: 0px; border: none; }"
         "QListWidget::item:selected { background: transparent; }"
         "QListWidget::item:hover { background: transparent; }"
-    );
+    ).arg(ThemeManager::instance().currentTheme().popupBorder.name()));
     m_popup->setItemDelegate(new FormulaPopupDelegate(m_popup));
     m_popup->hide();
 
     m_paramHint = new QLabel(window());
     m_paramHint->setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint);
     m_paramHint->setAttribute(Qt::WA_ShowWithoutActivating);
-    m_paramHint->setStyleSheet(
-        "QLabel { background: #FFF8DC; border: 1px solid #E0D8B0; padding: 4px 8px; "
-        "font-size: 12px; color: #333; border-radius: 3px; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        m_paramHint->setStyleSheet(QString(
+            "QLabel { background: %1; border: 1px solid %2; padding: 4px 8px; "
+            "font-size: 12px; color: %3; border-radius: 3px; }")
+            .arg(t.paramHintBackground.name(), t.paramHintBorder.name(), t.textPrimary.name()));
+    }
     m_paramHint->setTextFormat(Qt::RichText);
     m_paramHint->hide();
 
     m_detailPanel = new QLabel(window());
     m_detailPanel->setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint);
     m_detailPanel->setAttribute(Qt::WA_ShowWithoutActivating);
-    m_detailPanel->setStyleSheet(
-        "QLabel { background: white; border: 1px solid #D0D0D0; padding: 12px; "
-        "border-radius: 6px; }");
+    m_detailPanel->setStyleSheet(QString(
+        "QLabel { background: white; border: 1px solid %1; padding: 12px; "
+        "border-radius: 6px; }").arg(ThemeManager::instance().currentTheme().formulaInputBorder.name()));
     m_detailPanel->setTextFormat(Qt::RichText);
     m_detailPanel->setWordWrap(true);
     m_detailPanel->setFixedWidth(340);
@@ -291,4 +287,23 @@ void FormulaBar::insertFunction(const QString& funcName) {
     m_formulaEdit->setText(text.left(tokenStart) + funcName + "(");
     m_formulaEdit->setCursorPosition(m_formulaEdit->text().length());
     m_formulaEdit->setFocus();
+}
+
+void FormulaBar::applyThemeStyle() {
+    const auto& t = ThemeManager::instance().currentTheme();
+    setStyleSheet(QString(
+        "QWidget {"
+        "   background-color: %1;"
+        "   border-bottom: 1px solid %2;"
+        "}"
+        "QLineEdit {"
+        "   border: 1px solid %3;"
+        "   padding: 3px;"
+        "   border-radius: 3px;"
+        "}"
+    ).arg(t.formulaBarBackground.name(), t.formulaBarBorder.name(), t.formulaInputBorder.name()));
+}
+
+void FormulaBar::onThemeChanged() {
+    applyThemeStyle();
 }

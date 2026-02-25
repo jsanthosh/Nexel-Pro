@@ -1,4 +1,5 @@
 #include "ChartPropertiesPanel.h"
+#include "Theme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -18,7 +19,7 @@ static QIcon makeChartTypeIcon(ChartType type, bool selected) {
     QPainter p(&pix);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    QColor primary = selected ? QColor("#217346") : QColor("#667085");
+    QColor primary = selected ? ThemeManager::instance().currentTheme().accentDark : QColor("#667085");
 
     switch (type) {
         case ChartType::Column:
@@ -106,9 +107,12 @@ void ChartPropertiesPanel::createLayout() {
     // Header bar with gradient
     QWidget* header = new QWidget();
     header->setFixedHeight(44);
-    header->setStyleSheet(
-        "QWidget { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "stop:0 #1B5E3B, stop:1 #217346); }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        header->setStyleSheet(QString(
+            "QWidget { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 %1, stop:1 %2); }").arg(t.accentDarker.name(), t.accentDark.name()));
+    }
     QHBoxLayout* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(14, 0, 8, 0);
 
@@ -181,7 +185,7 @@ void ChartPropertiesPanel::createLayout() {
         btn->setStyleSheet(
             "QPushButton { background: white; border: 1.5px solid #E4E7EC; border-radius: 8px; }"
             "QPushButton:hover { background: #F0FAF3; border-color: #86C49A; }"
-            "QPushButton[selected=\"true\"] { background: #E8F5E9; border: 2px solid #217346; }");
+            "QPushButton[selected=\"true\"] { background: #E8F5E9; border: 2px solid " + ThemeManager::instance().currentTheme().accentDark.name() + "; }");
         connect(btn, &QPushButton::clicked, this, &ChartPropertiesPanel::onChartTypeClicked);
         typeGrid->addWidget(btn, i / 4, i % 4);
         m_typeButtons.append(btn);
@@ -202,14 +206,15 @@ void ChartPropertiesPanel::createLayout() {
     };
 
     auto makeEdit = [](const QString& placeholder) {
+        const auto& t = ThemeManager::instance().currentTheme();
         QLineEdit* e = new QLineEdit();
         e->setPlaceholderText(placeholder);
         e->setFixedHeight(30);
-        e->setStyleSheet(
+        e->setStyleSheet(QString(
             "QLineEdit { border: 1px solid #D0D5DD; border-radius: 6px; padding: 2px 10px; "
             "background: white; font-size: 11px; color: #1D2939; }"
-            "QLineEdit:focus { border-color: #34A853; box-shadow: none; }"
-            "QLineEdit::placeholder { color: #98A2B3; }");
+            "QLineEdit:focus { border-color: %1; box-shadow: none; }"
+            "QLineEdit::placeholder { color: #98A2B3; }").arg(t.accentPrimary.name()));
         return e;
     };
 
@@ -244,16 +249,23 @@ void ChartPropertiesPanel::createLayout() {
 
     m_themeCombo = new QComboBox();
     m_themeCombo->setFixedHeight(30);
-    m_themeCombo->addItems({"Excel", "Material", "Solarized", "Dark", "Monochrome", "Pastel"});
-    m_themeCombo->setStyleSheet(
-        "QComboBox { border: 1px solid #D0D5DD; border-radius: 6px; padding: 2px 10px; "
-        "background: white; font-size: 11px; color: #1D2939; min-height: 22px; }"
-        "QComboBox:focus { border: 1px solid #34A853; }"
-        "QComboBox::drop-down { border: none; width: 20px; }"
-        "QComboBox::down-arrow { image: none; border-left: 4px solid transparent; "
-        "border-right: 4px solid transparent; border-top: 5px solid #667085; margin-right: 6px; }"
-        "QComboBox QAbstractItemView { border: 1px solid #D0D5DD; border-radius: 6px; "
-        "background: white; selection-background-color: #E8F5E9; padding: 4px; outline: none; }");
+    m_themeCombo->addItems({"Document Theme", "Excel", "Material", "Solarized", "Dark", "Monochrome", "Pastel"});
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        QColor selBg = t.accentPrimary;
+        selBg.setAlpha(30);
+        m_themeCombo->setStyleSheet(QString(
+            "QComboBox { border: 1px solid #D0D5DD; border-radius: 6px; padding: 2px 10px; "
+            "background: white; font-size: 11px; color: #1D2939; min-height: 22px; }"
+            "QComboBox:focus { border: 1px solid %1; }"
+            "QComboBox::drop-down { border: none; width: 20px; }"
+            "QComboBox::down-arrow { image: none; border-left: 4px solid transparent; "
+            "border-right: 4px solid transparent; border-top: 5px solid #667085; margin-right: 6px; }"
+            "QComboBox QAbstractItemView { border: 1px solid #D0D5DD; border-radius: 6px; "
+            "background: white; selection-background-color: rgba(%2,%3,%4,30); padding: 4px; outline: none; }")
+            .arg(t.accentPrimary.name())
+            .arg(t.accentPrimary.red()).arg(t.accentPrimary.green()).arg(t.accentPrimary.blue()));
+    }
 
     styleGrid->addWidget(makeLabel("Theme"), 0, 0, Qt::AlignTop | Qt::AlignLeft);
     styleGrid->addWidget(m_themeCombo, 0, 1);
@@ -292,11 +304,15 @@ void ChartPropertiesPanel::createLayout() {
     QPushButton* refreshBtn = new QPushButton("Refresh");
     refreshBtn->setFixedHeight(30);
     refreshBtn->setCursor(Qt::PointingHandCursor);
-    refreshBtn->setStyleSheet(
-        "QPushButton { background: #217346; color: white; border: none; border-radius: 6px; "
-        "padding: 0 14px; font-size: 11px; font-weight: 600; }"
-        "QPushButton:hover { background: #1B5E3B; }"
-        "QPushButton:pressed { background: #155C30; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        refreshBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; color: white; border: none; border-radius: 6px; "
+            "padding: 0 14px; font-size: 11px; font-weight: 600; }"
+            "QPushButton:hover { background: %2; }"
+            "QPushButton:pressed { background: %3; }")
+            .arg(t.accentDark.name(), t.accentDarker.name(), t.menuBarHover.name()));
+    }
     connect(refreshBtn, &QPushButton::clicked, this, &ChartPropertiesPanel::onRefreshData);
     dataLayout->addWidget(refreshBtn);
 
@@ -379,9 +395,16 @@ void ChartPropertiesPanel::rebuildSeriesSection() {
         colorBtn->setIcon(makeColorSwatch(series[i].color, 20));
         colorBtn->setIconSize(QSize(20, 20));
         colorBtn->setCursor(Qt::PointingHandCursor);
-        colorBtn->setStyleSheet(
-            "QPushButton { background: white; border: 1.5px solid #E4E7EC; border-radius: 6px; padding: 2px; }"
-            "QPushButton:hover { border-color: #34A853; background: #F0FAF3; }");
+        {
+            const auto& t = ThemeManager::instance().currentTheme();
+            QColor hoverBg = t.accentPrimary;
+            hoverBg.setAlpha(20);
+            colorBtn->setStyleSheet(QString(
+                "QPushButton { background: white; border: 1.5px solid #E4E7EC; border-radius: 6px; padding: 2px; }"
+                "QPushButton:hover { border-color: %1; background: rgba(%2,%3,%4,20); }")
+                .arg(t.accentPrimary.name())
+                .arg(t.accentPrimary.red()).arg(t.accentPrimary.green()).arg(t.accentPrimary.blue()));
+        }
         colorBtn->setProperty("seriesIndex", i);
         connect(colorBtn, &QPushButton::clicked, this, &ChartPropertiesPanel::onSeriesColorClicked);
 

@@ -28,7 +28,9 @@
 #include "SparklineDialog.h"
 #include "../core/MacroEngine.h"
 #include "MacroEditorDialog.h"
+#include "Theme.h"
 #include "../core/SparklineConfig.h"
+#include "../core/DocumentTheme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QMenuBar>
@@ -51,6 +53,7 @@
 #include <QFutureWatcher>
 #include <QElapsedTimer>
 #include <QApplication>
+#include <QActionGroup>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
@@ -79,6 +82,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     m_spreadsheetView = new SpreadsheetView(this);
     m_spreadsheetView->setSpreadsheet(m_sheets[0]);
+    m_toolbar->setDocumentTheme(&m_sheets[0]->getDocumentTheme());
     layout->addWidget(m_spreadsheetView);
 
     // Sheet tab bar at bottom
@@ -94,11 +98,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_chatDock->setWidget(m_chatPanel);
     m_chatDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
     m_chatDock->setMinimumWidth(300);
-    m_chatDock->setStyleSheet(
-        "QDockWidget { border: none; }"
-        "QDockWidget::title { background: #1B5E3B; color: white; padding: 6px; font-weight: bold; text-align: center; }"
-        "QDockWidget::close-button { background: transparent; }"
-    );
+    // Dock stylesheet is set by onThemeChanged()
     addDockWidget(Qt::RightDockWidgetArea, m_chatDock);
     m_chatDock->hide(); // Hidden by default, toggled from View menu
 
@@ -143,23 +143,14 @@ MainWindow::MainWindow(QWidget* parent)
 
     setAcceptDrops(true);
 
-    setStyleSheet(
-        "QMainWindow { background-color: #F0F2F5; }"
-        "QMenuBar { background-color: #1B5E3B; color: white; border: none; padding: 2px; font-size: 12px; }"
-        "QMenuBar::item { padding: 4px 12px; border-radius: 3px; }"
-        "QMenuBar::item:selected { background-color: #155030; }"
-        "QMenu { background-color: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; }"
-        "QMenu::item { padding: 6px 30px 6px 20px; border-radius: 4px; }"
-        "QMenu::item:selected { background-color: #E8F0FE; }"
-        "QMenu::separator { height: 1px; background: #E0E3E8; margin: 4px 8px; }"
-    );
+    // Global stylesheet is applied by ThemeManager::applyTheme() from main.cpp
+    // Apply theme to sub-widgets
+    onThemeChanged();
 }
 
 void MainWindow::createSheetTabBar() {
     m_bottomBar = new QWidget(this);
     m_bottomBar->setFixedHeight(28);
-    m_bottomBar->setStyleSheet(
-        "QWidget { background-color: #F3F3F3; border-top: 1px solid #D0D0D0; }");
 
     QHBoxLayout* bottomLayout = new QHBoxLayout(m_bottomBar);
     bottomLayout->setContentsMargins(4, 0, 0, 0);
@@ -170,10 +161,7 @@ void MainWindow::createSheetTabBar() {
     m_addSheetBtn->setText("+");
     m_addSheetBtn->setFixedSize(24, 22);
     m_addSheetBtn->setToolTip("Add New Sheet");
-    m_addSheetBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid transparent; "
-        "border-radius: 3px; font-size: 16px; font-weight: bold; color: #555; }"
-        "QToolButton:hover { background-color: #E0E0E0; border-color: #C0C0C0; }");
+    // Add sheet button stylesheet set by onThemeChanged()
     bottomLayout->addWidget(m_addSheetBtn);
     connect(m_addSheetBtn, &QToolButton::clicked, this, &MainWindow::onAddSheet);
 
@@ -183,28 +171,7 @@ void MainWindow::createSheetTabBar() {
     m_sheetTabBar->setMovable(true);
     m_sheetTabBar->setTabsClosable(false);
     m_sheetTabBar->setDocumentMode(true);
-    m_sheetTabBar->setStyleSheet(
-        "QTabBar { background: transparent; border: none; }"
-        "QTabBar::tab {"
-        "   background-color: #E8E8E8;"
-        "   border: 1px solid #C8C8C8;"
-        "   border-bottom: none;"
-        "   padding: 3px 16px;"
-        "   margin-right: 2px;"
-        "   font-size: 11px;"
-        "   min-width: 60px;"
-        "   border-top-left-radius: 3px;"
-        "   border-top-right-radius: 3px;"
-        "}"
-        "QTabBar::tab:selected {"
-        "   background-color: white;"
-        "   border-bottom: 2px solid #217346;"
-        "   font-weight: bold;"
-        "}"
-        "QTabBar::tab:hover:!selected {"
-        "   background-color: #D8D8D8;"
-        "}"
-    );
+    // Tab bar stylesheet set by onThemeChanged()
 
     // Populate tabs from m_sheets
     for (const auto& sheet : m_sheets) {
@@ -232,6 +199,7 @@ void MainWindow::switchToSheet(int index) {
     if (index < 0 || index >= static_cast<int>(m_sheets.size())) return;
     m_activeSheetIndex = index;
     m_spreadsheetView->setSpreadsheet(m_sheets[index]);
+    m_toolbar->setDocumentTheme(&m_sheets[index]->getDocumentTheme());
     m_spreadsheetView->refreshView();
     m_spreadsheetView->applyStoredDimensions();
 
@@ -565,6 +533,29 @@ void MainWindow::createMenuBar() {
     QAction* highlightAction = dataMenu->addAction("&Circle Invalid Data", this, &MainWindow::onHighlightInvalidCells);
     highlightAction->setCheckable(true);
 
+    // === Page Layout menu (document themes) ===
+    QMenu* layoutMenu = menuBar->addMenu("Page &Layout");
+    QMenu* docThemeMenu = layoutMenu->addMenu("&Themes");
+    QActionGroup* docThemeGroup = new QActionGroup(this);
+    docThemeGroup->setExclusive(true);
+    auto docThemes = getBuiltinDocumentThemes();
+    for (const auto& dt : docThemes) {
+        QAction* action = docThemeMenu->addAction(dt.displayName);
+        action->setCheckable(true);
+        action->setChecked(dt.id == m_sheets[0]->getDocumentTheme().id);
+        action->setData(dt.id);
+        docThemeGroup->addAction(action);
+        connect(action, &QAction::triggered, this, [this, dt]() {
+            for (auto& sheet : m_sheets) {
+                sheet->setDocumentTheme(dt);
+            }
+            m_toolbar->setDocumentTheme(&m_sheets[m_activeSheetIndex]->getDocumentTheme());
+            m_spreadsheetView->refreshView();
+            refreshActiveCharts();
+            setDirty();
+        });
+    }
+
     QMenu* viewMenu = menuBar->addMenu("&View");
     m_gridlinesAction = viewMenu->addAction("Show &Gridlines");
     m_gridlinesAction->setCheckable(true);
@@ -590,6 +581,25 @@ void MainWindow::createMenuBar() {
     });
     connect(m_chatDock, &QDockWidget::visibilityChanged, chatAction, &QAction::setChecked);
 
+    // ===== Theme Submenu =====
+    viewMenu->addSeparator();
+    QMenu* themeMenu = viewMenu->addMenu("&Theme");
+    QActionGroup* themeGroup = new QActionGroup(this);
+    themeGroup->setExclusive(true);
+    auto themes = ThemeManager::instance().availableThemes();
+    for (const auto& theme : themes) {
+        QAction* action = themeMenu->addAction(theme.displayName);
+        action->setCheckable(true);
+        action->setChecked(theme.id == ThemeManager::instance().currentTheme().id);
+        action->setData(theme.id);
+        themeGroup->addAction(action);
+        connect(action, &QAction::triggered, this, [this, id = theme.id]() {
+            ThemeManager::instance().setTheme(id);
+            ThemeManager::instance().applyTheme(this);
+            onThemeChanged();
+        });
+    }
+
     // ===== Tools Menu =====
     QMenu* toolsMenu = menuBar->addMenu("&Tools");
     toolsMenu->addAction("Macro &Editor...", this, &MainWindow::onMacroEditor,
@@ -602,9 +612,41 @@ void MainWindow::createToolBar() {}
 
 void MainWindow::createStatusBar() {
     statusBar()->showMessage("Ready");
-    statusBar()->setStyleSheet(
-        "QStatusBar { background-color: #217346; color: white; border: none; font-size: 11px; padding: 2px 8px; }"
-    );
+    // Status bar stylesheet is set by global theme stylesheet
+}
+
+void MainWindow::onThemeChanged() {
+    const auto& tm = ThemeManager::instance();
+    const auto& t = tm.currentTheme();
+
+    // Bottom bar
+    m_bottomBar->setStyleSheet(tm.buildBottomBarStylesheet());
+
+    // Tab bar
+    m_sheetTabBar->setStyleSheet(tm.buildTabBarStylesheet());
+
+    // Add sheet button
+    m_addSheetBtn->setStyleSheet(tm.buildAddSheetBtnStylesheet());
+
+    // Chat dock
+    if (m_chatDock) {
+        m_chatDock->setStyleSheet(QString(
+            "QDockWidget { border: none; }"
+            "QDockWidget::title { background: %1; color: %2; padding: 6px; font-weight: bold; text-align: center; }"
+            "QDockWidget::close-button { background: transparent; }"
+        ).arg(t.dockTitleBackground.name(), t.dockTitleText.name()));
+    }
+
+    // Chart properties dock
+    if (m_chartPropsDock) {
+        m_chartPropsDock->setStyleSheet("QDockWidget { border: none; }");
+    }
+
+    // Cascade to child widgets
+    if (m_toolbar) m_toolbar->onThemeChanged();
+    if (m_formulaBar) m_formulaBar->onThemeChanged();
+    if (m_spreadsheetView) m_spreadsheetView->onThemeChanged();
+    if (m_chatPanel) m_chatPanel->onThemeChanged();
 }
 
 void MainWindow::connectSignals() {
@@ -638,24 +680,24 @@ void MainWindow::connectSignals() {
     connect(m_toolbar, &Toolbar::fontFamilyChanged, m_spreadsheetView, &SpreadsheetView::applyFontFamily);
     connect(m_toolbar, &Toolbar::fontSizeChanged, m_spreadsheetView, &SpreadsheetView::applyFontSize);
 
-    connect(m_toolbar, &Toolbar::foregroundColorChanged, this, [this](const QColor& color) {
+    connect(m_toolbar, &Toolbar::foregroundColorChanged, this, [this](const QString& colorStr, const QColor& displayColor) {
         if (m_selectedChart) {
             auto cfg = m_selectedChart->config();
-            cfg.titleColor = color;
+            cfg.titleColor = displayColor;
             m_selectedChart->setConfig(cfg);
             setDirty();
         } else {
-            m_spreadsheetView->applyForegroundColor(color);
+            m_spreadsheetView->applyForegroundColor(colorStr);
         }
     });
-    connect(m_toolbar, &Toolbar::backgroundColorChanged, this, [this](const QColor& color) {
+    connect(m_toolbar, &Toolbar::backgroundColorChanged, this, [this](const QString& colorStr, const QColor& displayColor) {
         if (m_selectedChart) {
             auto cfg = m_selectedChart->config();
-            cfg.backgroundColor = color;
+            cfg.backgroundColor = displayColor;
             m_selectedChart->setConfig(cfg);
             setDirty();
         } else {
-            m_spreadsheetView->applyBackgroundColor(color);
+            m_spreadsheetView->applyBackgroundColor(colorStr);
         }
     });
 
@@ -854,6 +896,7 @@ void MainWindow::onFormatCells() {
     CellStyle currentStyle = cell->getStyle();
 
     FormatCellsDialog dialog(currentStyle, this);
+    dialog.setDocumentTheme(&sheet->getDocumentTheme());
     if (dialog.exec() == QDialog::Accepted) {
         CellStyle newStyle = dialog.getStyle();
 

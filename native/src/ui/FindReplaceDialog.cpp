@@ -1,4 +1,5 @@
 #include "FindReplaceDialog.h"
+#include "Theme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -65,14 +66,7 @@ FindReplaceDialog::FindReplaceDialog(QWidget* parent)
     // Enter in find field triggers find next
     connect(m_findEdit, &QLineEdit::returnPressed, this, &FindReplaceDialog::findNext);
 
-    setStyleSheet(
-        "QDialog { background: #F9F9F9; }"
-        "QLineEdit { padding: 4px 6px; border: 1px solid #C8C8C8; border-radius: 3px; background: white; }"
-        "QPushButton { padding: 5px 12px; border: 1px solid #C8C8C8; border-radius: 3px; background: #F0F0F0; }"
-        "QPushButton:hover { background: #E0E0E0; }"
-        "QPushButton:default { background: #217346; color: white; border-color: #1a5c38; }"
-        "QPushButton:default:hover { background: #1a5c38; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 }
 
 QString FindReplaceDialog::findText() const { return m_findEdit->text(); }

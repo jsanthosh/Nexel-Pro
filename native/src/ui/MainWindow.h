@@ -12,6 +12,7 @@
 #include <memory>
 #include <vector>
 
+struct NexelTheme;
 class Spreadsheet;
 class SpreadsheetView;
 class FormulaBar;
@@ -132,6 +133,7 @@ private:
     void createStatusBar();
     void createSheetTabBar();
     void connectSignals();
+    void onThemeChanged();
     bool saveCurrentDocument();
     void setSheets(const std::vector<std::shared_ptr<Spreadsheet>>& sheets);
     void switchToSheet(int index);

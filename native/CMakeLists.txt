@@ -70,6 +70,8 @@ set(CORE_SOURCES
     src/core/SparklineConfig.h
     src/core/MacroEngine.cpp
     src/core/MacroEngine.h
+    src/core/DocumentTheme.cpp
+    src/core/DocumentTheme.h
 )
 
 # Database Sources
@@ -139,6 +141,8 @@ set(UI_SOURCES
     src/ui/ImageWidget.h
     src/ui/MacroEditorDialog.cpp
     src/ui/MacroEditorDialog.h
+    src/ui/Theme.cpp
+    src/ui/Theme.h
 )
 
 # Main Application

@@ -1,4 +1,5 @@
 #include "TemplateGallery.h"
+#include "Theme.h"
 #include "../core/Spreadsheet.h"
 #include "../core/Cell.h"
 #include "../core/CellRange.h"
@@ -135,13 +136,7 @@ TemplateGallery::TemplateGallery(QWidget* parent) : QDialog(parent) {
     populateTemplates();
     createLayout();
 
-    setStyleSheet(
-        "QDialog { background: #FAFBFC; }"
-        "QListWidget { border: 1px solid #D0D5DD; border-radius: 6px; background: white; outline: none; }"
-        "QListWidget::item { padding: 6px 8px; border-radius: 4px; }"
-        "QListWidget::item:selected { background-color: #E8F0FE; color: #1A1A1A; }"
-        "QListWidget::item:hover:!selected { background-color: #F5F5F5; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 }
 
 void TemplateGallery::populateTemplates() {
@@ -179,7 +174,8 @@ void TemplateGallery::createLayout() {
     mainLayout->setSpacing(10);
 
     QLabel* titleLabel = new QLabel("Choose a Template");
-    titleLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #1B5E3B; padding: 4px 0;");
+    titleLabel->setStyleSheet(QString("font-size: 16px; font-weight: bold; color: %1; padding: 4px 0;")
+        .arg(ThemeManager::instance().currentTheme().accentDarker.name()));
     mainLayout->addWidget(titleLabel);
 
     QHBoxLayout* contentLayout = new QHBoxLayout();
@@ -245,10 +241,14 @@ void TemplateGallery::createLayout() {
     QDialogButtonBox* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText("Create from Template");
-    buttons->button(QDialogButtonBox::Ok)->setStyleSheet(
-        "QPushButton { background: #217346; color: white; border: none; border-radius: 4px; "
-        "padding: 8px 24px; font-weight: bold; }"
-        "QPushButton:hover { background: #1B5E3B; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        buttons->button(QDialogButtonBox::Ok)->setStyleSheet(QString(
+            "QPushButton { background: %1; color: white; border: none; border-radius: 4px; "
+            "padding: 8px 24px; font-weight: bold; }"
+            "QPushButton:hover { background: %2; }")
+            .arg(t.accentDark.name(), t.accentDarker.name()));
+    }
     buttons->button(QDialogButtonBox::Cancel)->setStyleSheet(
         "QPushButton { background: #F0F2F5; border: 1px solid #D0D5DD; border-radius: 4px; "
         "padding: 8px 20px; }"

@@ -1,4 +1,5 @@
 #include "PivotTableDialog.h"
+#include "Theme.h"
 #include "../core/Spreadsheet.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -31,27 +32,7 @@ PivotTableDialog::PivotTableDialog(std::shared_ptr<Spreadsheet> sheet,
     createLayout();
     populateSourceFields();
 
-    setStyleSheet(
-        "QDialog { background: #FAFBFC; }"
-        "QGroupBox { font-weight: bold; border: 1px solid #D0D5DD; border-radius: 6px; "
-        "margin-top: 8px; padding-top: 16px; background: white; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #344054; }"
-        "QLineEdit { border: 1px solid #D0D5DD; border-radius: 4px; padding: 5px 8px; background: white; }"
-        "QLineEdit:focus { border-color: #4A90D9; }"
-        "QComboBox { border: 1px solid #D0D5DD; border-radius: 4px; padding: 5px 8px; "
-        "background: white; min-height: 20px; }"
-        "QComboBox::drop-down { border: none; width: 20px; }"
-        "QComboBox::down-arrow { image: none; border-left: 4px solid transparent; "
-        "border-right: 4px solid transparent; border-top: 5px solid #667085; margin-right: 6px; }"
-        "QListWidget { border: 1px solid #D0D5DD; border-radius: 6px; background: white; outline: none; }"
-        "QListWidget::item { padding: 4px 8px; border-radius: 3px; }"
-        "QListWidget::item:selected { background-color: #E8F0FE; color: #1A1A1A; }"
-        "QListWidget::item:hover:!selected { background-color: #F5F5F5; }"
-        "QCheckBox { spacing: 6px; }"
-        "QTableWidget { border: 1px solid #D0D5DD; border-radius: 4px; gridline-color: #E0E3E8; }"
-        "QHeaderView::section { background: #F0F2F5; border: none; border-right: 1px solid #E0E3E8; "
-        "border-bottom: 1px solid #E0E3E8; padding: 4px 6px; font-weight: bold; font-size: 11px; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 }
 
 void PivotTableDialog::createLayout() {
@@ -190,10 +171,14 @@ void PivotTableDialog::createLayout() {
     QDialogButtonBox* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText("Create Pivot Table");
-    buttons->button(QDialogButtonBox::Ok)->setStyleSheet(
-        "QPushButton { background: #217346; color: white; border: none; border-radius: 4px; "
-        "padding: 8px 24px; font-weight: bold; }"
-        "QPushButton:hover { background: #1B5E3B; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        buttons->button(QDialogButtonBox::Ok)->setStyleSheet(QString(
+            "QPushButton { background: %1; color: white; border: none; border-radius: 4px; "
+            "padding: 8px 24px; font-weight: bold; }"
+            "QPushButton:hover { background: %2; }")
+            .arg(t.accentDark.name(), t.accentDarker.name()));
+    }
     buttons->button(QDialogButtonBox::Cancel)->setStyleSheet(
         "QPushButton { background: #F0F2F5; border: 1px solid #D0D5DD; border-radius: 4px; "
         "padding: 8px 20px; }"

@@ -11,6 +11,7 @@
 #include <memory>
 
 class Spreadsheet;
+struct DocumentTheme;
 
 // Chart types supported
 enum class ChartType {
@@ -41,7 +42,7 @@ struct ChartConfig {
     QString dataRange;     // e.g. "A1:D10"
     bool showLegend = true;
     bool showGridLines = true;
-    int themeIndex = 0;    // 0=Excel, 1=Material, 2=Solarized, 3=Dark, 4=Mono, 5=Pastel
+    int themeIndex = 0;    // 0=Document Theme, 1=Excel, 2=Material, 3=Solarized, 4=Dark, 5=Mono, 6=Pastel
     QVector<ChartSeries> series;
 
     // Title formatting

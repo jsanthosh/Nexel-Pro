@@ -1,6 +1,7 @@
 #include "CellDelegate.h"
 #include "SpreadsheetView.h"
 #include "FormulaPopupDelegate.h"
+#include "Theme.h"
 #include "../core/FormulaMetadata.h"
 #include <QLineEdit>
 #include <QPainter>
@@ -198,9 +199,10 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
 
     QLineEdit* editor = new QLineEdit(parent);
     editor->setFrame(false);
-    editor->setStyleSheet(
+    editor->setStyleSheet(QString(
         "QLineEdit { background: white; padding: 1px 2px; "
-        "border: 2px solid #107C10; selection-background-color: #0078D4; }");
+        "border: 2px solid %1; selection-background-color: #0078D4; }")
+        .arg(ThemeManager::instance().currentTheme().editorBorderColor.name()));
 
     // --- Custom formula autocomplete popup ---
     auto* popup = new QListWidget(parent->window());
@@ -441,7 +443,7 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
     if (isSelected && !hasFocus) {
         // Multi-select: light blue tint over cell background
         painter->fillRect(rect, bgColor);
-        painter->fillRect(rect, QColor(198, 217, 240, 60));
+        painter->fillRect(rect, ThemeManager::instance().currentTheme().selectionTint);
     } else {
         painter->fillRect(rect, bgColor);
     }
@@ -568,7 +570,7 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
 
     // --- Gridlines: single thin line on right and bottom edges ---
     if (m_showGridlines) {
-        painter->setPen(QPen(QColor(218, 220, 224), 1, Qt::SolidLine));
+        painter->setPen(QPen(ThemeManager::instance().currentTheme().gridLineColor, 1, Qt::SolidLine));
         painter->drawLine(rect.right(), rect.top(), rect.right(), rect.bottom());
         painter->drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom());
     }
@@ -598,7 +600,7 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
     // --- Focus border: green rectangle for the current cell ---
     if (hasFocus) {
         painter->setClipRect(rect.adjusted(-1, -1, 1, 1)); // expand clip to avoid top/left clipping
-        QPen focusPen(QColor(16, 124, 16), 2, Qt::SolidLine);
+        QPen focusPen(ThemeManager::instance().currentTheme().focusBorderColor, 2, Qt::SolidLine);
         painter->setPen(focusPen);
         painter->drawRect(rect.adjusted(1, 1, -1, -1));
     }
@@ -702,7 +704,7 @@ void CellDelegate::drawCheckbox(QPainter* painter, const QRect& rect, bool check
     if (checked) {
         // Soft green filled rounded rect
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor("#34A853"));
+        painter->setBrush(ThemeManager::instance().currentTheme().checkboxChecked);
         painter->drawRoundedRect(boxRect, 4, 4);
         // Smooth checkmark
         QPainterPath check;
@@ -714,7 +716,7 @@ void CellDelegate::drawCheckbox(QPainter* painter, const QRect& rect, bool check
         painter->drawPath(check);
     } else {
         // Soft outlined rounded rect
-        painter->setPen(QPen(QColor("#C4C7CC"), 1.2));
+        painter->setPen(QPen(ThemeManager::instance().currentTheme().checkboxUncheckedBorder, 1.2));
         painter->setBrush(QColor("#FAFAFA"));
         painter->drawRoundedRect(boxRect, 4, 4);
     }

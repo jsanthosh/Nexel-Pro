@@ -18,6 +18,7 @@ public:
     bool isFormulaEditing() const;
     void insertText(const QString& text);
     void replaceLastInsertedText(const QString& newText);
+    void onThemeChanged();
 
 signals:
     void contentChanged(const QString& content);
@@ -46,6 +47,7 @@ private:
     void updateParamHint();
     void insertFunction(const QString& funcName);
     void hideAllPanels();
+    void applyThemeStyle();
 };
 
 #endif // FORMULABAR_H

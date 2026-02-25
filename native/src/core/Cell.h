@@ -37,6 +37,10 @@ struct BorderStyle {
     int penStyle = 0; // 0=solid, 1=dashed, 2=dotted
 };
 
+// Color string convention for foregroundColor / backgroundColor / BorderStyle.color:
+//   Absolute: "#RRGGBB"              (e.g. "#FF0000")
+//   Theme:    "theme:<index>:<tint>"  (e.g. "theme:4:0.4" = Accent1, 40% lighter)
+// See DocumentTheme.h for details.
 struct CellStyle {
     QString fontName = "Arial";
     int fontSize = 11;

@@ -1,4 +1,5 @@
 #include "ShapeWidget.h"
+#include "Theme.h"
 #include "MainWindow.h"
 #include <QPainter>
 #include <QPainterPath>
@@ -179,11 +180,12 @@ void ShapeWidget::drawShapeLine(QPainter& p, const QRect& area) {
 }
 
 void ShapeWidget::drawSelectionHandles(QPainter& p) {
-    p.setPen(QPen(QColor("#4A90D9"), 2));
+    QColor handleColor = ThemeManager::instance().currentTheme().selectionHandleColor;
+    p.setPen(QPen(handleColor, 2));
     p.setBrush(Qt::NoBrush);
     p.drawRect(rect().adjusted(1, 1, -2, -2));
 
-    p.setPen(QPen(QColor("#4A90D9"), 1));
+    p.setPen(QPen(handleColor, 1));
     p.setBrush(Qt::white);
 
     auto drawHandle = [&](int cx, int cy) {
@@ -308,12 +310,15 @@ void ShapeWidget::mouseDoubleClickEvent(QMouseEvent*) {
 
 void ShapeWidget::contextMenuEvent(QContextMenuEvent* event) {
     QMenu menu(this);
-    menu.setStyleSheet(
-        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; }"
-        "QMenu::item { padding: 6px 20px; border-radius: 4px; }"
-        "QMenu::item:selected { background-color: #E8F0FE; }"
-        "QMenu::separator { height: 1px; background: #E0E3E8; margin: 3px 8px; }"
-    );
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        menu.setStyleSheet(QString(
+            "QMenu { background: %1; border: 1px solid %2; border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; border-radius: 4px; }"
+            "QMenu::item:selected { background-color: %3; }"
+            "QMenu::separator { height: 1px; background: %2; margin: 3px 8px; }")
+            .arg(t.popupBackground.name(), t.popupBorder.name(), t.popupItemSelected.name()));
+    }
 
     menu.addAction("Edit Text...", this, [this]() {
         bool ok;

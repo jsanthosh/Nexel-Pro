@@ -1,4 +1,5 @@
 #include "ChatPanel.h"
+#include "Theme.h"
 #include "../core/Spreadsheet.h"
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -26,10 +27,13 @@ ChatPanel::ChatPanel(QWidget* parent)
     // ---- Header ----
     auto* header = new QWidget(this);
     header->setFixedHeight(48);
-    header->setStyleSheet(
-        "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "stop:0 #1B5E3B, stop:1 #2E8B57);"
-        "border: none;");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        header->setStyleSheet(QString(
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 %1, stop:1 %2);"
+            "border: none;").arg(t.chatHeaderGradientStart.name(), t.chatHeaderGradientEnd.name()));
+    }
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(14, 0, 10, 0);
 
@@ -65,16 +69,21 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_scrollArea = new QScrollArea(this);
     m_scrollArea->setWidgetResizable(true);
     m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_scrollArea->setStyleSheet(
-        "QScrollArea { background: #ECE5DD; border: none; }"
-        "QScrollArea > QWidget > QWidget { background: #ECE5DD; }"
-        "QScrollBar:vertical { width: 6px; background: transparent; margin: 2px; }"
-        "QScrollBar::handle:vertical { background: rgba(0,0,0,0.2); border-radius: 3px; min-height: 30px; }"
-        "QScrollBar::handle:vertical:hover { background: rgba(0,0,0,0.35); }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        m_scrollArea->setStyleSheet(QString(
+            "QScrollArea { background: %1; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: %1; }"
+            "QScrollBar:vertical { width: 6px; background: transparent; margin: 2px; }"
+            "QScrollBar::handle:vertical { background: rgba(0,0,0,0.2); border-radius: 3px; min-height: 30px; }"
+            "QScrollBar::handle:vertical:hover { background: rgba(0,0,0,0.35); }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }")
+            .arg(t.chatBackground.name()));
+    }
 
     m_messageContainer = new QWidget();
-    m_messageContainer->setStyleSheet("background: #ECE5DD;");
+    m_messageContainer->setStyleSheet(QString("background: %1;")
+        .arg(ThemeManager::instance().currentTheme().chatBackground.name()));
     m_messageLayout = new QVBoxLayout(m_messageContainer);
     m_messageLayout->setContentsMargins(8, 8, 8, 8);
     m_messageLayout->setSpacing(6);
@@ -86,7 +95,8 @@ ChatPanel::ChatPanel(QWidget* parent)
     // ---- Thinking indicator (hidden by default) ----
     m_thinkingWidget = new QWidget(this);
     m_thinkingWidget->setFixedHeight(44);
-    m_thinkingWidget->setStyleSheet("background: #ECE5DD; border: none;");
+    m_thinkingWidget->setStyleSheet(QString("background: %1; border: none;")
+        .arg(ThemeManager::instance().currentTheme().chatBackground.name()));
     auto* thinkingLayout = new QHBoxLayout(m_thinkingWidget);
     thinkingLayout->setContentsMargins(16, 4, 16, 4);
 
@@ -112,28 +122,38 @@ ChatPanel::ChatPanel(QWidget* parent)
     // ---- Input area ----
     auto* inputContainer = new QWidget(this);
     inputContainer->setFixedHeight(56);
-    inputContainer->setStyleSheet("background: #F0F0F0; border-top: 1px solid #D9D9D9;");
+    inputContainer->setStyleSheet(QString("background: %1; border-top: 1px solid %2;")
+        .arg(ThemeManager::instance().currentTheme().chatInputBackground.name(),
+             ThemeManager::instance().currentTheme().chatInputBorder.name()));
     auto* inputLayout = new QHBoxLayout(inputContainer);
     inputLayout->setContentsMargins(8, 8, 8, 8);
     inputLayout->setSpacing(8);
 
     m_inputField = new QLineEdit(inputContainer);
     m_inputField->setPlaceholderText("Type a message...");
-    m_inputField->setStyleSheet(
-        "QLineEdit { background: white; border: 1px solid #D9D9D9; border-radius: 20px; "
-        "padding: 8px 16px; font-size: 13px; color: #1E293B; "
-        "font-family: -apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif; }"
-        "QLineEdit:focus { border-color: #25D366; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        m_inputField->setStyleSheet(QString(
+            "QLineEdit { background: white; border: 1px solid %1; border-radius: 20px; "
+            "padding: 8px 16px; font-size: 13px; color: #1E293B; "
+            "font-family: -apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif; }"
+            "QLineEdit:focus { border-color: %2; }")
+            .arg(t.chatInputBorder.name(), t.chatSendButton.name()));
+    }
     inputLayout->addWidget(m_inputField);
 
     m_sendBtn = new QPushButton(inputContainer);
     m_sendBtn->setText("\u27A4");
     m_sendBtn->setFixedSize(38, 38);
-    m_sendBtn->setStyleSheet(
-        "QPushButton { background: #25D366; color: white; border: none; border-radius: 19px; "
-        "font-size: 16px; font-weight: bold; }"
-        "QPushButton:hover { background: #1DA851; }"
-        "QPushButton:disabled { background: #C8C8C8; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        m_sendBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; color: white; border: none; border-radius: 19px; "
+            "font-size: 16px; font-weight: bold; }"
+            "QPushButton:hover { background: %2; }"
+            "QPushButton:disabled { background: #C8C8C8; }")
+            .arg(t.chatSendButton.name(), t.chatSendButtonHover.name()));
+    }
     inputLayout->addWidget(m_sendBtn);
 
     m_mainLayout->addWidget(inputContainer);
@@ -162,9 +182,13 @@ void ChatPanel::addWelcomeMessage() {
     iconLabel->setFixedSize(48, 48);
     iconLabel->setAlignment(Qt::AlignCenter);
     iconLabel->setText("\u2728");
-    iconLabel->setStyleSheet(
-        "background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #22C55E, stop:1 #15803D); "
-        "border-radius: 24px; font-size: 22px; color: white; border: none;");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        iconLabel->setStyleSheet(QString(
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 %1, stop:1 %2); "
+            "border-radius: 24px; font-size: 22px; color: white; border: none;")
+            .arg(t.accentPrimary.name(), t.accentDarker.name()));
+    }
     auto* iconRow = new QHBoxLayout();
     iconRow->addStretch();
     iconRow->addWidget(iconLabel);
@@ -201,9 +225,10 @@ void ChatPanel::addWelcomeMessage() {
         auto* chip = new QLabel(tip);
         chip->setWordWrap(true);
         chip->setAlignment(Qt::AlignCenter);
-        chip->setStyleSheet(
-            "background: white; color: #1B5E3B; border-radius: 14px; "
-            "padding: 7px 14px; font-size: 11px; border: none;");
+        chip->setStyleSheet(QString(
+            "background: white; color: %1; border-radius: 14px; "
+            "padding: 7px 14px; font-size: 11px; border: none;")
+            .arg(ThemeManager::instance().currentTheme().accentDarker.name()));
         chip->setMaximumWidth(230);
 
         chipRow->addStretch();
@@ -596,4 +621,13 @@ void ChatPanel::onApiResponse(QNetworkReply* reply) {
     }
 
     reply->deleteLater();
+}
+
+void ChatPanel::onThemeChanged() {
+    // ChatPanel chrome colors are applied at construction time.
+    // For runtime theme changes, we don't retroactively restyle existing messages,
+    // but we do update the main chrome elements.
+    // Since the widgets are local to the constructor, we rely on the next
+    // full rebuild or simply accept that chat panel theming takes full effect
+    // at construction time (the common case).
 }

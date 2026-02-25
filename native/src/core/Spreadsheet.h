@@ -16,6 +16,7 @@
 #include "DependencyGraph.h"
 #include "ConditionalFormatting.h"
 #include "SparklineConfig.h"
+#include "DocumentTheme.h"
 
 struct PivotConfig; // forward declaration
 
@@ -175,6 +176,13 @@ public:
     void setShowGridlines(bool show) { m_showGridlines = show; }
     bool showGridlines() const { return m_showGridlines; }
 
+    // Document theme
+    const DocumentTheme& getDocumentTheme() const { return m_documentTheme; }
+    void setDocumentTheme(const DocumentTheme& theme);
+
+    // Mutable table access (for re-theming)
+    std::vector<SpreadsheetTable>& getTablesRef() { return m_tables; }
+
 private:
     struct CellKey {
         int row, col;
@@ -217,6 +225,7 @@ private:
     std::map<int, int> m_rowHeights;     // row -> height in pixels
     std::map<int, int> m_columnWidths;   // col -> width in pixels
     bool m_showGridlines = true;
+    DocumentTheme m_documentTheme = defaultDocumentTheme();
     CellStyle m_defaultCellStyle;
     bool m_hasDefaultStyle = false;
     std::unordered_map<CellKey, SparklineConfig, CellKeyHash> m_sparklines;

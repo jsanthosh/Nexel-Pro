@@ -46,8 +46,8 @@ public:
     void applyStrikethrough();
     void applyFontFamily(const QString& family);
     void applyFontSize(int size);
-    void applyForegroundColor(const QColor& color);
-    void applyBackgroundColor(const QColor& color);
+    void applyForegroundColor(const QString& colorStr);
+    void applyBackgroundColor(const QString& colorStr);
     void applyThousandSeparator();
     void applyNumberFormat(const QString& format);
     void applyDateFormat(const QString& dateFormatId);
@@ -148,6 +148,9 @@ public:
     void zoomOut();
     void resetZoom();
 
+    // Theme support
+    void onThemeChanged();
+
 signals:
     void cellSelected(int row, int col, const QString& content, const QString& address);
     void formatCellsRequested();
@@ -228,6 +231,7 @@ private:
     int m_formulaRefInsertLen = 0;
 
     void initializeView();
+    void applyGridStylesheet();
     void setupConnections();
     void emitCellSelected(const QModelIndex& index);
     void setupHeaderContextMenus();

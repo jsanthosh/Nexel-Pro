@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <vector>
 #include "CellRange.h"
+#include "DocumentTheme.h"
 
 struct TableTheme {
     QString name;
@@ -41,6 +42,37 @@ inline std::vector<TableTheme> getBuiltinTableThemes() {
         {"Blossom",     QColor("#DB2777"), QColor("#FFFFFF"), QColor("#FCE7F3"), QColor("#FFFFFF"), QColor("#F472B6")},
         {"Minimal",     QColor("#F3F4F6"), QColor("#111111"), QColor("#F9FAFB"), QColor("#FFFFFF"), QColor("#D1D5DB")},
     };
+}
+
+// Generate table themes from a document theme's 6 accent colors (2 per accent: light + medium)
+inline std::vector<TableTheme> generateTableThemes(const DocumentTheme& theme) {
+    static const char* kAccentNames[] = {
+        "Accent 1", "Accent 2", "Accent 3", "Accent 4", "Accent 5", "Accent 6"
+    };
+
+    std::vector<TableTheme> themes;
+    themes.reserve(12);
+
+    for (int i = 0; i < 6; ++i) {
+        QColor accent = theme.colors[4 + i]; // Accent1 = index 4
+
+        // Light variant: colored header, very light banded rows
+        QColor lightBand = DocumentTheme::applyTint(accent, 0.8);   // 80% lighter
+        QColor border    = DocumentTheme::applyTint(accent, 0.4);   // 40% lighter
+        themes.push_back({
+            QString("%1 Light").arg(kAccentNames[i]),
+            accent, QColor("#FFFFFF"), lightBand, QColor("#FFFFFF"), border
+        });
+
+        // Medium variant: colored header, medium banded rows
+        QColor medBand = DocumentTheme::applyTint(accent, 0.6);     // 60% lighter
+        themes.push_back({
+            QString("%1 Medium").arg(kAccentNames[i]),
+            accent, QColor("#FFFFFF"), medBand, QColor("#FFFFFF"), accent
+        });
+    }
+
+    return themes;
 }
 
 #endif // TABLESTYLE_H

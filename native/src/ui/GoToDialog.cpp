@@ -1,4 +1,5 @@
 #include "GoToDialog.h"
+#include "Theme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -35,14 +36,7 @@ GoToDialog::GoToDialog(QWidget* parent)
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
     connect(m_cellRefEdit, &QLineEdit::returnPressed, this, &QDialog::accept);
 
-    setStyleSheet(
-        "QDialog { background: #F9F9F9; }"
-        "QLineEdit { padding: 4px 6px; border: 1px solid #C8C8C8; border-radius: 3px; background: white; }"
-        "QPushButton { padding: 5px 14px; border: 1px solid #C8C8C8; border-radius: 3px; background: #F0F0F0; }"
-        "QPushButton:hover { background: #E0E0E0; }"
-        "QPushButton:default { background: #217346; color: white; border-color: #1a5c38; }"
-        "QPushButton:default:hover { background: #1a5c38; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 }
 
 CellAddress GoToDialog::getAddress() const {

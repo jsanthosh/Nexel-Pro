@@ -1,4 +1,5 @@
 #include "Toolbar.h"
+#include "Theme.h"
 #include <QAction>
 #include <QToolButton>
 #include <QSpinBox>
@@ -20,6 +21,7 @@
 #include <functional>
 #include "../core/TableStyle.h"
 #include "../core/NumberFormat.h"
+#include "../core/DocumentTheme.h"
 #include <QDate>
 #include <QDateTime>
 
@@ -50,7 +52,7 @@ protected:
 
         // Border
         if (selected) {
-            p.setPen(QPen(QColor("#107C10"), 2));
+            p.setPen(QPen(ThemeManager::instance().currentTheme().accentDark, 2));
             p.drawRect(r.adjusted(0, 0, -1, -1));
         } else if (hovered) {
             p.setPen(QPen(QColor("#333333"), 2));
@@ -69,35 +71,22 @@ protected:
     void mousePressEvent(QMouseEvent*) override { if (onClick) onClick(); }
 };
 
-static QColor showColorPalette(QWidget* parent, const QColor& current, const QString& title) {
-    // Excel-style palette: 10 theme columns, each with light-to-dark gradient
-    static const QColor palette[] = {
-        // Row 1: Base theme colors
-        QColor("#C0392B"), QColor("#E67E22"), QColor("#F1C40F"), QColor("#2ECC71"),
-        QColor("#1ABC9C"), QColor("#3498DB"), QColor("#2980B9"), QColor("#9B59B6"),
-        QColor("#34495E"), QColor("#7F8C8D"),
-        // Row 2: Lightest tint
-        QColor("#FADBD8"), QColor("#FDEBD0"), QColor("#FEF9E7"), QColor("#D5F5E3"),
-        QColor("#D1F2EB"), QColor("#D6EAF8"), QColor("#D4E6F1"), QColor("#E8DAEF"),
-        QColor("#D5D8DC"), QColor("#E5E8E8"),
-        // Row 3: Light tint
-        QColor("#F1948A"), QColor("#F0B27A"), QColor("#F9E79F"), QColor("#82E0AA"),
-        QColor("#76D7C4"), QColor("#85C1E9"), QColor("#7FB3D8"), QColor("#C39BD3"),
-        QColor("#ABB2B9"), QColor("#BDC3C7"),
-        // Row 4: Medium
-        QColor("#E74C3C"), QColor("#EB984E"), QColor("#F4D03F"), QColor("#52BE80"),
-        QColor("#48C9B0"), QColor("#5DADE2"), QColor("#5499C7"), QColor("#AF7AC5"),
-        QColor("#808B96"), QColor("#95A5A6"),
-        // Row 5: Dark
-        QColor("#A93226"), QColor("#CA6F1E"), QColor("#D4AC0D"), QColor("#239B56"),
-        QColor("#17A589"), QColor("#2E86C1"), QColor("#2471A3"), QColor("#7D3C98"),
-        QColor("#2C3E50"), QColor("#717D7E"),
-        // Row 6: Darkest
-        QColor("#78281F"), QColor("#935116"), QColor("#9A7D0A"), QColor("#1E8449"),
-        QColor("#148F77"), QColor("#21618C"), QColor("#1A5276"), QColor("#6C3483"),
-        QColor("#1C2833"), QColor("#4D5656"),
+// Result from the color picker: resolved QColor for UI + color string for storage
+struct ColorPickResult {
+    QColor displayColor;   // Resolved QColor for immediate UI feedback
+    QString colorString;   // "theme:4:0.4" or "#RRGGBB" — stored in CellStyle
+    bool isValid = false;
+};
+
+static ColorPickResult showColorPalette(QWidget* parent, const QString& currentColorStr,
+                                         const DocumentTheme& docTheme, const QString& title) {
+    // Standard vivid colors row (matches Excel's standard colors)
+    static const QColor standardColors[] = {
+        QColor("#C00000"), QColor("#FF0000"), QColor("#FFC000"), QColor("#FFFF00"),
+        QColor("#92D050"), QColor("#00B050"), QColor("#00B0F0"), QColor("#0070C0"),
+        QColor("#002060"), QColor("#7030A0"),
     };
-    // Row 7: Grayscale
+    // Grayscale row
     static const QColor grayscale[] = {
         QColor("#000000"), QColor("#1A1A1A"), QColor("#333333"), QColor("#4D4D4D"),
         QColor("#666666"), QColor("#808080"), QColor("#999999"), QColor("#B3B3B3"),
@@ -105,7 +94,10 @@ static QColor showColorPalette(QWidget* parent, const QColor& current, const QSt
     };
 
     static const int COLS = 10;
-    static const int THEME_ROWS = 6;
+
+    // Resolve current color for selected-swatch comparison
+    QColor currentColor = DocumentTheme::isThemeColor(currentColorStr)
+        ? docTheme.resolveColor(currentColorStr) : QColor(currentColorStr);
 
     QMenu menu(parent);
     menu.setStyleSheet(
@@ -122,21 +114,23 @@ static QColor showColorPalette(QWidget* parent, const QColor& current, const QSt
     themeLabel->setStyleSheet("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #666; padding-bottom: 4px;");
     layout->addWidget(themeLabel);
 
-    QColor result;
+    ColorPickResult result;
 
-    // Theme color grid
+    // Theme color grid: 6 rows × 10 columns
     QGridLayout* grid = new QGridLayout();
     grid->setSpacing(3);
     grid->setContentsMargins(0, 0, 0, 0);
 
-    for (int r = 0; r < THEME_ROWS; ++r) {
+    for (int r = 0; r < kThemeTintCount; ++r) {
         for (int c = 0; c < COLS; ++c) {
-            int idx = r * COLS + c;
-            ColorSwatch* swatch = new ColorSwatch(palette[idx], container);
-            swatch->selected = (palette[idx] == current);
-            swatch->setToolTip(palette[idx].name().toUpper());
-            swatch->onClick = [&result, &menu, idx]() {
-                result = palette[idx];
+            QColor swatchColor = DocumentTheme::applyTint(docTheme.colors[c], kThemeTints[r]);
+            ColorSwatch* swatch = new ColorSwatch(swatchColor, container);
+            swatch->selected = currentColor.isValid() && (swatchColor == currentColor);
+            swatch->setToolTip(themeColorName(c, kThemeTints[r]));
+            swatch->onClick = [&result, &menu, c, r, swatchColor]() {
+                result.displayColor = swatchColor;
+                result.colorString = DocumentTheme::makeThemeColorStr(c, kThemeTints[r]);
+                result.isValid = true;
                 menu.close();
             };
             grid->addWidget(swatch, r, c);
@@ -152,20 +146,42 @@ static QColor showColorPalette(QWidget* parent, const QColor& current, const QSt
     layout->addWidget(sep1);
     layout->addSpacing(4);
 
-    // Section: Standard Colors (grayscale)
+    // Section: Standard Colors (vivid)
     QLabel* stdLabel = new QLabel("Standard Colors", container);
     stdLabel->setStyleSheet("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #666; padding-bottom: 4px;");
     layout->addWidget(stdLabel);
 
+    QHBoxLayout* stdRow = new QHBoxLayout();
+    stdRow->setSpacing(3);
+    stdRow->setContentsMargins(0, 0, 0, 0);
+    for (int c = 0; c < COLS; ++c) {
+        ColorSwatch* swatch = new ColorSwatch(standardColors[c], container);
+        swatch->selected = currentColor.isValid() && (standardColors[c] == currentColor);
+        swatch->setToolTip(standardColors[c].name().toUpper());
+        swatch->onClick = [&result, &menu, c]() {
+            result.displayColor = standardColors[c];
+            result.colorString = standardColors[c].name();
+            result.isValid = true;
+            menu.close();
+        };
+        stdRow->addWidget(swatch);
+    }
+    layout->addLayout(stdRow);
+
+    layout->addSpacing(4);
+
+    // Grayscale row
     QHBoxLayout* grayRow = new QHBoxLayout();
     grayRow->setSpacing(3);
     grayRow->setContentsMargins(0, 0, 0, 0);
     for (int c = 0; c < COLS; ++c) {
         ColorSwatch* swatch = new ColorSwatch(grayscale[c], container);
-        swatch->selected = (grayscale[c] == current);
+        swatch->selected = currentColor.isValid() && (grayscale[c] == currentColor);
         swatch->setToolTip(grayscale[c].name().toUpper());
         swatch->onClick = [&result, &menu, c]() {
-            result = grayscale[c];
+            result.displayColor = grayscale[c];
+            result.colorString = grayscale[c].name();
+            result.isValid = true;
             menu.close();
         };
         grayRow->addWidget(swatch);
@@ -190,7 +206,9 @@ static QColor showColorPalette(QWidget* parent, const QColor& current, const QSt
             "  color: #444; text-align: left; padding-left: 2px; }"
             "QPushButton:hover { background: #F0F4F8; border-radius: 3px; }");
         QObject::connect(noFillBtn, &QPushButton::clicked, &menu, [&result, &menu]() {
-            result = QColor("#FFFFFF");
+            result.displayColor = QColor("#FFFFFF");
+            result.colorString = "#FFFFFF";
+            result.isValid = true;
             menu.close();
         });
         layout->addWidget(noFillBtn);
@@ -204,9 +222,14 @@ static QColor showColorPalette(QWidget* parent, const QColor& current, const QSt
         "QPushButton { background: transparent; border: none; font: 12px 'Segoe UI', 'SF Pro Text', sans-serif;"
         "  color: #2980B9; text-align: left; padding-left: 2px; }"
         "QPushButton:hover { background: #F0F4F8; border-radius: 3px; }");
-    QObject::connect(customBtn, &QPushButton::clicked, &menu, [&result, &menu, parent, current, title]() {
+    QObject::connect(customBtn, &QPushButton::clicked, &menu, [&result, &menu, parent, currentColor, title]() {
         menu.close();
-        result = QColorDialog::getColor(current, parent, title);
+        QColor custom = QColorDialog::getColor(currentColor, parent, title);
+        if (custom.isValid()) {
+            result.displayColor = custom;
+            result.colorString = custom.name();
+            result.isValid = true;
+        }
     });
     layout->addWidget(customBtn);
 
@@ -504,9 +527,10 @@ static QIcon createMergeIcon() {
 
 static QIcon createChatIcon() {
     return createIcon(18, [](QPainter& p, int) {
+        const QColor accent = ThemeManager::instance().currentTheme().accentDarker;
         // Speech bubble
-        p.setPen(QPen(QColor("#1B5E3B"), 1.2));
-        p.setBrush(QColor("#1B5E3B").lighter(160));
+        p.setPen(QPen(accent, 1.2));
+        p.setBrush(accent.lighter(160));
         QPainterPath bubble;
         bubble.addRoundedRect(2, 2, 14, 10, 3, 3);
         // Tail
@@ -516,7 +540,7 @@ static QIcon createChatIcon() {
         p.drawPath(bubble);
         // Dots
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor("#1B5E3B"));
+        p.setBrush(accent);
         p.drawEllipse(QPointF(6, 7), 1.2, 1.2);
         p.drawEllipse(QPointF(9, 7), 1.2, 1.2);
         p.drawEllipse(QPointF(12, 7), 1.2, 1.2);
@@ -605,12 +629,14 @@ static QIcon createIndentIcon(bool increase) {
 
 // ===== Modern Toolbar Style =====
 
-static const char* TOOLBAR_STYLE = R"(
+static QString buildToolbarStyle() {
+    const auto& t = ThemeManager::instance().currentTheme();
+    return QString(R"(
     QToolBar {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 #1B5E3B, stop:0.04 #1B5E3B,
-            stop:0.041 #FAFBFC, stop:1 #F0F2F5);
-        border-bottom: 1px solid #D0D5DD;
+            stop:0 %1, stop:0.04 %1,
+            stop:0.041 #FAFBFC, stop:1 %2);
+        border-bottom: 1px solid %3;
         spacing: 1px;
         padding: 5px 8px 4px 8px;
     }
@@ -621,32 +647,32 @@ static const char* TOOLBAR_STYLE = R"(
         padding: 3px 6px;
         margin: 0px 1px;
         font-size: 12px;
-        color: #344054;
+        color: %4;
     }
     QToolButton:hover {
-        background-color: #E8ECF0;
-        border-color: #D0D5DD;
+        background-color: %5;
+        border-color: %3;
     }
     QToolButton:pressed {
-        background-color: #D0D5DD;
+        background-color: %3;
     }
     QToolButton:checked {
-        background-color: #D6E4F0;
-        border-color: #4A90D9;
+        background-color: %6;
+        border-color: %7;
     }
     QFontComboBox {
         max-width: 180px;
         min-width: 140px;
         height: 26px;
-        border: 1px solid #D0D5DD;
+        border: 1px solid %3;
         border-radius: 4px;
         padding: 1px 4px 1px 6px;
         background: white;
         font-size: 12px;
-        color: #344054;
+        color: %4;
     }
     QFontComboBox:focus {
-        border-color: #4A90D9;
+        border-color: %7;
     }
     QFontComboBox QAbstractItemView {
         min-width: 200px;
@@ -654,22 +680,32 @@ static const char* TOOLBAR_STYLE = R"(
     QSpinBox {
         max-width: 50px;
         height: 26px;
-        border: 1px solid #D0D5DD;
+        border: 1px solid %3;
         border-radius: 4px;
         padding: 1px 6px;
         background: white;
         font-size: 12px;
-        color: #344054;
+        color: %4;
     }
     QSpinBox:focus {
-        border-color: #4A90D9;
+        border-color: %7;
     }
     QToolBar::separator {
         width: 1px;
-        background-color: #E0E3E8;
+        background-color: %8;
         margin: 4px 4px;
     }
-)";
+    )").arg(
+        t.toolbarAccentStripe.name(),    // %1
+        t.toolbarBackground.name(),      // %2
+        t.toolbarBorder.name(),          // %3
+        t.toolbarButtonText.name(),      // %4
+        t.toolbarButtonHover.name(),     // %5
+        t.toolbarButtonChecked.name(),   // %6
+        t.toolbarButtonCheckedBorder.name(), // %7
+        t.toolbarSeparator.name()        // %8
+    );
+}
 
 Toolbar::Toolbar(QWidget* parent)
     : QToolBar("Standard Toolbar", parent) {
@@ -677,7 +713,7 @@ Toolbar::Toolbar(QWidget* parent)
     setMovable(false);
     setFloatable(false);
     setIconSize(QSize(18, 18));
-    setStyleSheet(TOOLBAR_STYLE);
+    setStyleSheet(buildToolbarStyle());
 
     createActions();
 }
@@ -786,13 +822,15 @@ void Toolbar::createActions() {
         "QToolButton { color: #C00000; font-weight: bold; border-bottom: 3px solid #C00000; border-radius: 4px; }");
     addWidget(m_fgColorBtn);
     connect(m_fgColorBtn, &QToolButton::clicked, this, [this]() {
-        QColor color = showColorPalette(this, m_lastFgColor, "Font Color");
-        if (color.isValid()) {
-            m_lastFgColor = color;
+        const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
+        auto pick = showColorPalette(this, m_lastFgColorStr, dt, "Font Color");
+        if (pick.isValid) {
+            m_lastFgColor = pick.displayColor;
+            m_lastFgColorStr = pick.colorString;
             m_fgColorBtn->setStyleSheet(
                 QString("QToolButton { color: %1; font-weight: bold; border-bottom: 3px solid %1; border-radius: 4px; }")
-                    .arg(color.name()));
-            emit foregroundColorChanged(color);
+                    .arg(pick.displayColor.name()));
+            emit foregroundColorChanged(pick.colorString, pick.displayColor);
         }
     });
 
@@ -802,11 +840,13 @@ void Toolbar::createActions() {
     addWidget(m_bgColorBtn);
     updateBgColorIcon();
     connect(m_bgColorBtn, &QToolButton::clicked, this, [this]() {
-        QColor color = showColorPalette(this, m_lastBgColor, "Fill Color");
-        if (color.isValid()) {
-            m_lastBgColor = color;
+        const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
+        auto pick = showColorPalette(this, m_lastBgColorStr, dt, "Fill Color");
+        if (pick.isValid) {
+            m_lastBgColor = pick.displayColor;
+            m_lastBgColorStr = pick.colorString;
             updateBgColorIcon();
-            emit backgroundColorChanged(color);
+            emit backgroundColorChanged(pick.colorString, pick.displayColor);
         }
     });
 
@@ -814,10 +854,12 @@ void Toolbar::createActions() {
 
 // ===== Row 2: Secondary Toolbar =====
 
-static const char* TOOLBAR_STYLE_ROW2 = R"(
+static QString buildToolbarStyleRow2() {
+    const auto& t = ThemeManager::instance().currentTheme();
+    return QString(R"(
     QToolBar {
-        background: #F0F2F5;
-        border-bottom: 1px solid #D0D5DD;
+        background: %1;
+        border-bottom: 1px solid %2;
         spacing: 1px;
         padding: 2px 8px 2px 8px;
     }
@@ -828,18 +870,18 @@ static const char* TOOLBAR_STYLE_ROW2 = R"(
         padding: 2px 5px;
         margin: 0px 1px;
         font-size: 12px;
-        color: #344054;
+        color: %3;
     }
     QToolButton:hover {
-        background-color: #E8ECF0;
-        border-color: #D0D5DD;
+        background-color: %4;
+        border-color: %2;
     }
     QToolButton:pressed {
-        background-color: #D0D5DD;
+        background-color: %2;
     }
     QToolButton:checked {
-        background-color: #D6E4F0;
-        border-color: #4A90D9;
+        background-color: %5;
+        border-color: %6;
     }
     QToolButton::menu-indicator {
         subcontrol-position: right center;
@@ -849,10 +891,19 @@ static const char* TOOLBAR_STYLE_ROW2 = R"(
     }
     QToolBar::separator {
         width: 1px;
-        background-color: #E0E3E8;
+        background-color: %7;
         margin: 3px 4px;
     }
-)";
+    )").arg(
+        t.toolbarBackground.name(),      // %1
+        t.toolbarBorder.name(),          // %2
+        t.toolbarButtonText.name(),      // %3
+        t.toolbarButtonHover.name(),     // %4
+        t.toolbarButtonChecked.name(),   // %5
+        t.toolbarButtonCheckedBorder.name(), // %6
+        t.toolbarSeparator.name()        // %7
+    );
+}
 
 void Toolbar::setSaveEnabled(bool enabled) {
     if (m_saveBtn) m_saveBtn->setEnabled(enabled);
@@ -863,7 +914,7 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     bar->setMovable(false);
     bar->setFloatable(false);
     bar->setIconSize(QSize(16, 16));
-    bar->setStyleSheet(TOOLBAR_STYLE_ROW2);
+    bar->setStyleSheet(buildToolbarStyleRow2());
 
     // ===== Horizontal Alignment =====
     m_alignLeftBtn = new QToolButton(bar);
@@ -1161,15 +1212,17 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
         makeColorSwatchIcon(m_lastBorderColor),
         QString("Line Color: %1").arg(m_lastBorderColor.name().toUpper()),
         this, [this, makeColorSwatchIcon, borderMenu, reopenBorderMenu]() {
-            QColor color = showColorPalette(this, m_lastBorderColor, "Border Color");
-            if (color.isValid()) {
-                m_lastBorderColor = color;
+            const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
+            auto pick = showColorPalette(this, m_lastBorderColorStr, dt, "Border Color");
+            if (pick.isValid) {
+                m_lastBorderColor = pick.displayColor;
+                m_lastBorderColorStr = pick.colorString;
                 // Update the action text and icon to show new color
                 auto actions = borderMenu->actions();
                 for (auto* a : actions) {
                     if (a->text().startsWith("Line Color:")) {
-                        a->setText(QString("Line Color: %1").arg(color.name().toUpper()));
-                        a->setIcon(makeColorSwatchIcon(color));
+                        a->setText(QString("Line Color: %1").arg(pick.displayColor.name().toUpper()));
+                        a->setIcon(makeColorSwatchIcon(pick.displayColor));
                         break;
                     }
                 }
@@ -1491,27 +1544,32 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
         "QMenu::item:selected { background-color: #E8F0FE; }"
     );
 
-    auto themes = getBuiltinTableThemes();
-    for (int i = 0; i < static_cast<int>(themes.size()); ++i) {
-        const auto& theme = themes[i];
-        QPixmap swatch(48, 28);
-        swatch.fill(Qt::transparent);
-        QPainter sp(&swatch);
-        sp.setRenderHint(QPainter::Antialiasing, true);
-        QPainterPath clip;
-        clip.addRoundedRect(0, 0, 48, 28, 4, 4);
-        sp.setClipPath(clip);
-        sp.fillRect(0, 0, 48, 8, theme.headerBg);
-        sp.fillRect(0, 8, 48, 7, theme.bandedRow1);
-        sp.fillRect(0, 15, 48, 6, theme.bandedRow2);
-        sp.fillRect(0, 21, 48, 7, theme.bandedRow1);
-        sp.setClipping(false);
-        sp.setPen(QPen(QColor("#D0D5DD"), 0.5));
-        sp.drawRoundedRect(QRectF(0.25, 0.25, 47.5, 27.5), 4, 4);
-        sp.end();
-        QAction* action = tableMenu->addAction(QIcon(swatch), theme.name);
-        connect(action, &QAction::triggered, this, [this, i]() { emit tableStyleSelected(i); });
-    }
+    // Generate table themes from document theme (re-generated each time menu opens)
+    connect(tableMenu, &QMenu::aboutToShow, this, [this, tableMenu]() {
+        tableMenu->clear();
+        const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
+        auto themes = generateTableThemes(dt);
+        for (int i = 0; i < static_cast<int>(themes.size()); ++i) {
+            const auto& theme = themes[i];
+            QPixmap swatch(48, 28);
+            swatch.fill(Qt::transparent);
+            QPainter sp(&swatch);
+            sp.setRenderHint(QPainter::Antialiasing, true);
+            QPainterPath clip;
+            clip.addRoundedRect(0, 0, 48, 28, 4, 4);
+            sp.setClipPath(clip);
+            sp.fillRect(0, 0, 48, 8, theme.headerBg);
+            sp.fillRect(0, 8, 48, 7, theme.bandedRow1);
+            sp.fillRect(0, 15, 48, 6, theme.bandedRow2);
+            sp.fillRect(0, 21, 48, 7, theme.bandedRow1);
+            sp.setClipping(false);
+            sp.setPen(QPen(QColor("#D0D5DD"), 0.5));
+            sp.drawRoundedRect(QRectF(0.25, 0.25, 47.5, 27.5), 4, 4);
+            sp.end();
+            QAction* action = tableMenu->addAction(QIcon(swatch), theme.name);
+            connect(action, &QAction::triggered, this, [this, i]() { emit tableStyleSelected(i); });
+        }
+    });
     tableBtn->setMenu(tableMenu);
     bar->addWidget(tableBtn);
 
@@ -1539,10 +1597,11 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     QToolButton* checkboxBtn = new QToolButton(bar);
     checkboxBtn->setIcon(createIcon(16, [](QPainter& p, int) {
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(QColor("#107C10"), 1.5));
+        const QColor accent = ThemeManager::instance().currentTheme().accentDark;
+        p.setPen(QPen(accent, 1.5));
         p.setBrush(Qt::white);
         p.drawRoundedRect(2, 2, 12, 12, 2, 2);
-        p.setPen(QPen(QColor("#107C10"), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setPen(QPen(accent, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.drawLine(4, 8, 6, 11);
         p.drawLine(6, 11, 12, 4);
     }));
@@ -1629,16 +1688,27 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     chatBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     chatBtn->setToolTip("Open Claude Assistant");
     chatBtn->setFixedHeight(24);
-    chatBtn->setStyleSheet(
-        "QToolButton { background: #1B5E3B; color: white; border: none; border-radius: 4px; "
-        "padding: 2px 10px; font-size: 11px; font-weight: bold; }"
-        "QToolButton:hover { background: #246B45; }"
-        "QToolButton:pressed { background: #155030; }"
-    );
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        chatBtn->setStyleSheet(QString(
+            "QToolButton { background: %1; color: white; border: none; border-radius: 4px; "
+            "padding: 2px 10px; font-size: 11px; font-weight: bold; }"
+            "QToolButton:hover { background: %2; }"
+            "QToolButton:pressed { background: %3; }"
+        ).arg(t.accentDarker.name(), t.accentDark.name(), t.menuBarHover.name()));
+    }
     bar->addWidget(chatBtn);
     connect(chatBtn, &QToolButton::clicked, this, &Toolbar::chatToggleRequested);
 
+    m_secondaryToolbar = bar;
     return bar;
+}
+
+void Toolbar::onThemeChanged() {
+    setStyleSheet(buildToolbarStyle());
+    if (m_secondaryToolbar) {
+        m_secondaryToolbar->setStyleSheet(buildToolbarStyleRow2());
+    }
 }
 
 void Toolbar::updateBgColorIcon() {
@@ -1692,15 +1762,19 @@ void Toolbar::syncToStyle(const CellStyle& style) {
 
     // Font color
     if (m_fgColorBtn) {
-        m_lastFgColor = QColor(style.foregroundColor);
+        m_lastFgColorStr = style.foregroundColor;
+        const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
+        m_lastFgColor = dt.resolveAnyColor(style.foregroundColor);
         m_fgColorBtn->setStyleSheet(
             QString("QToolButton { color: %1; font-weight: bold; border-bottom: 3px solid %1; border-radius: 4px; }")
-                .arg(style.foregroundColor));
+                .arg(m_lastFgColor.name()));
     }
 
     // Fill color
     if (m_bgColorBtn) {
-        m_lastBgColor = QColor(style.backgroundColor);
+        m_lastBgColorStr = style.backgroundColor;
+        const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
+        m_lastBgColor = dt.resolveAnyColor(style.backgroundColor);
         updateBgColorIcon();
     }
 

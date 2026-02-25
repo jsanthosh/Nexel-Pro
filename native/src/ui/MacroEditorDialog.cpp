@@ -1,4 +1,5 @@
 #include "MacroEditorDialog.h"
+#include "Theme.h"
 
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -131,14 +132,7 @@ MacroEditorDialog::MacroEditorDialog(MacroEngine* engine, QWidget* parent)
     setWindowTitle(tr("Macro Editor"));
     resize(800, 550);
 
-    setStyleSheet(
-        "QDialog { background: #F8FAFC; }"
-        "QListWidget { border: 1px solid #D0D5DD; border-radius: 6px; background: white; }"
-        "QLineEdit { padding: 6px; border: 1px solid #D0D5DD; border-radius: 6px; }"
-        "QPlainTextEdit { border: 1px solid #D0D5DD; border-radius: 6px; "
-        "  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace; font-size: 13px; }"
-        "QPushButton { padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 
     createLayout();
     refreshMacroList();

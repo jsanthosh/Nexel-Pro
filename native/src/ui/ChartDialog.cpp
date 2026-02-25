@@ -1,4 +1,5 @@
 #include "ChartDialog.h"
+#include "Theme.h"
 #include "../core/Spreadsheet.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -126,33 +127,7 @@ ChartDialog::ChartDialog(QWidget* parent)
     resize(780, 570);
     createLayout();
 
-    setStyleSheet(
-        "QDialog { background: #F8FAFB; }"
-        "QGroupBox { font-weight: 600; font-size: 12px; border: 1px solid #EAECF0; "
-        "border-radius: 10px; margin-top: 10px; padding: 20px 14px 14px 14px; background: white; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 8px; "
-        "color: #217346; font-size: 12px; }"
-        "QLineEdit { border: 1px solid #D0D5DD; border-radius: 6px; padding: 6px 10px; "
-        "background: white; font-size: 12px; color: #1D2939; }"
-        "QLineEdit:focus { border-color: #34A853; }"
-        "QLineEdit::placeholder { color: #98A2B3; }"
-        "QComboBox { border: 1px solid #D0D5DD; border-radius: 6px; padding: 6px 10px; "
-        "background: white; font-size: 12px; color: #1D2939; min-height: 22px; }"
-        "QComboBox:focus { border: 1px solid #34A853; }"
-        "QComboBox::drop-down { border: none; width: 22px; }"
-        "QComboBox::down-arrow { image: none; border-left: 4px solid transparent; "
-        "border-right: 4px solid transparent; border-top: 5px solid #667085; margin-right: 6px; }"
-        "QComboBox QAbstractItemView { border: 1px solid #EAECF0; border-radius: 6px; "
-        "background: white; selection-background-color: #E8F5E9; padding: 4px; outline: none; }"
-        "QCheckBox { spacing: 8px; font-size: 12px; color: #344054; }"
-        "QListWidget { border: 1px solid #EAECF0; border-radius: 8px; background: white; "
-        "outline: none; }"
-        "QListWidget::item { padding: 8px 10px; border-radius: 6px; font-size: 12px; }"
-        "QListWidget::item:selected { background-color: #E8F5E9; color: #1D2939; "
-        "border-left: 3px solid #217346; }"
-        "QListWidget::item:hover:!selected { background-color: #F8FAFB; }"
-        "QLabel { color: #475467; font-size: 12px; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 }
 
 void ChartDialog::createLayout() {
@@ -251,11 +226,15 @@ void ChartDialog::createLayout() {
     QPushButton* insertBtn = new QPushButton("Insert Chart");
     insertBtn->setFixedHeight(36);
     insertBtn->setCursor(Qt::PointingHandCursor);
-    insertBtn->setStyleSheet(
-        "QPushButton { background: #217346; color: white; border: none; border-radius: 6px; "
-        "padding: 0 28px; font-size: 12px; font-weight: 600; }"
-        "QPushButton:hover { background: #1B5E3B; }"
-        "QPushButton:pressed { background: #155C30; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        insertBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; color: white; border: none; border-radius: 6px; "
+            "padding: 0 28px; font-size: 12px; font-weight: 600; }"
+            "QPushButton:hover { background: %2; }"
+            "QPushButton:pressed { background: %3; }")
+            .arg(t.accentDark.name(), t.accentDarker.name(), t.accentDarker.darker(110).name()));
+    }
     connect(insertBtn, &QPushButton::clicked, this, &QDialog::accept);
     btnLayout->addWidget(insertBtn);
 
@@ -312,7 +291,7 @@ void ChartDialog::createOptionsPanel() {
     m_themeCombo = new QComboBox();
     m_themeCombo->setMinimumWidth(160);
     m_themeCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_themeCombo->addItems({"Excel", "Material", "Solarized", "Dark", "Monochrome", "Pastel"});
+    m_themeCombo->addItems({"Document Theme", "Excel", "Material", "Solarized", "Dark", "Monochrome", "Pastel"});
 
     connect(m_titleEdit, &QLineEdit::textChanged, this, &ChartDialog::updatePreview);
     connect(m_dataRangeEdit, &QLineEdit::textChanged, this, &ChartDialog::updatePreview);
@@ -377,17 +356,9 @@ void ChartDialog::updatePreview() {
     }
 
     // Update series colors for new theme
-    static const QVector<QVector<QColor>> palettes = {
-        { QColor("#4472C4"), QColor("#ED7D31") },
-        { QColor("#2196F3"), QColor("#FF5722") },
-        { QColor("#268BD2"), QColor("#DC322F") },
-        { QColor("#00C8FF"), QColor("#FF6384") },
-        { QColor("#333333"), QColor("#999999") },
-        { QColor("#A8D8EA"), QColor("#FFB7B2") },
-    };
-    int ti = qBound(0, cfg.themeIndex, static_cast<int>(palettes.size()) - 1);
-    for (int i = 0; i < cfg.series.size() && i < palettes[ti].size(); ++i) {
-        cfg.series[i].color = palettes[ti][i];
+    auto colors = ChartWidget::themeColors(cfg.themeIndex);
+    for (int i = 0; i < cfg.series.size() && i < colors.size(); ++i) {
+        cfg.series[i].color = colors[i];
     }
 
     m_preview->setConfig(cfg);
@@ -542,13 +513,7 @@ InsertShapeDialog::InsertShapeDialog(QWidget* parent)
     setMinimumSize(350, 400);
     createLayout();
 
-    setStyleSheet(
-        "QDialog { background: #F8FAFB; }"
-        "QListWidget { border: 1px solid #EAECF0; border-radius: 8px; background: white; outline: none; }"
-        "QListWidget::item { padding: 6px 8px; border-radius: 6px; }"
-        "QListWidget::item:selected { background-color: #E8F5E9; }"
-        "QListWidget::item:hover:!selected { background-color: #F8FAFB; }"
-    );
+    setStyleSheet(ThemeManager::dialogStylesheet());
 }
 
 void InsertShapeDialog::createLayout() {
@@ -609,10 +574,14 @@ void InsertShapeDialog::createLayout() {
     QPushButton* insertBtn = new QPushButton("Insert Shape");
     insertBtn->setFixedHeight(34);
     insertBtn->setCursor(Qt::PointingHandCursor);
-    insertBtn->setStyleSheet(
-        "QPushButton { background: #217346; color: white; border: none; border-radius: 6px; "
-        "padding: 0 24px; font-size: 12px; font-weight: 600; }"
-        "QPushButton:hover { background: #1B5E3B; }");
+    {
+        const auto& t = ThemeManager::instance().currentTheme();
+        insertBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; color: white; border: none; border-radius: 6px; "
+            "padding: 0 24px; font-size: 12px; font-weight: 600; }"
+            "QPushButton:hover { background: %2; }")
+            .arg(t.accentDark.name(), t.accentDarker.name()));
+    }
     connect(insertBtn, &QPushButton::clicked, this, &QDialog::accept);
     btnLayout->addWidget(insertBtn);
 

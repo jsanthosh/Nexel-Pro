@@ -1,6 +1,7 @@
 #include "SpreadsheetView.h"
 #include "SpreadsheetModel.h"
 #include "CellDelegate.h"
+#include "Theme.h"
 #include "../core/Spreadsheet.h"
 #include "../core/UndoManager.h"
 #include "../core/MacroEngine.h"
@@ -93,44 +94,8 @@ void SpreadsheetView::initializeView() {
 
     setFont(QFont("Arial", 11));
 
-    // Clean, modern stylesheet
-    setStyleSheet(
-        "QTableView {"
-        "   background-color: #ffffff;"
-        "   border: none;"
-        "   outline: none;"
-        "}"
-        "QTableView::item {"
-        "   padding: 0px;"
-        "   border: none;"
-        "   background-color: transparent;"
-        "}"
-        "QTableView::item:selected {"
-        "   background-color: transparent;"
-        "}"
-        "QTableView::item:focus {"
-        "   border: none;"
-        "   outline: none;"
-        "}"
-        "QHeaderView::section {"
-        "   background-color: #F3F3F3;"
-        "   padding: 2px 4px;"
-        "   border: none;"
-        "   border-right: 1px solid #DADCE0;"
-        "   border-bottom: 1px solid #DADCE0;"
-        "   font-size: 11px;"
-        "   color: #333333;"
-        "}"
-        "QHeaderView {"
-        "   background-color: #F3F3F3;"
-        "}"
-        "QTableCornerButton::section {"
-        "   background-color: #F3F3F3;"
-        "   border: none;"
-        "   border-right: 1px solid #DADCE0;"
-        "   border-bottom: 1px solid #DADCE0;"
-        "}"
-    );
+    // Apply theme-aware stylesheet
+    applyGridStylesheet();
 
     // Ensure corner button (top-left) triggers select all
     QAbstractButton* cornerButton = findChild<QAbstractButton*>();
@@ -148,6 +113,69 @@ void SpreadsheetView::initializeView() {
 
     // Setup header context menus
     setupHeaderContextMenus();
+}
+
+void SpreadsheetView::applyGridStylesheet() {
+    const auto& t = ThemeManager::instance().currentTheme();
+    setStyleSheet(QString(
+        "QTableView {"
+        "   background-color: %1;"
+        "   border: none;"
+        "   outline: none;"
+        "}"
+        "QTableView::item {"
+        "   padding: 0px;"
+        "   border: none;"
+        "   background-color: transparent;"
+        "}"
+        "QTableView::item:selected {"
+        "   background-color: transparent;"
+        "}"
+        "QTableView::item:focus {"
+        "   border: none;"
+        "   outline: none;"
+        "}"
+        "QHeaderView::section {"
+        "   background-color: %2;"
+        "   padding: 2px 4px;"
+        "   border: none;"
+        "   border-right: 1px solid %3;"
+        "   border-bottom: 1px solid %3;"
+        "   font-size: 11px;"
+        "   color: %4;"
+        "}"
+        "QHeaderView {"
+        "   background-color: %2;"
+        "}"
+        "QTableCornerButton::section {"
+        "   background-color: %2;"
+        "   border: none;"
+        "   border-right: 1px solid %3;"
+        "   border-bottom: 1px solid %3;"
+        "}"
+    ).arg(
+        t.gridBackground.name(),
+        t.headerBackground.name(),
+        t.headerBorder.name(),
+        t.headerText.name()
+    ));
+}
+
+void SpreadsheetView::onThemeChanged() {
+    applyGridStylesheet();
+    if (m_delegate) m_delegate->onThemeChanged();
+
+    // Update freeze lines if they exist
+    if (m_freezeHLine) {
+        const auto& t = ThemeManager::instance().currentTheme();
+        m_freezeHLine->setStyleSheet(QString("background: %1;").arg(t.freezeLineColor.name()));
+    }
+    if (m_freezeVLine) {
+        const auto& t = ThemeManager::instance().currentTheme();
+        m_freezeVLine->setStyleSheet(QString("background: %1;").arg(t.freezeLineColor.name()));
+    }
+
+    viewport()->update();
 }
 
 void SpreadsheetView::setupConnections() {
@@ -593,18 +621,18 @@ void SpreadsheetView::applyFontSize(int size) {
     applyStyleChange([size](CellStyle& s) { s.fontSize = size; }, {Qt::FontRole});
 }
 
-void SpreadsheetView::applyForegroundColor(const QColor& color) {
+void SpreadsheetView::applyForegroundColor(const QString& colorStr) {
     if (m_macroEngine && m_macroEngine->isRecording()) {
-        m_macroEngine->recordAction(QString("sheet.setForegroundColor(\"%1\", \"%2\");").arg(selectionRangeStr(selectionModel()), color.name()));
+        m_macroEngine->recordAction(QString("sheet.setForegroundColor(\"%1\", \"%2\");").arg(selectionRangeStr(selectionModel()), colorStr));
     }
-    applyStyleChange([&color](CellStyle& s) { s.foregroundColor = color.name(); }, {Qt::ForegroundRole});
+    applyStyleChange([&colorStr](CellStyle& s) { s.foregroundColor = colorStr; }, {Qt::ForegroundRole});
 }
 
-void SpreadsheetView::applyBackgroundColor(const QColor& color) {
+void SpreadsheetView::applyBackgroundColor(const QString& colorStr) {
     if (m_macroEngine && m_macroEngine->isRecording()) {
-        m_macroEngine->recordAction(QString("sheet.setBackgroundColor(\"%1\", \"%2\");").arg(selectionRangeStr(selectionModel()), color.name()));
+        m_macroEngine->recordAction(QString("sheet.setBackgroundColor(\"%1\", \"%2\");").arg(selectionRangeStr(selectionModel()), colorStr));
     }
-    applyStyleChange([&color](CellStyle& s) { s.backgroundColor = color.name(); }, {Qt::BackgroundRole});
+    applyStyleChange([&colorStr](CellStyle& s) { s.backgroundColor = colorStr; }, {Qt::BackgroundRole});
 }
 
 void SpreadsheetView::applyThousandSeparator() {
@@ -794,7 +822,7 @@ CellRange SpreadsheetView::detectDataRegion(int startRow, int startCol) const {
 void SpreadsheetView::applyTableStyle(int themeIndex) {
     if (!m_spreadsheet) return;
 
-    auto themes = getBuiltinTableThemes();
+    auto themes = generateTableThemes(m_spreadsheet->getDocumentTheme());
     if (themeIndex < 0 || themeIndex >= static_cast<int>(themes.size())) return;
 
     QModelIndexList selected = selectionModel()->selectedIndexes();
@@ -1695,7 +1723,9 @@ void SpreadsheetView::setGridlinesVisible(bool visible) {
 
 void SpreadsheetView::refreshView() {
     if (m_model) {
-        m_model->layoutChanged();
+        // Full reset: forces the view to re-query ALL data roles (colors, fonts, etc.)
+        // This is needed when document theme changes so theme-referenced colors resolve correctly.
+        m_model->resetModel();
     }
 }
 
@@ -1776,13 +1806,13 @@ void SpreadsheetView::setupFreezeViews() {
     if (m_frozenRow > 0) {
         m_freezeHLine = new QWidget(this);
         m_freezeHLine->setFixedHeight(2);
-        m_freezeHLine->setStyleSheet("background: #808080;");
+        m_freezeHLine->setStyleSheet(QString("background: %1;").arg(ThemeManager::instance().currentTheme().freezeLineColor.name()));
         m_freezeHLine->setAttribute(Qt::WA_TransparentForMouseEvents);
     }
     if (m_frozenCol > 0) {
         m_freezeVLine = new QWidget(this);
         m_freezeVLine->setFixedWidth(2);
-        m_freezeVLine->setStyleSheet("background: #808080;");
+        m_freezeVLine->setStyleSheet(QString("background: %1;").arg(ThemeManager::instance().currentTheme().freezeLineColor.name()));
         m_freezeVLine->setAttribute(Qt::WA_TransparentForMouseEvents);
     }
 
@@ -2595,7 +2625,7 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
 
             QPainter painter(viewport());
             painter.setRenderHint(QPainter::Antialiasing, false);
-            painter.fillRect(m_fillHandleRect, QColor(16, 124, 16));
+            painter.fillRect(m_fillHandleRect, ThemeManager::instance().currentTheme().focusBorderColor);
             painter.setPen(QPen(Qt::white, 1));
             painter.drawRect(m_fillHandleRect);
         }
@@ -2627,7 +2657,7 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
             filterPainter.drawRoundedRect(btnRect, 2, 2);
 
             // Draw small dropdown arrow
-            QColor arrowColor = hasActiveFilter ? QColor("#1B5E3B") : QColor("#555555");
+            QColor arrowColor = hasActiveFilter ? ThemeManager::instance().currentTheme().accentDarker : QColor("#555555");
             filterPainter.setPen(Qt::NoPen);
             filterPainter.setBrush(arrowColor);
             int ax = btnRect.center().x();
@@ -2731,7 +2761,7 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
             }
 
             if (!fillRect.isNull()) {
-                QPen dashPen(QColor(16, 124, 16), 1, Qt::DashLine);
+                QPen dashPen(ThemeManager::instance().currentTheme().focusBorderColor, 1, Qt::DashLine);
                 painter.setPen(dashPen);
                 painter.setBrush(QColor(198, 217, 240, 40));
                 painter.drawRect(fillRect);
