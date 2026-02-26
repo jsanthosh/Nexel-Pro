@@ -26,12 +26,15 @@ public:
 
     // Get cell references found during last evaluation
     const std::vector<CellAddress>& getLastDependencies() const { return m_lastDependencies; }
+    // Get column-level dependencies (from column references like D:D)
+    const std::vector<int>& getLastColumnDeps() const { return m_lastColumnDeps; }
 
 private:
     Spreadsheet* m_spreadsheet;
     QString m_lastError;
     std::unordered_map<std::string, QVariant> m_cache;
     std::vector<CellAddress> m_lastDependencies;
+    std::vector<int> m_lastColumnDeps;
 
     // Parser hierarchy
     QVariant parseExpression(const QString& expr);

@@ -115,6 +115,7 @@ static ColorPickResult showColorPalette(QWidget* parent, const QString& currentC
     layout->addWidget(themeLabel);
 
     ColorPickResult result;
+    bool customColorRequested = false;
 
     // Theme color grid: 6 rows × 10 columns
     QGridLayout* grid = new QGridLayout();
@@ -222,14 +223,9 @@ static ColorPickResult showColorPalette(QWidget* parent, const QString& currentC
         "QPushButton { background: transparent; border: none; font: 12px 'Segoe UI', 'SF Pro Text', sans-serif;"
         "  color: #2980B9; text-align: left; padding-left: 2px; }"
         "QPushButton:hover { background: #F0F4F8; border-radius: 3px; }");
-    QObject::connect(customBtn, &QPushButton::clicked, &menu, [&result, &menu, parent, currentColor, title]() {
+    QObject::connect(customBtn, &QPushButton::clicked, &menu, [&customColorRequested, &menu]() {
+        customColorRequested = true;
         menu.close();
-        QColor custom = QColorDialog::getColor(currentColor, parent, title);
-        if (custom.isValid()) {
-            result.displayColor = custom;
-            result.colorString = custom.name();
-            result.isValid = true;
-        }
     });
     layout->addWidget(customBtn);
 
@@ -238,6 +234,17 @@ static ColorPickResult showColorPalette(QWidget* parent, const QString& currentC
     menu.addAction(wa);
 
     menu.exec(QCursor::pos());
+
+    // Open color dialog AFTER menu closes to avoid nested event loop race
+    if (customColorRequested) {
+        QColor custom = QColorDialog::getColor(currentColor, parent, title);
+        if (custom.isValid()) {
+            result.displayColor = custom;
+            result.colorString = custom.name();
+            result.isValid = true;
+        }
+    }
+
     return result;
 }
 

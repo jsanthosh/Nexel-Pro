@@ -14,10 +14,13 @@ QString CellAddress::toString() const {
 }
 
 CellAddress CellAddress::fromString(const QString& str) {
-    // Parse "A1" format
+    // Parse "A1", "$A$1", "$A1", "A$1" formats
     int col = 0;
     int row = 0;
     int i = 0;
+
+    // Skip optional $ before column
+    while (i < str.length() && str[i] == '$') i++;
 
     // Parse column letters
     while (i < str.length() && str[i].isLetter()) {
@@ -25,6 +28,9 @@ CellAddress CellAddress::fromString(const QString& str) {
         i++;
     }
     col--; // Convert to 0-based
+
+    // Skip optional $ before row
+    while (i < str.length() && str[i] == '$') i++;
 
     // Parse row number
     while (i < str.length() && str[i].isDigit()) {

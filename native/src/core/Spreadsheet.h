@@ -162,10 +162,11 @@ public:
     Cell* getOrCreateCellFast(int row, int col);
     void finishBulkImport();
 
-    // Fast cell navigation — scans sparse cell map O(total_cells) instead of O(grid_rows).
-    // Returns sorted vectors of occupied row/col indices for a given column/row.
-    std::vector<int> getOccupiedRowsInColumn(int col) const;
-    std::vector<int> getOccupiedColsInRow(int row) const;
+    // Fast cell navigation — uses lazy cached index, O(1) after first build.
+    // Returns const references to sorted vectors of occupied row/col indices.
+    const std::vector<int>& getOccupiedRowsInColumn(int col) const;
+    const std::vector<int>& getOccupiedColsInRow(int row) const;
+    const std::vector<int>& getOccupiedRows() const; // all rows with data, sorted
 
     // Sparklines
     void setSparkline(const CellAddress& addr, const SparklineConfig& config);
@@ -184,7 +185,7 @@ public:
     // Mutable table access (for re-theming)
     std::vector<SpreadsheetTable>& getTablesRef() { return m_tables; }
 
-private:
+    // Public cell key types — used by CsvService for parallel bulk import
     struct CellKey {
         int row, col;
         bool operator==(const CellKey& other) const {
@@ -198,13 +199,21 @@ private:
 
     struct CellKeyHash {
         size_t operator()(const CellKey& k) const {
-            // Fast hash combining row and col
             return std::hash<uint64_t>()(
                 (static_cast<uint64_t>(k.row) << 32) | static_cast<uint32_t>(k.col));
         }
     };
 
-    std::unordered_map<CellKey, std::shared_ptr<Cell>, CellKeyHash> m_cells;
+    using CellMap = std::unordered_map<CellKey, std::shared_ptr<Cell>, CellKeyHash>;
+
+    // Bulk merge cells from an external map (used by parallel CSV import)
+    void mergeBulkCells(CellMap& source);
+
+    // Recalculate all formula cells (used after undo/redo)
+    void recalculateAll();
+
+private:
+    CellMap m_cells;
     std::unique_ptr<FormulaEngine> m_formulaEngine;
     DependencyGraph m_depGraph;
     UndoManager m_undoManager;
@@ -231,8 +240,18 @@ private:
     bool m_hasDefaultStyle = false;
     std::unordered_map<CellKey, SparklineConfig, CellKeyHash> m_sparklines;
 
+    // Lazy navigation index — built on first query, invalidated on modification
+    mutable std::unordered_map<int, std::vector<int>> m_colIndexCache; // col → sorted rows
+    mutable std::unordered_map<int, std::vector<int>> m_rowIndexCache; // row → sorted cols
+    mutable std::vector<int> m_sortedOccupiedRows; // all occupied rows, sorted
+    mutable bool m_navIndexDirty = true;
+    void buildNavIndexIfNeeded() const;
+
+    // Column-level dependency tracking (for column references like A:A)
+    std::unordered_map<int, std::vector<CellAddress>> m_colRefFormulas; // col → formulas depending on it
+    void recalculateColumnDependents(int col);
+
     void recalculate(const CellAddress& addr);
-    void recalculateAll();
     void updateDependencies(const CellAddress& addr);
     void recalculateDependents(const CellAddress& addr);
 };

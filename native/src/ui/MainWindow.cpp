@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include <unistd.h>
 #include "SpreadsheetView.h"
 #include "SpreadsheetModel.h"
 #include "FormulaBar.h"
@@ -748,23 +749,10 @@ void MainWindow::connectSignals() {
         m_spreadsheetView->openPicklistManagerDialog();
     });
 
-    // Picklist insertion — prompt for options
+    // Picklist insertion — open create dialog (same as edit dialog)
     connect(m_toolbar, &Toolbar::insertPicklistRequested, this, [this]() {
-        bool ok;
-        QString input = QInputDialog::getMultiLineText(this, "Insert Picklist",
-            "Enter picklist options (one per line):",
-            "Option 1\nOption 2\nOption 3", &ok);
-        if (ok && !input.trimmed().isEmpty()) {
-            QStringList options;
-            for (const QString& line : input.split('\n', Qt::SkipEmptyParts)) {
-                QString trimmed = line.trimmed();
-                if (!trimmed.isEmpty()) options.append(trimmed);
-            }
-            if (!options.isEmpty()) {
-                m_spreadsheetView->insertPicklist(options);
-                setDirty();
-            }
-        }
+        m_spreadsheetView->showCreatePicklistDialog();
+        setDirty();
     });
 
     // Chat assistant toggle
@@ -1283,7 +1271,7 @@ void MainWindow::onExportCsv() {
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (!m_dirty) {
         event->accept();
-        return;
+        _exit(0); // Fast exit: skip slow destructor cleanup for large datasets
     }
 
     auto result = QMessageBox::question(this, "Unsaved Changes",
@@ -1293,8 +1281,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (result == QMessageBox::Save) {
         onSaveDocument();
         event->accept();
+        _exit(0);
     } else if (result == QMessageBox::Discard) {
         event->accept();
+        _exit(0);
     } else {
         event->ignore();
     }
@@ -1659,30 +1649,69 @@ void MainWindow::updateStatusBarSummary() {
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (!sheet) return;
 
-    QModelIndexList selected = m_spreadsheetView->selectionModel()->selectedIndexes();
-    if (selected.size() <= 1) {
+    // Use selection ranges (not selectedIndexes) to avoid creating millions of QModelIndex
+    // objects when entire rows/columns are selected
+    QItemSelection selection = m_spreadsheetView->selectionModel()->selection();
+    if (selection.isEmpty()) {
+        statusBar()->showMessage("Ready");
+        return;
+    }
+
+    // Quick check: if only a single cell selected, show "Ready"
+    bool singleCell = (selection.size() == 1 &&
+                       selection.first().top() == selection.first().bottom() &&
+                       selection.first().left() == selection.first().right());
+    if (singleCell) {
         statusBar()->showMessage("Ready");
         return;
     }
 
     // Compute SUM, AVERAGE, COUNT for numeric values (like Excel status bar)
+    // Iterate only occupied cells within selection ranges for performance
     double sum = 0;
     int numericCount = 0;
     int nonEmptyCount = 0;
+    int cellsChecked = 0;
+    static constexpr int MAX_CELLS = 50000;
 
-    // Limit calculation to avoid lag on huge selections
-    int limit = qMin(selected.size(), static_cast<qsizetype>(50000));
-    for (int i = 0; i < limit; ++i) {
-        const auto& idx = selected[i];
-        auto val = sheet->getCellValue(CellAddress(idx.row(), idx.column()));
-        QString text = val.toString();
-        if (!text.isEmpty()) {
-            nonEmptyCount++;
-            bool ok;
-            double num = text.toDouble(&ok);
-            if (ok) {
-                sum += num;
-                numericCount++;
+    for (const auto& range : selection) {
+        if (cellsChecked >= MAX_CELLS) break;
+        int top = range.top(), bottom = range.bottom();
+        int left = range.left(), right = range.right();
+
+        // For large ranges (e.g. entire column), only scan occupied cells
+        bool isLargeRange = (bottom - top + 1) * (right - left + 1) > 10000;
+
+        if (isLargeRange) {
+            for (int c = left; c <= right && cellsChecked < MAX_CELLS; ++c) {
+                const auto& occupiedRows = sheet->getOccupiedRowsInColumn(c);
+                for (int r : occupiedRows) {
+                    if (r < top || r > bottom) continue;
+                    if (cellsChecked >= MAX_CELLS) break;
+                    auto val = sheet->getCellValue(CellAddress(r, c));
+                    QString text = val.toString();
+                    if (!text.isEmpty()) {
+                        nonEmptyCount++;
+                        bool ok;
+                        double num = text.toDouble(&ok);
+                        if (ok) { sum += num; numericCount++; }
+                    }
+                    cellsChecked++;
+                }
+            }
+        } else {
+            for (int r = top; r <= bottom && cellsChecked < MAX_CELLS; ++r) {
+                for (int c = left; c <= right && cellsChecked < MAX_CELLS; ++c) {
+                    auto val = sheet->getCellValue(CellAddress(r, c));
+                    QString text = val.toString();
+                    if (!text.isEmpty()) {
+                        nonEmptyCount++;
+                        bool ok;
+                        double num = text.toDouble(&ok);
+                        if (ok) { sum += num; numericCount++; }
+                    }
+                    cellsChecked++;
+                }
             }
         }
     }

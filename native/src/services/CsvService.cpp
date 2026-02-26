@@ -2,6 +2,9 @@
 #include <QFile>
 #include <cstring>
 #include <cstdlib>
+#include <thread>
+#include <vector>
+#include <algorithm>
 
 namespace {
 
@@ -98,6 +101,17 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
     // Auto-detect delimiter from first 8KB
     char delim = detectDelimiter(data + offset, dataSize - offset);
 
+    // Count actual columns from first line for accurate reservation
+    int estimatedCols = 1;
+    {
+        bool inQ = false;
+        for (qint64 p = offset; p < dataSize; p++) {
+            if (data[p] == '"') { inQ = !inQ; continue; }
+            if (inQ) continue;
+            if (data[p] == delim) estimatedCols++;
+            else if (data[p] == '\n' || data[p] == '\r') break;
+        }
+    }
 
     auto spreadsheet = std::make_shared<Spreadsheet>();
     spreadsheet->setAutoRecalculate(false);
@@ -105,8 +119,10 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
     // Pre-estimate row count from file size (avg ~50 bytes/row)
     int estimatedRows = static_cast<int>(fileSize / 50) + 100;
     spreadsheet->setRowCount(std::max(1000, estimatedRows));
-    // Pre-reserve hash map to avoid rehashing during import (~10 cols avg)
-    spreadsheet->reserveCells(static_cast<size_t>(estimatedRows) * 10);
+    // Reserve based on actual column count, capped at 50M to avoid excessive upfront allocation
+    size_t estimatedCells = std::min(
+        static_cast<size_t>(estimatedRows) * estimatedCols, size_t(50'000'000));
+    spreadsheet->reserveCells(estimatedCells);
 
     int row = 0;
     int maxCol = 0;
@@ -122,23 +138,30 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
             fieldBuf.clear();
 
             if (pos < dataSize && data[pos] == '"') {
-                // === Quoted field ===
-                pos++; // skip opening quote
+                // === Quoted field — bulk copy between quotes ===
+                pos++;
                 while (pos < dataSize) {
                     if (data[pos] == '"') {
                         if (pos + 1 < dataSize && data[pos + 1] == '"') {
                             fieldBuf.append('"');
                             pos += 2;
                         } else {
-                            pos++; // skip closing quote
+                            pos++;
                             break;
                         }
                     } else {
-                        fieldBuf.append(data[pos]);
-                        pos++;
+                        // Scan to next quote with memchr for bulk copy
+                        const char* qSearch = static_cast<const char*>(
+                            memchr(data + pos, '"', dataSize - pos));
+                        if (qSearch) {
+                            fieldBuf.append(data + pos, static_cast<qsizetype>(qSearch - data - pos));
+                            pos = qSearch - data;
+                        } else {
+                            fieldBuf.append(data + pos, static_cast<qsizetype>(dataSize - pos));
+                            pos = dataSize;
+                        }
                     }
                 }
-                // Skip any trailing chars after close-quote before delimiter/EOL (malformed CSV)
                 while (pos < dataSize && data[pos] != delim && data[pos] != '\n' && data[pos] != '\r') {
                     pos++;
                 }
@@ -162,7 +185,6 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
 
                 int fLen = static_cast<int>(fEnd - fStart);
                 if (fLen > 0) {
-                    // Use fast import path — bypasses dependency tracking
                     Cell* cell = spreadsheet->getOrCreateCellFast(row, col);
 
                     // Fast numeric detection using strtod

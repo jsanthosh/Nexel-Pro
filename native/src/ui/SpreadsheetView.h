@@ -92,7 +92,8 @@ public:
     void deleteEntireColumn();
 
     // Picklist & Checkbox
-    void insertPicklist(const QStringList& options);
+    void insertPicklist(const QStringList& options, const QStringList& colors = {});
+    void showCreatePicklistDialog();
     void insertCheckbox();
     void toggleCheckbox(int row, int col);
     void showPicklistPopup(const QModelIndex& index);

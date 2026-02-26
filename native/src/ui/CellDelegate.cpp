@@ -477,10 +477,11 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
                     skipText = true;
                 } else if (style.numberFormat == "Picklist") {
                     QString val = cell->getValue().toString();
+                    // Always fill white bg to override focus/selection highlight
+                    painter->fillRect(rect, Qt::white);
                     const auto* rule = spreadsheet->getValidationAt(index.row(), index.column());
                     QStringList options = rule ? rule->listItems : QStringList();
                     QStringList colors = rule ? rule->listItemColors : QStringList();
-                    // Read alignment from model
                     Qt::Alignment align = Qt::AlignLeft | Qt::AlignVCenter;
                     QVariant alignVar = index.data(Qt::TextAlignmentRole);
                     if (alignVar.isValid())
@@ -791,6 +792,7 @@ void CellDelegate::drawPicklistTags(QPainter* painter, const QRect& rect,
     else
         y = rect.top() + (rect.height() - tagH) / 2;
 
+    int tagIndex = 0;
     for (const QString& item : selected) {
         QString trimmed = item.trimmed();
         if (trimmed.isEmpty()) continue;
@@ -812,8 +814,8 @@ void CellDelegate::drawPicklistTags(QPainter* painter, const QRect& rect,
         int textW = fm.horizontalAdvance(trimmed);
         int tagW = textW + 14;
 
-        if (x + tagW > maxX) {
-            // Draw overflow indicator "..."
+        // If not the first tag and doesn't fit, show "..." and stop
+        if (tagIndex > 0 && x + tagW > maxX) {
             painter->setPen(QColor("#9CA3AF"));
             QFont smallFont(painter->font());
             smallFont.setPointSize(8);
@@ -822,15 +824,21 @@ void CellDelegate::drawPicklistTags(QPainter* painter, const QRect& rect,
             break;
         }
 
-        QRectF tagRect(x, y, tagW, tagH);
+        // For the first tag, clip to available width if needed
+        int drawW = qMin(tagW, maxX - x);
+        QRectF tagRect(x, y, drawW, tagH);
         painter->setPen(Qt::NoPen);
         painter->setBrush(bg);
         painter->drawRoundedRect(tagRect, tagH / 2.0, tagH / 2.0);
 
         painter->setPen(fg);
-        painter->drawText(tagRect, Qt::AlignCenter, trimmed);
+        painter->save();
+        painter->setClipRect(tagRect);
+        painter->drawText(QRectF(x, y, tagW, tagH), Qt::AlignCenter, trimmed);
+        painter->restore();
 
-        x += tagW + gap;
+        x += drawW + gap;
+        tagIndex++;
     }
 
     painter->setRenderHint(QPainter::Antialiasing, false);

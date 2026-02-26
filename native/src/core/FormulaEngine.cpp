@@ -21,6 +21,7 @@ QVariant FormulaEngine::evaluate(const QString& formula) {
     m_lastError.clear();
     m_lastDependencies.clear();
     m_lastRangeArgs.clear();
+    m_lastColumnDeps.clear();
 
     if (formula.isEmpty()) return QVariant();
 
@@ -177,10 +178,42 @@ QVariant FormulaEngine::evaluateFactor(const QString& expr, int& pos) {
 
         // Range
         if (token.contains(':')) {
-            CellRange range(token);
+            QString rangeToken = token;
+
+            // Handle column references (D:D, $A:$Z, etc.) — letters only, no digits
+            if (m_spreadsheet) {
+                QString stripped = rangeToken;
+                stripped.remove('$');
+                QStringList parts = stripped.split(':');
+                if (parts.size() == 2) {
+                    auto allLetters = [](const QString& s) {
+                        if (s.isEmpty()) return false;
+                        for (QChar ch : s) if (!ch.isLetter()) return false;
+                        return true;
+                    };
+                    if (allLetters(parts[0]) && allLetters(parts[1])) {
+                        // Expand to large fixed range — sparse iteration makes this fast
+                        rangeToken = parts[0] + "1:" + parts[1] + "10000000";
+                        // Track column-level dependencies for recalculation
+                        int startCol = CellAddress::fromString(parts[0] + "1").col;
+                        int endCol = CellAddress::fromString(parts[1] + "1").col;
+                        for (int c = startCol; c <= endCol; c++) {
+                            m_lastColumnDeps.push_back(c);
+                        }
+                    }
+                }
+            }
+
+            CellRange range(rangeToken);
             m_lastRangeArgs.push_back(range);
-            auto cells = range.getCells();
-            for (const auto& c : cells) m_lastDependencies.push_back(c);
+
+            // Only track individual cell dependencies for small ranges
+            long long cellCount = static_cast<long long>(range.getRowCount()) * range.getColumnCount();
+            if (cellCount < 10000) {
+                auto cells = range.getCells();
+                for (const auto& c : cells) m_lastDependencies.push_back(c);
+            }
+
             std::vector<QVariant> values = getRangeValues(range);
             return QVariant::fromValue(values);
         }
@@ -587,7 +620,35 @@ QVariant FormulaEngine::getCellValue(const CellAddress& addr) {
 std::vector<QVariant> FormulaEngine::getRangeValues(const CellRange& range) {
     std::vector<QVariant> values;
     if (!m_spreadsheet) return values;
-    for (const auto& addr : range.getCells()) values.push_back(m_spreadsheet->getCellValue(addr));
+
+    int startRow = range.getStart().row;
+    int endRow = range.getEnd().row;
+    int startCol = range.getStart().col;
+    int endCol = range.getEnd().col;
+
+    long long totalCells = static_cast<long long>(endRow - startRow + 1) * (endCol - startCol + 1);
+
+    if (totalCells > 10000) {
+        // Sparse iteration — only visit occupied cells using nav index.
+        // Correct for all aggregate functions (SUM, AVG, COUNT, MIN, MAX)
+        // which skip null/empty values anyway.
+        for (int c = startCol; c <= endCol; c++) {
+            const auto& occupiedRows = m_spreadsheet->getOccupiedRowsInColumn(c);
+            auto lo = std::lower_bound(occupiedRows.begin(), occupiedRows.end(), startRow);
+            auto hi = std::upper_bound(occupiedRows.begin(), occupiedRows.end(), endRow);
+            for (auto it = lo; it != hi; ++it) {
+                values.push_back(m_spreadsheet->getCellValue(CellAddress(*it, c)));
+            }
+        }
+    } else {
+        // Small range: visit all cells to preserve positional ordering
+        for (int r = startRow; r <= endRow; r++) {
+            for (int c = startCol; c <= endCol; c++) {
+                values.push_back(m_spreadsheet->getCellValue(CellAddress(r, c)));
+            }
+        }
+    }
+
     return values;
 }
 

@@ -3,6 +3,7 @@
 #include "CellDelegate.h"
 #include "Theme.h"
 #include "../core/Spreadsheet.h"
+#include <algorithm>
 #include "../core/UndoManager.h"
 #include "../core/MacroEngine.h"
 #include "../core/FillSeries.h"
@@ -17,8 +18,10 @@
 #include <QFontMetrics>
 #include <QSet>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QDate>
 #include <QCheckBox>
+#include <QRegularExpression>
 #include <QVBoxLayout>
 #include <QDialogButtonBox>
 #include <QScrollArea>
@@ -29,6 +32,7 @@
 #include <QScrollBar>
 #include <QTextEdit>
 #include <QColorDialog>
+#include <QShortcut>
 #include <algorithm>
 
 SpreadsheetView::SpreadsheetView(QWidget* parent)
@@ -219,26 +223,48 @@ void SpreadsheetView::setupHeaderContextMenus() {
         QMenu menu;
         menu.addAction("Autofit Column Width", this, &SpreadsheetView::autofitSelectedColumns);
         menu.addSeparator();
-        int col = horizontalHeader()->logicalIndexAt(pos);
-        menu.addAction("Insert Column", [this, col]() {
+        int clickedCol = horizontalHeader()->logicalIndexAt(pos);
+
+        // Determine selected column range
+        QSet<int> selCols;
+        QModelIndexList selIdx = selectionModel()->selectedColumns();
+        if (selIdx.size() > 1) {
+            for (const auto& idx : selIdx) selCols.insert(idx.column());
+        } else {
+            QModelIndexList allSel = selectionModel()->selectedIndexes();
+            for (const auto& idx : allSel) selCols.insert(idx.column());
+        }
+        if (selCols.isEmpty()) selCols.insert(clickedCol);
+        int colCount = selCols.size();
+        int minCol = *std::min_element(selCols.begin(), selCols.end());
+
+        QString insertLabel = colCount > 1 ? QString("Insert %1 Columns").arg(colCount) : "Insert Column";
+        QString deleteLabel = colCount > 1 ? QString("Delete %1 Columns").arg(colCount) : "Delete Column";
+
+        menu.addAction(insertLabel, [this, minCol, colCount]() {
             if (m_spreadsheet) {
                 m_spreadsheet->getUndoManager().execute(
-                    std::make_unique<InsertColumnCommand>(col, 1, col), m_spreadsheet.get());
+                    std::make_unique<InsertColumnCommand>(minCol, colCount, minCol), m_spreadsheet.get());
                 refreshView();
             }
         });
-        menu.addAction("Delete Column", [this, col]() {
+        menu.addAction(deleteLabel, [this, colCount, &selCols]() {
             if (m_spreadsheet) {
-                std::vector<CellSnapshot> deleted;
-                int maxRow = m_spreadsheet->getMaxRow();
-                for (int r = 0; r <= maxRow; ++r) {
-                    auto cell = m_spreadsheet->getCellIfExists(r, col);
-                    if (cell) {
-                        deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(r, col)));
+                // Delete from right to left to preserve indices
+                QList<int> sorted(selCols.begin(), selCols.end());
+                std::sort(sorted.rbegin(), sorted.rend());
+                for (int col : sorted) {
+                    std::vector<CellSnapshot> deleted;
+                    int maxRow = m_spreadsheet->getMaxRow();
+                    for (int r = 0; r <= maxRow; ++r) {
+                        auto cell = m_spreadsheet->getCellIfExists(r, col);
+                        if (cell) {
+                            deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(r, col)));
+                        }
                     }
+                    m_spreadsheet->getUndoManager().execute(
+                        std::make_unique<DeleteColumnCommand>(col, 1, deleted), m_spreadsheet.get());
                 }
-                m_spreadsheet->getUndoManager().execute(
-                    std::make_unique<DeleteColumnCommand>(col, 1, deleted), m_spreadsheet.get());
                 refreshView();
             }
         });
@@ -251,26 +277,48 @@ void SpreadsheetView::setupHeaderContextMenus() {
         QMenu menu;
         menu.addAction("Autofit Row Height", this, &SpreadsheetView::autofitSelectedRows);
         menu.addSeparator();
-        int row = verticalHeader()->logicalIndexAt(pos);
-        menu.addAction("Insert Row", [this, row]() {
+        int clickedRow = verticalHeader()->logicalIndexAt(pos);
+
+        // Determine selected row range
+        QSet<int> selRows;
+        QModelIndexList selIdx = selectionModel()->selectedRows();
+        if (selIdx.size() > 1) {
+            for (const auto& idx : selIdx) selRows.insert(idx.row());
+        } else {
+            QModelIndexList allSel = selectionModel()->selectedIndexes();
+            for (const auto& idx : allSel) selRows.insert(idx.row());
+        }
+        if (selRows.isEmpty()) selRows.insert(clickedRow);
+        int rowCount = selRows.size();
+        int minRow = *std::min_element(selRows.begin(), selRows.end());
+
+        QString insertLabel = rowCount > 1 ? QString("Insert %1 Rows").arg(rowCount) : "Insert Row";
+        QString deleteLabel = rowCount > 1 ? QString("Delete %1 Rows").arg(rowCount) : "Delete Row";
+
+        menu.addAction(insertLabel, [this, minRow, rowCount]() {
             if (m_spreadsheet) {
                 m_spreadsheet->getUndoManager().execute(
-                    std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
+                    std::make_unique<InsertRowCommand>(minRow, rowCount), m_spreadsheet.get());
                 refreshView();
             }
         });
-        menu.addAction("Delete Row", [this, row]() {
+        menu.addAction(deleteLabel, [this, rowCount, &selRows]() {
             if (m_spreadsheet) {
-                std::vector<CellSnapshot> deleted;
-                int maxCol = m_spreadsheet->getMaxColumn();
-                for (int c = 0; c <= maxCol; ++c) {
-                    auto cell = m_spreadsheet->getCellIfExists(row, c);
-                    if (cell) {
-                        deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(row, c)));
+                // Delete from bottom to top to preserve indices
+                QList<int> sorted(selRows.begin(), selRows.end());
+                std::sort(sorted.rbegin(), sorted.rend());
+                for (int row : sorted) {
+                    std::vector<CellSnapshot> deleted;
+                    int maxCol = m_spreadsheet->getMaxColumn();
+                    for (int c = 0; c <= maxCol; ++c) {
+                        auto cell = m_spreadsheet->getCellIfExists(row, c);
+                        if (cell) {
+                            deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(row, c)));
+                        }
                     }
+                    m_spreadsheet->getUndoManager().execute(
+                        std::make_unique<DeleteRowCommand>(row, 1, deleted), m_spreadsheet.get());
                 }
-                m_spreadsheet->getUndoManager().execute(
-                    std::make_unique<DeleteRowCommand>(row, 1, deleted), m_spreadsheet.get());
                 refreshView();
             }
         });
@@ -763,70 +811,107 @@ void SpreadsheetView::sortDescending() {
 CellRange SpreadsheetView::detectDataRegion(int startRow, int startCol) const {
     if (!m_spreadsheet) return CellRange(CellAddress(startRow, startCol), CellAddress(startRow, startCol));
 
-    // Expand outward from the starting cell to find the contiguous data region
-    // Similar to Excel's Ctrl+Shift+* or Ctrl+T auto-detection
+    // Expand outward from the starting cell to find the contiguous data region.
+    // Uses the cached navigation index for O(columns × log n) instead of O(rows × columns).
 
-    int maxRow = m_spreadsheet->getMaxRow();
     int maxCol = m_spreadsheet->getMaxColumn();
 
-    // Find the left boundary
+    // Find the left boundary — check if adjacent column has any occupied rows
     int left = startCol;
     while (left > 0) {
-        bool colHasData = false;
-        for (int r = 0; r <= maxRow; ++r) {
-            auto val = m_spreadsheet->getCellValue(CellAddress(r, left - 1));
-            if (val.isValid() && !val.toString().isEmpty()) {
-                colHasData = true;
-                break;
-            }
-        }
-        if (!colHasData) break;
+        const auto& occupied = m_spreadsheet->getOccupiedRowsInColumn(left - 1);
+        if (occupied.empty()) break;
         left--;
     }
 
     // Find the right boundary
     int right = startCol;
     while (right < maxCol) {
-        bool colHasData = false;
-        for (int r = 0; r <= maxRow; ++r) {
-            auto val = m_spreadsheet->getCellValue(CellAddress(r, right + 1));
-            if (val.isValid() && !val.toString().isEmpty()) {
-                colHasData = true;
-                break;
-            }
-        }
-        if (!colHasData) break;
+        const auto& occupied = m_spreadsheet->getOccupiedRowsInColumn(right + 1);
+        if (occupied.empty()) break;
         right++;
     }
 
-    // Find the top boundary
+    // Find top and bottom boundaries using per-column binary search.
+    // For each column in [left, right], find the contiguous extent from startRow.
+    // A row is in the region if ANY column has data, so we take the widest extent.
     int top = startRow;
-    while (top > 0) {
-        bool rowHasData = false;
-        for (int c = left; c <= right; ++c) {
-            auto val = m_spreadsheet->getCellValue(CellAddress(top - 1, c));
-            if (val.isValid() && !val.toString().isEmpty()) {
-                rowHasData = true;
-                break;
-            }
-        }
-        if (!rowHasData) break;
-        top--;
-    }
-
-    // Find the bottom boundary
     int bottom = startRow;
-    while (bottom < maxRow) {
-        bool rowHasData = false;
-        for (int c = left; c <= right; ++c) {
-            auto val = m_spreadsheet->getCellValue(CellAddress(bottom + 1, c));
-            if (val.isValid() && !val.toString().isEmpty()) {
-                rowHasData = true;
-                break;
+
+    for (int c = left; c <= right; ++c) {
+        const auto& rows = m_spreadsheet->getOccupiedRowsInColumn(c);
+        if (rows.empty()) continue;
+
+        // Binary search for startRow
+        auto it = std::lower_bound(rows.begin(), rows.end(), startRow);
+
+        // Upward contiguous extent from startRow
+        if (it != rows.end() && *it == startRow) {
+            // Walk back to find first contiguous row (binary search)
+            size_t idx = static_cast<size_t>(it - rows.begin());
+            size_t lo = 0, hi = idx;
+            while (lo < hi) {
+                size_t mid = lo + (hi - lo) / 2;
+                // Check if rows[mid..idx] is contiguous: rows[idx] - rows[mid] == idx - mid
+                if (rows[idx] - rows[mid] == static_cast<int>(idx - mid)) {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            top = std::min(top, rows[lo]);
+
+            // Downward contiguous extent from startRow (binary search)
+            size_t maxIdx = rows.size() - 1;
+            lo = idx;
+            hi = maxIdx;
+            while (lo < hi) {
+                size_t mid = lo + (hi - lo + 1) / 2;
+                if (rows[mid] - rows[idx] == static_cast<int>(mid - idx)) {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            bottom = std::max(bottom, rows[lo]);
+        } else if (it != rows.end()) {
+            // startRow not in this column, but there's data after it — extend bottom
+            // Check if adjacent to startRow+1
+            if (*it == startRow + 1) {
+                size_t idx = static_cast<size_t>(it - rows.begin());
+                size_t maxIdx = rows.size() - 1;
+                size_t lo = idx, hi = maxIdx;
+                while (lo < hi) {
+                    size_t mid = lo + (hi - lo + 1) / 2;
+                    if (rows[mid] - rows[idx] == static_cast<int>(mid - idx)) {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+                bottom = std::max(bottom, rows[lo]);
             }
         }
-        if (!rowHasData) break;
-        bottom++;
+
+        // Also check upward from startRow for data before it
+        if (it != rows.begin()) {
+            auto prevIt = std::prev(it);
+            if (*prevIt == startRow - 1 || (it != rows.end() && *it == startRow)) {
+                // Already handled above via contiguous check
+            } else if (*prevIt == startRow - 1) {
+                size_t idx = static_cast<size_t>(prevIt - rows.begin());
+                size_t lo = 0, hi = idx;
+                while (lo < hi) {
+                    size_t mid = lo + (hi - lo) / 2;
+                    if (rows[idx] - rows[mid] == static_cast<int>(idx - mid)) {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+                top = std::min(top, rows[lo]);
+            }
+        }
     }
 
     return CellRange(CellAddress(top, left), CellAddress(bottom, right));
@@ -938,11 +1023,14 @@ void SpreadsheetView::showFilterDropdown(int column) {
     int dataStartRow = m_filterHeaderRow + 1;
     int dataEndRow = m_filterRange.getEnd().row;
 
-    // Collect unique values in this column
+    // Collect unique values — use nav index to skip empty rows (O(occupied) not O(grid))
     QStringList uniqueValues;
     QSet<QString> seen;
-    for (int r = dataStartRow; r <= dataEndRow; ++r) {
-        auto val = m_spreadsheet->getCellValue(CellAddress(r, column));
+    const auto& occupiedRows = m_spreadsheet->getOccupiedRowsInColumn(column);
+    auto lo = std::lower_bound(occupiedRows.begin(), occupiedRows.end(), dataStartRow);
+    auto hi = std::upper_bound(occupiedRows.begin(), occupiedRows.end(), dataEndRow);
+    for (auto it = lo; it != hi; ++it) {
+        auto val = m_spreadsheet->getCellValue(CellAddress(*it, column));
         QString text = val.toString();
         if (!seen.contains(text)) {
             seen.insert(text);
@@ -961,10 +1049,19 @@ void SpreadsheetView::showFilterDropdown(int column) {
     // Create filter dropdown dialog
     QDialog dialog(this);
     dialog.setWindowTitle("Auto Filter");
-    dialog.setMinimumSize(220, 300);
-    dialog.setMaximumSize(300, 450);
+    dialog.setMinimumSize(240, 340);
+    dialog.setMaximumSize(320, 500);
 
     QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(4);
+
+    // Search box for filtering items
+    QLineEdit* searchBox = new QLineEdit(&dialog);
+    searchBox->setPlaceholderText("Search...");
+    searchBox->setFixedHeight(24);
+    searchBox->setClearButtonEnabled(true);
+    layout->addWidget(searchBox);
 
     // Select All / Clear All buttons
     QHBoxLayout* btnRow = new QHBoxLayout();
@@ -976,40 +1073,49 @@ void SpreadsheetView::showFilterDropdown(int column) {
     btnRow->addWidget(clearAllBtn);
     layout->addLayout(btnRow);
 
-    // Scrollable checkbox area
-    QScrollArea* scrollArea = new QScrollArea(&dialog);
-    scrollArea->setWidgetResizable(true);
-    QWidget* scrollWidget = new QWidget();
-    QVBoxLayout* checkLayout = new QVBoxLayout(scrollWidget);
-    checkLayout->setContentsMargins(4, 4, 4, 4);
-    checkLayout->setSpacing(2);
-
-    std::vector<QCheckBox*> checkBoxes;
+    // QListWidget with checkable items — virtualized, handles thousands of items instantly
+    QListWidget* listWidget = new QListWidget(&dialog);
+    listWidget->setStyleSheet(
+        "QListWidget::item { padding: 1px 2px; }"
+        "QListWidget { font-size: 11px; }");
+    listWidget->setUniformItemSizes(true); // enables fast layout for large lists
 
     // Add "(Blanks)" entry
-    QCheckBox* blanksCheck = new QCheckBox("(Blanks)", scrollWidget);
-    blanksCheck->setChecked(!hasFilter || currentFilter.contains(""));
-    checkLayout->addWidget(blanksCheck);
-    checkBoxes.push_back(blanksCheck);
+    auto* blanksItem = new QListWidgetItem("(Blanks)", listWidget);
+    blanksItem->setFlags(blanksItem->flags() | Qt::ItemIsUserCheckable);
+    blanksItem->setCheckState((!hasFilter || currentFilter.contains("")) ? Qt::Checked : Qt::Unchecked);
+    blanksItem->setData(Qt::UserRole, QString("")); // actual value
 
     for (const QString& val : uniqueValues) {
-        if (val.isEmpty()) continue; // handled by blanks
-        QCheckBox* cb = new QCheckBox(val, scrollWidget);
-        cb->setChecked(!hasFilter || currentFilter.contains(val));
-        checkLayout->addWidget(cb);
-        checkBoxes.push_back(cb);
+        if (val.isEmpty()) continue;
+        auto* item = new QListWidgetItem(val, listWidget);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState((!hasFilter || currentFilter.contains(val)) ? Qt::Checked : Qt::Unchecked);
+        item->setData(Qt::UserRole, val);
     }
+    layout->addWidget(listWidget);
 
-    checkLayout->addStretch();
-    scrollArea->setWidget(scrollWidget);
-    layout->addWidget(scrollArea);
-
-    // Connect select/clear all
-    QObject::connect(selectAllBtn, &QPushButton::clicked, [&checkBoxes]() {
-        for (auto* cb : checkBoxes) cb->setChecked(true);
+    // Search filtering — hide non-matching items
+    QObject::connect(searchBox, &QLineEdit::textChanged, [listWidget](const QString& text) {
+        for (int i = 0; i < listWidget->count(); i++) {
+            auto* item = listWidget->item(i);
+            bool match = text.isEmpty() || item->text().contains(text, Qt::CaseInsensitive);
+            item->setHidden(!match);
+        }
     });
-    QObject::connect(clearAllBtn, &QPushButton::clicked, [&checkBoxes]() {
-        for (auto* cb : checkBoxes) cb->setChecked(false);
+
+    // Select/clear all (only visible items)
+    QObject::connect(selectAllBtn, &QPushButton::clicked, [listWidget]() {
+        for (int i = 0; i < listWidget->count(); i++) {
+            auto* item = listWidget->item(i);
+            if (!item->isHidden()) item->setCheckState(Qt::Checked);
+        }
+    });
+    QObject::connect(clearAllBtn, &QPushButton::clicked, [listWidget]() {
+        for (int i = 0; i < listWidget->count(); i++) {
+            auto* item = listWidget->item(i);
+            if (!item->isHidden()) item->setCheckState(Qt::Unchecked);
+        }
     });
 
     // OK / Cancel
@@ -1027,25 +1133,18 @@ void SpreadsheetView::showFilterDropdown(int column) {
 
     if (dialog.exec() == QDialog::Accepted) {
         QSet<QString> selectedValues;
-        // Blanks checkbox
-        if (blanksCheck->isChecked()) {
-            selectedValues.insert("");
-        }
-        for (size_t i = 1; i < checkBoxes.size(); ++i) {
-            if (checkBoxes[i]->isChecked()) {
-                selectedValues.insert(checkBoxes[i]->text());
+        for (int i = 0; i < listWidget->count(); i++) {
+            auto* item = listWidget->item(i);
+            if (item->checkState() == Qt::Checked) {
+                selectedValues.insert(item->data(Qt::UserRole).toString());
             }
         }
 
-        // Check if all values are selected (no filter needed)
-        bool allSelected = (static_cast<int>(selectedValues.size()) == uniqueValues.size() + 1) ||
-                           (blanksCheck->isChecked() && static_cast<int>(selectedValues.size()) >= uniqueValues.size());
-        // More robust: count total possible values (unique non-empty + blank)
+        // Count total possible values (unique non-empty + blank)
         int totalPossible = seen.size();
-        if (!seen.contains("")) totalPossible++; // add blank possibility
+        if (!seen.contains("")) totalPossible++;
 
         if (static_cast<int>(selectedValues.size()) >= totalPossible) {
-            // All selected — remove filter for this column
             m_columnFilters.erase(column);
         } else {
             m_columnFilters[column] = selectedValues;
@@ -2829,6 +2928,54 @@ bool SpreadsheetView::isOverFillHandle(const QPoint& pos) const {
     return hitRect.contains(pos);
 }
 
+// Adjust cell references in a formula by row/col offsets.
+// Respects absolute references ($A$1 = no shift, $A1 = shift row only, A$1 = shift col only).
+static QString adjustFormulaReferences(const QString& formula, int rowOffset, int colOffset) {
+    static QRegularExpression cellRefRe("(\\$?)([A-Za-z]+)(\\$?)(\\d+)");
+    QString result;
+    int lastEnd = 0;
+    auto it = cellRefRe.globalMatch(formula);
+    while (it.hasNext()) {
+        auto match = it.next();
+        // Skip if letters look like a function name (preceded by nothing or operator, not letters)
+        // Cell refs have 1-3 letters; function names are longer but also letter-only before '('
+        // We rely on the digit requirement to distinguish: SUM( has no digits, A1 does
+        result += formula.mid(lastEnd, match.capturedStart() - lastEnd);
+
+        bool colAbsolute = !match.captured(1).isEmpty();
+        QString colLetters = match.captured(2);
+        bool rowAbsolute = !match.captured(3).isEmpty();
+        int rowNum = match.captured(4).toInt();
+
+        // Adjust column if not absolute
+        if (!colAbsolute && colOffset != 0) {
+            int colIdx = 0;
+            for (QChar ch : colLetters)
+                colIdx = colIdx * 26 + (ch.toUpper().toLatin1() - 'A' + 1);
+            colIdx += colOffset;
+            if (colIdx < 1) colIdx = 1;
+            bool wasUpper = !colLetters.isEmpty() && colLetters[0].isUpper();
+            colLetters.clear();
+            int c = colIdx;
+            while (c > 0) {
+                colLetters = QChar((wasUpper ? 'A' : 'a') + (c - 1) % 26) + colLetters;
+                c = (c - 1) / 26;
+            }
+        }
+
+        // Adjust row if not absolute
+        if (!rowAbsolute && rowOffset != 0) {
+            rowNum += rowOffset;
+            if (rowNum < 1) rowNum = 1;
+        }
+
+        result += (colAbsolute ? "$" : "") + colLetters + (rowAbsolute ? "$" : "") + QString::number(rowNum);
+        lastEnd = match.capturedEnd();
+    }
+    result += formula.mid(lastEnd);
+    return result;
+}
+
 void SpreadsheetView::performFillSeries() {
     if (!m_spreadsheet || !m_fillDragStart.isValid()) return;
 
@@ -2855,50 +3002,116 @@ void SpreadsheetView::performFillSeries() {
     // Fill down
     if (dragTarget.row() > selMaxRow) {
         int fillCount = dragTarget.row() - selMaxRow;
+        int seedCount = selMaxRow - selMinRow + 1;
+
         for (int col = selMinCol; col <= selMaxCol; ++col) {
-            QStringList seeds;
+            // Check if any seed is a formula
+            bool hasFormula = false;
             for (int row = selMinRow; row <= selMaxRow; ++row) {
                 auto cell = m_spreadsheet->getCell(CellAddress(row, col));
-                seeds.append(cell->getValue().toString());
+                if (cell->getType() == CellType::Formula) { hasFormula = true; break; }
             }
 
-            int totalCount = seeds.size() + fillCount;
-            QStringList series = FillSeries::generateSeries(seeds, totalCount);
+            if (hasFormula) {
+                // Formula fill: cycle through seeds, adjust row references
+                for (int i = 0; i < fillCount; ++i) {
+                    int targetRow = selMaxRow + 1 + i;
+                    int seedIdx = i % seedCount;
+                    int seedRow = selMinRow + seedIdx;
+                    auto seedCell = m_spreadsheet->getCell(CellAddress(seedRow, col));
 
-            for (int i = 0; i < fillCount; ++i) {
-                int targetRow = selMaxRow + 1 + i;
-                CellAddress addr(targetRow, col);
-                before.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                    CellAddress addr(targetRow, col);
+                    before.push_back(m_spreadsheet->takeCellSnapshot(addr));
 
-                QModelIndex idx = m_model->index(targetRow, col);
-                m_model->setData(idx, series[seeds.size() + i]);
+                    if (seedCell->getType() == CellType::Formula) {
+                        int rowOffset = targetRow - seedRow;
+                        QString adjusted = adjustFormulaReferences(seedCell->getFormula(), rowOffset, 0);
+                        m_spreadsheet->setCellFormula(addr, adjusted);
+                    } else {
+                        QModelIndex idx = m_model->index(targetRow, col);
+                        m_model->setData(idx, seedCell->getValue().toString());
+                    }
 
-                after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                    after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                }
+            } else {
+                // Original behavior: numeric/text series
+                QStringList seeds;
+                for (int row = selMinRow; row <= selMaxRow; ++row) {
+                    auto cell = m_spreadsheet->getCell(CellAddress(row, col));
+                    seeds.append(cell->getValue().toString());
+                }
+                int totalCount = seeds.size() + fillCount;
+                QStringList series = FillSeries::generateSeries(seeds, totalCount);
+
+                for (int i = 0; i < fillCount; ++i) {
+                    int targetRow = selMaxRow + 1 + i;
+                    CellAddress addr(targetRow, col);
+                    before.push_back(m_spreadsheet->takeCellSnapshot(addr));
+
+                    QModelIndex idx = m_model->index(targetRow, col);
+                    m_model->setData(idx, series[seeds.size() + i]);
+
+                    after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                }
             }
         }
     }
     // Fill right
     else if (dragTarget.column() > selMaxCol) {
         int fillCount = dragTarget.column() - selMaxCol;
+        int seedCount = selMaxCol - selMinCol + 1;
+
         for (int row = selMinRow; row <= selMaxRow; ++row) {
-            QStringList seeds;
+            // Check if any seed is a formula
+            bool hasFormula = false;
             for (int col = selMinCol; col <= selMaxCol; ++col) {
                 auto cell = m_spreadsheet->getCell(CellAddress(row, col));
-                seeds.append(cell->getValue().toString());
+                if (cell->getType() == CellType::Formula) { hasFormula = true; break; }
             }
 
-            int totalCount = seeds.size() + fillCount;
-            QStringList series = FillSeries::generateSeries(seeds, totalCount);
+            if (hasFormula) {
+                // Formula fill: cycle through seeds, adjust column references
+                for (int i = 0; i < fillCount; ++i) {
+                    int targetCol = selMaxCol + 1 + i;
+                    int seedIdx = i % seedCount;
+                    int seedCol = selMinCol + seedIdx;
+                    auto seedCell = m_spreadsheet->getCell(CellAddress(row, seedCol));
 
-            for (int i = 0; i < fillCount; ++i) {
-                int targetCol = selMaxCol + 1 + i;
-                CellAddress addr(row, targetCol);
-                before.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                    CellAddress addr(row, targetCol);
+                    before.push_back(m_spreadsheet->takeCellSnapshot(addr));
 
-                QModelIndex idx = m_model->index(row, targetCol);
-                m_model->setData(idx, series[seeds.size() + i]);
+                    if (seedCell->getType() == CellType::Formula) {
+                        int colOffset = targetCol - seedCol;
+                        QString adjusted = adjustFormulaReferences(seedCell->getFormula(), 0, colOffset);
+                        m_spreadsheet->setCellFormula(addr, adjusted);
+                    } else {
+                        QModelIndex idx = m_model->index(row, targetCol);
+                        m_model->setData(idx, seedCell->getValue().toString());
+                    }
 
-                after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                    after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                }
+            } else {
+                // Original behavior: numeric/text series
+                QStringList seeds;
+                for (int col = selMinCol; col <= selMaxCol; ++col) {
+                    auto cell = m_spreadsheet->getCell(CellAddress(row, col));
+                    seeds.append(cell->getValue().toString());
+                }
+                int totalCount = seeds.size() + fillCount;
+                QStringList series = FillSeries::generateSeries(seeds, totalCount);
+
+                for (int i = 0; i < fillCount; ++i) {
+                    int targetCol = selMaxCol + 1 + i;
+                    CellAddress addr(row, targetCol);
+                    before.push_back(m_spreadsheet->takeCellSnapshot(addr));
+
+                    QModelIndex idx = m_model->index(row, targetCol);
+                    m_model->setData(idx, series[seeds.size() + i]);
+
+                    after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                }
             }
         }
     }
@@ -3135,8 +3348,176 @@ void SpreadsheetView::insertCheckbox() {
     emit m_model->dataChanged(topLeft, bottomRight);
 }
 
+// ===== Create Picklist Dialog (same as Edit dialog) =====
+void SpreadsheetView::showCreatePicklistDialog() {
+    if (!m_spreadsheet || !m_model) return;
+    auto selection = selectionModel()->selectedIndexes();
+    if (selection.isEmpty()) return;
+
+    static const QColor defaultTagBg[] = {
+        QColor("#DBEAFE"), QColor("#FCE7F3"), QColor("#EDE9FE"), QColor("#D1FAE5"),
+        QColor("#FEF3C7"), QColor("#FFE4E6"), QColor("#CFFAFE"), QColor("#FEE2E2"),
+        QColor("#F3F4F6"), QColor("#ECFCCB"), QColor("#E0E7FF"), QColor("#FDF2F8")
+    };
+
+    QDialog dlg(this);
+    dlg.setWindowTitle("Create Picklist");
+    dlg.setFixedWidth(400);
+    dlg.setStyleSheet(
+        "QDialog { background: white; }"
+        "QLineEdit { border: 1px solid #D1D5DB; border-radius: 6px; padding: 6px 8px; "
+        "font-size: 13px; color: #1F2937; }"
+        "QLineEdit:focus { border-color: #2563EB; }");
+
+    QVBoxLayout* lo = new QVBoxLayout(&dlg);
+    lo->setContentsMargins(20, 20, 20, 20);
+    lo->setSpacing(14);
+
+    QLabel* title = new QLabel("Create Picklist", &dlg);
+    title->setStyleSheet("QLabel { font-size: 15px; font-weight: 600; color: #111827; }");
+    lo->addWidget(title);
+
+    QLabel* sub = new QLabel("Set label and color for each option:", &dlg);
+    sub->setStyleSheet("QLabel { font-size: 12px; color: #6B7280; }");
+    lo->addWidget(sub);
+
+    // Scrollable list of option rows
+    QScrollArea* scroll = new QScrollArea(&dlg);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setMinimumHeight(200);
+    scroll->setStyleSheet("QScrollArea { background: transparent; border: none; }");
+
+    QWidget* listWidget = new QWidget(scroll);
+    QVBoxLayout* listLo = new QVBoxLayout(listWidget);
+    listLo->setContentsMargins(0, 0, 0, 0);
+    listLo->setSpacing(6);
+
+    struct OptionRow { QLineEdit* text; QPushButton* colorBtn; QString color; };
+    auto optionRows = std::make_shared<QList<OptionRow>>();
+
+    auto addOptionRow = [&](const QString& text, const QString& colorStr, int idx) {
+        QHBoxLayout* rowLo = new QHBoxLayout();
+        rowLo->setSpacing(8);
+
+        QLineEdit* lineEdit = new QLineEdit(text, listWidget);
+        lineEdit->setPlaceholderText("Option name...");
+        rowLo->addWidget(lineEdit, 1);
+
+        // Color button
+        QPushButton* colorBtn = new QPushButton(listWidget);
+        colorBtn->setFixedSize(28, 28);
+        colorBtn->setCursor(Qt::PointingHandCursor);
+        QColor displayColor = colorStr.isEmpty() ? defaultTagBg[idx % 12] : QColor(colorStr);
+        colorBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; border: 1px solid #D1D5DB; border-radius: 6px; }"
+            "QPushButton:hover { border-color: #2563EB; }").arg(displayColor.name()));
+        rowLo->addWidget(colorBtn);
+
+        // Remove button
+        QPushButton* removeBtn = new QPushButton(QString::fromUtf8("\u2715"), listWidget);
+        removeBtn->setFixedSize(24, 24);
+        removeBtn->setCursor(Qt::PointingHandCursor);
+        removeBtn->setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #9CA3AF; font-size: 13px; }"
+            "QPushButton:hover { color: #EF4444; }");
+        rowLo->addWidget(removeBtn);
+
+        listLo->addLayout(rowLo);
+
+        OptionRow opt{lineEdit, colorBtn, colorStr};
+        optionRows->append(opt);
+        int rowIdx = optionRows->size() - 1;
+
+        // Color picker click
+        QObject::connect(colorBtn, &QPushButton::clicked, &dlg, [optionRows, colorBtn, rowIdx, &dlg]() {
+            QColor cur = (*optionRows)[rowIdx].color.isEmpty()
+                ? colorBtn->palette().button().color() : QColor((*optionRows)[rowIdx].color);
+            QColor picked = QColorDialog::getColor(cur, &dlg, "Option Color");
+            if (picked.isValid()) {
+                (*optionRows)[rowIdx].color = picked.name();
+                colorBtn->setStyleSheet(QString(
+                    "QPushButton { background: %1; border: 1px solid #D1D5DB; border-radius: 6px; }"
+                    "QPushButton:hover { border-color: #2563EB; }").arg(picked.name()));
+            }
+        });
+
+        // Remove click
+        QObject::connect(removeBtn, &QPushButton::clicked, &dlg, [optionRows, rowIdx, rowLo, lineEdit, colorBtn, removeBtn]() {
+            lineEdit->hide(); colorBtn->hide(); removeBtn->hide();
+            (*optionRows)[rowIdx].text = nullptr;
+        });
+    };
+
+    // Start with 3 empty option rows
+    for (int i = 0; i < 3; ++i) {
+        addOptionRow(QString("Option %1").arg(i + 1), "", i);
+    }
+
+    listLo->addStretch();
+    scroll->setWidget(listWidget);
+    lo->addWidget(scroll, 1);
+
+    // Add option button
+    QPushButton* addBtn = new QPushButton("+ Add Option", &dlg);
+    addBtn->setCursor(Qt::PointingHandCursor);
+    addBtn->setFixedHeight(30);
+    addBtn->setStyleSheet(
+        "QPushButton { background: transparent; color: #2563EB; border: 1px dashed #93C5FD; "
+        "border-radius: 6px; font-size: 12px; font-weight: 500; }"
+        "QPushButton:hover { background: #EFF6FF; }");
+    lo->addWidget(addBtn);
+    connect(addBtn, &QPushButton::clicked, &dlg, [&, addOptionRow]() {
+        int idx = optionRows->size();
+        addOptionRow("", "", idx);
+        listWidget->adjustSize();
+    });
+
+    lo->addSpacing(4);
+    QHBoxLayout* btnRow = new QHBoxLayout();
+    btnRow->addStretch();
+
+    QPushButton* cancelBtn = new QPushButton("Cancel", &dlg);
+    cancelBtn->setFixedHeight(34);
+    cancelBtn->setCursor(Qt::PointingHandCursor);
+    cancelBtn->setStyleSheet(
+        "QPushButton { background: white; color: #374151; border: 1px solid #D1D5DB; "
+        "border-radius: 6px; padding: 0 20px; font-size: 13px; font-weight: 500; }"
+        "QPushButton:hover { background: #F9FAFB; border-color: #9CA3AF; }");
+    btnRow->addWidget(cancelBtn);
+
+    QPushButton* saveBtn = new QPushButton("Create", &dlg);
+    saveBtn->setFixedHeight(34);
+    saveBtn->setCursor(Qt::PointingHandCursor);
+    saveBtn->setStyleSheet(
+        "QPushButton { background: #2563EB; color: white; border: none; "
+        "border-radius: 6px; padding: 0 24px; font-size: 13px; font-weight: 600; }"
+        "QPushButton:hover { background: #1D4ED8; }");
+    btnRow->addWidget(saveBtn);
+    lo->addLayout(btnRow);
+
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+    connect(saveBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        QStringList newOpts;
+        QStringList newColors;
+        for (const auto& opt : *optionRows) {
+            if (!opt.text) continue; // removed
+            QString t = opt.text->text().trimmed();
+            if (!t.isEmpty()) {
+                newOpts.append(t);
+                newColors.append(opt.color);
+            }
+        }
+        if (!newOpts.isEmpty()) {
+            insertPicklist(newOpts, newColors);
+        }
+    }
+}
+
 // ===== Insert Picklist on selected cells =====
-void SpreadsheetView::insertPicklist(const QStringList& options) {
+void SpreadsheetView::insertPicklist(const QStringList& options, const QStringList& colors) {
     if (!m_spreadsheet || !m_model) return;
     auto selection = selectionModel()->selectedIndexes();
     if (selection.isEmpty()) return;
@@ -3155,6 +3536,7 @@ void SpreadsheetView::insertPicklist(const QStringList& options) {
     rule.range = CellRange(CellAddress(minRow, minCol), CellAddress(maxRow, maxCol));
     rule.type = Spreadsheet::DataValidationRule::List;
     rule.listItems = options;
+    rule.listItemColors = colors;
     rule.showErrorAlert = false; // picklist allows free typing
     m_spreadsheet->addValidationRule(rule);
 
@@ -3199,129 +3581,197 @@ void SpreadsheetView::showPicklistPopup(const QModelIndex& index) {
         QColor("#FEF3C7"), QColor("#FFE4E6"), QColor("#CFFAFE"), QColor("#FEE2E2"),
         QColor("#F3F4F6"), QColor("#ECFCCB"), QColor("#E0E7FF"), QColor("#FDF2F8")
     };
+    static const QColor tagFg[] = {
+        QColor("#1E40AF"), QColor("#9D174D"), QColor("#5B21B6"), QColor("#065F46"),
+        QColor("#92400E"), QColor("#9F1239"), QColor("#155E75"), QColor("#991B1B"),
+        QColor("#374151"), QColor("#3F6212"), QColor("#3730A3"), QColor("#831843")
+    };
     QStringList optionColors = rule ? rule->listItemColors : QStringList();
 
     int row = index.row(), col = index.column();
 
+    // Save initial value for ESC undo
+    QString initialVal = currentVal;
+
     // --- Popup ---
     QFrame* popup = new QFrame(this, Qt::Popup | Qt::FramelessWindowHint);
     popup->setAttribute(Qt::WA_DeleteOnClose);
-    popup->setFixedWidth(210);
+    popup->setFixedWidth(220);
     popup->setObjectName("plPopup");
     popup->setStyleSheet(
         "QFrame#plPopup { background: white; border: 1px solid #D1D5DB; border-radius: 8px; }");
 
     QVBoxLayout* layout = new QVBoxLayout(popup);
-    layout->setContentsMargins(4, 5, 4, 5);
-    layout->setSpacing(1);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(0);
 
-    // --- Option rows as checkable QPushButtons ---
-    QList<QPushButton*> optBtns;
+    // --- Search box ---
+    QLineEdit* searchBox = new QLineEdit(popup);
+    searchBox->setPlaceholderText("Search");
+    searchBox->setFixedHeight(28);
+    searchBox->setStyleSheet(
+        "QLineEdit { border: none; border-bottom: 2px solid #4ADE80; border-radius: 0; "
+        "padding: 4px 6px; font-size: 12px; color: #1F2937; background: transparent; }"
+        "QLineEdit:focus { border-bottom-color: #22C55E; }");
+    layout->addWidget(searchBox);
+    layout->addSpacing(6);
+
+    // --- Scrollable option area ---
+    QWidget* optionsContainer = new QWidget(popup);
+    QVBoxLayout* optLay = new QVBoxLayout(optionsContainer);
+    optLay->setContentsMargins(0, 0, 0, 0);
+    optLay->setSpacing(2);
+
+    // --- Option rows: checkbox + colored tag pill ---
+    struct OptionRowWidgets { QWidget* row; QCheckBox* cb; };
+    auto optionWidgets = std::make_shared<QList<OptionRowWidgets>>();
+
     for (int i = 0; i < options.size(); ++i) {
         QColor bg = (i < optionColors.size() && !optionColors[i].isEmpty())
                      ? QColor(optionColors[i]) : tagBg[i % 12];
+        QColor fg;
+        if (i < optionColors.size() && !optionColors[i].isEmpty()) {
+            fg = (bg.lightness() > 140) ? bg.darker(300) : QColor(Qt::white);
+        } else {
+            fg = tagFg[i % 12];
+        }
         bool isChecked = selectedSet.contains(options[i]);
 
-        QPushButton* btn = new QPushButton(popup);
-        btn->setCheckable(true);
-        btn->setChecked(isChecked);
-        btn->setCursor(Qt::PointingHandCursor);
-        btn->setFixedHeight(28);
+        QWidget* rowWidget = new QWidget(optionsContainer);
+        rowWidget->setCursor(Qt::PointingHandCursor);
+        rowWidget->setFixedHeight(30);
+        rowWidget->setStyleSheet(
+            "QWidget { background: transparent; border-radius: 4px; }");
+        QHBoxLayout* rowLo = new QHBoxLayout(rowWidget);
+        rowLo->setContentsMargins(4, 2, 6, 2);
+        rowLo->setSpacing(8);
 
-        // Layout: colored circle + text + checkmark
-        QHBoxLayout* bLay = new QHBoxLayout(btn);
-        bLay->setContentsMargins(8, 0, 8, 0);
-        bLay->setSpacing(7);
+        // Checkbox
+        QCheckBox* cb = new QCheckBox(rowWidget);
+        cb->setChecked(isChecked);
+        cb->setFixedSize(16, 16);
+        cb->setStyleSheet(
+            "QCheckBox { spacing: 0; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; border: 1.5px solid #D1D5DB; "
+            "border-radius: 3px; background: white; }"
+            "QCheckBox::indicator:checked { background: #2563EB; border-color: #2563EB; }"
+            "QCheckBox::indicator:hover { border-color: #9CA3AF; }");
+        rowLo->addWidget(cb);
 
-        QLabel* dot = new QLabel(btn);
-        dot->setFixedSize(10, 10);
-        dot->setStyleSheet(QString("QLabel { background: %1; border-radius: 5px; border: none; }").arg(bg.name()));
-        dot->setAttribute(Qt::WA_TransparentForMouseEvents);
-        bLay->addWidget(dot);
+        // Tag pill (colored rounded rect with text)
+        QLabel* tagLabel = new QLabel(options[i], rowWidget);
+        tagLabel->setFixedHeight(22);
+        tagLabel->setStyleSheet(QString(
+            "QLabel { background: %1; color: %2; border-radius: 11px; "
+            "padding: 2px 10px; font-size: 11px; font-weight: 500; border: none; }")
+            .arg(bg.name(), fg.name()));
+        tagLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+        rowLo->addWidget(tagLabel);
+        rowLo->addStretch();
 
-        QLabel* txt = new QLabel(options[i], btn);
-        txt->setStyleSheet("QLabel { font-size: 12px; color: #1F2937; background: transparent; border: none; }");
-        txt->setAttribute(Qt::WA_TransparentForMouseEvents);
-        bLay->addWidget(txt, 1);
+        optLay->addWidget(rowWidget);
+        optionWidgets->append({rowWidget, cb});
 
-        QLabel* chk = new QLabel(btn);
-        chk->setObjectName("chk");
-        chk->setFixedSize(14, 14);
-        chk->setAlignment(Qt::AlignCenter);
-        chk->setAttribute(Qt::WA_TransparentForMouseEvents);
-        if (isChecked) {
-            chk->setText(QString::fromUtf8("\u2713"));
-            chk->setStyleSheet("QLabel { font-size: 12px; color: #2563EB; font-weight: 700; background: transparent; border: none; }");
-        } else {
-            chk->setText("");
-            chk->setStyleSheet("QLabel { background: transparent; border: none; }");
-        }
-        bLay->addWidget(chk);
-
-        btn->setStyleSheet(
-            "QPushButton { background: transparent; border: none; border-radius: 5px; }"
-            "QPushButton:hover { background: #F3F4F6; }"
-            "QPushButton:pressed { background: #E5E7EB; }");
-
-        layout->addWidget(btn);
-        optBtns.append(btn);
+        // Click anywhere on row to toggle checkbox
+        connect(cb, &QCheckBox::toggled, rowWidget, [](bool) {});
     }
+
+    optLay->addStretch();
+    layout->addWidget(optionsContainer, 1);
+
+    // Lambda to commit current checked state to the cell
+    auto commitToCell = [this, optionWidgets, options, row, col]() {
+        QStringList sel;
+        for (int j = 0; j < optionWidgets->size(); ++j) {
+            if ((*optionWidgets)[j].cb->isChecked()) sel.append(options[j]);
+        }
+        CellAddress addr(row, col);
+        m_spreadsheet->getCell(addr)->setValue(QVariant(sel.join('|')));
+        if (m_model) {
+            QModelIndex idx = m_model->index(row, col);
+            emit m_model->dataChanged(idx, idx);
+        }
+    };
+
+    // Connect each checkbox to commit on the fly
+    for (int i = 0; i < optionWidgets->size(); ++i) {
+        connect((*optionWidgets)[i].cb, &QCheckBox::toggled, this, [commitToCell](bool) {
+            commitToCell();
+        });
+    }
+
+    // Search filtering
+    connect(searchBox, &QLineEdit::textChanged, this,
+        [optionWidgets, options](const QString& text) {
+        QString filter = text.trimmed().toLower();
+        for (int i = 0; i < optionWidgets->size(); ++i) {
+            bool visible = filter.isEmpty() || options[i].toLower().contains(filter);
+            (*optionWidgets)[i].row->setVisible(visible);
+        }
+    });
 
     // --- Separator ---
     QFrame* sep = new QFrame(popup);
     sep->setFixedHeight(1);
     sep->setStyleSheet("QFrame { background: #E5E7EB; border: none; }");
-    layout->addSpacing(3);
+    layout->addSpacing(4);
     layout->addWidget(sep);
     layout->addSpacing(2);
 
-    // --- Edit options button ---
-    QPushButton* editBtn = new QPushButton("Edit options...", popup);
+    // --- Edit button at bottom right with pencil icon ---
+    QHBoxLayout* bottomRow = new QHBoxLayout();
+    bottomRow->setContentsMargins(4, 0, 4, 2);
+    bottomRow->addStretch();
+    QPushButton* editBtn = new QPushButton(QString::fromUtf8("\u270E Edit"), popup);
     editBtn->setCursor(Qt::PointingHandCursor);
-    editBtn->setFixedHeight(24);
+    editBtn->setFixedHeight(22);
     editBtn->setStyleSheet(
         "QPushButton { background: transparent; color: #6B7280; border: none; "
-        "font-size: 11px; text-align: left; padding-left: 8px; border-radius: 4px; }"
-        "QPushButton:hover { background: #F3F4F6; color: #2563EB; }");
-    layout->addWidget(editBtn);
+        "font-size: 11px; border-radius: 4px; padding: 0 6px; }"
+        "QPushButton:hover { color: #2563EB; background: #F3F4F6; }");
+    bottomRow->addWidget(editBtn);
+    layout->addLayout(bottomRow);
 
-    // --- Toggle + instant commit ---
-    for (int i = 0; i < optBtns.size(); ++i) {
-        connect(optBtns[i], &QPushButton::toggled, this,
-            [this, i, optBtns, options, row, col](bool on) {
-            // Update checkmark
-            QLabel* chk = optBtns[i]->findChild<QLabel*>("chk");
-            if (chk) {
-                if (on) {
-                    chk->setText(QString::fromUtf8("\u2713"));
-                    chk->setStyleSheet("QLabel { font-size: 12px; color: #2563EB; font-weight: 700; background: transparent; border: none; }");
-                } else {
-                    chk->setText("");
-                    chk->setStyleSheet("QLabel { background: transparent; border: none; }");
-                }
-            }
-            // Commit
-            QStringList sel;
-            for (int j = 0; j < optBtns.size(); ++j) {
-                if (optBtns[j]->isChecked()) sel.append(options[j]);
-            }
-            CellAddress addr(row, col);
-            CellSnapshot before = m_spreadsheet->takeCellSnapshot(addr);
-            m_spreadsheet->getCell(addr)->setValue(QVariant(sel.join('|')));
-            CellSnapshot after = m_spreadsheet->takeCellSnapshot(addr);
-            m_spreadsheet->getUndoManager().pushCommand(
-                std::make_unique<CellEditCommand>(before, after));
-            if (m_model) {
-                QModelIndex idx = m_model->index(row, col);
-                emit m_model->dataChanged(idx, idx);
-            }
-        });
-    }
-
-    // --- Edit options ---
     connect(editBtn, &QPushButton::clicked, this, [this, popup, row, col]() {
         popup->close();
         openPicklistManageDialog(row, col);
+    });
+
+    // --- ESC key: clear cell value and close ---
+    QShortcut* escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), popup);
+    connect(escShortcut, &QShortcut::activated, this,
+        [this, popup, row, col, initialVal]() {
+        // Clear the cell value
+        CellAddress addr(row, col);
+        CellSnapshot before = m_spreadsheet->takeCellSnapshot(addr);
+        m_spreadsheet->getCell(addr)->setValue(QVariant(QString()));
+        CellSnapshot after = m_spreadsheet->takeCellSnapshot(addr);
+        m_spreadsheet->getUndoManager().pushCommand(
+            std::make_unique<CellEditCommand>(before, after));
+        if (m_model) {
+            QModelIndex idx = m_model->index(row, col);
+            emit m_model->dataChanged(idx, idx);
+        }
+        popup->close();
+    });
+
+    // When popup closes (click outside), push undo for any changes
+    connect(popup, &QObject::destroyed, this,
+        [this, row, col, initialVal]() {
+        // Check if value changed from initial
+        auto cell = m_spreadsheet->getCellIfExists(row, col);
+        if (!cell) return;
+        QString finalVal = cell->getValue().toString();
+        if (finalVal != initialVal) {
+            CellAddress addr(row, col);
+            CellSnapshot after = m_spreadsheet->takeCellSnapshot(addr);
+            // Temporarily set back to capture "before"
+            cell->setValue(QVariant(initialVal));
+            CellSnapshot before = m_spreadsheet->takeCellSnapshot(addr);
+            cell->setValue(QVariant(finalVal));
+            m_spreadsheet->getUndoManager().pushCommand(
+                std::make_unique<CellEditCommand>(before, after));
+        }
     });
 
     // --- Position ---

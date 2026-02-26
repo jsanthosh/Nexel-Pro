@@ -50,12 +50,15 @@ void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
     auto cell = getCell(addr);
     cell->setValue(value);
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 
     // Skip dependency graph work when autoRecalculate is off (bulk import mode)
     if (m_autoRecalculate) {
         m_depGraph.removeDependencies(addr);
         if (!m_inTransaction) {
             recalculateDependents(addr);
+            // Recalculate formulas with column references (e.g., =SUM(A:A))
+            recalculateColumnDependents(addr.col);
         }
     }
 }
@@ -64,6 +67,7 @@ void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula
     auto cell = getCell(addr);
     cell->setFormula(formula);
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
     updateDependencies(addr);
 
     if (m_depGraph.hasCircularDependency(addr)) {
@@ -94,6 +98,7 @@ void Spreadsheet::clearRange(const CellRange& range) {
         }
     }
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 std::vector<std::shared_ptr<Cell>> Spreadsheet::getRange(const CellRange& range) {
@@ -117,6 +122,7 @@ void Spreadsheet::insertRow(int row, int count) {
     for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
     m_rowCount += count;
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 void Spreadsheet::insertColumn(int column, int count) {
@@ -132,6 +138,7 @@ void Spreadsheet::insertColumn(int column, int count) {
     for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
     m_columnCount += count;
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 void Spreadsheet::deleteRow(int row, int count) {
@@ -149,6 +156,7 @@ void Spreadsheet::deleteRow(int row, int count) {
     for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
     m_rowCount -= count;
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 void Spreadsheet::deleteColumn(int column, int count) {
@@ -166,6 +174,7 @@ void Spreadsheet::deleteColumn(int column, int count) {
     for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
     m_columnCount -= count;
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 QString Spreadsheet::getSheetName() const { return m_sheetName; }
@@ -222,6 +231,18 @@ Cell* Spreadsheet::getOrCreateCellFast(int row, int col) {
 
 void Spreadsheet::finishBulkImport() {
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
+    // Pre-build caches now (runs on the import background thread, no UI freeze)
+    updateMaxRowCol();
+    buildNavIndexIfNeeded();
+}
+
+void Spreadsheet::mergeBulkCells(CellMap& source) {
+    m_cells.merge(source);
+    // Any remaining entries in source (duplicates) — move them over
+    for (auto& [key, cell] : source) {
+        m_cells[key] = std::move(cell);
+    }
 }
 
 void Spreadsheet::setRowHeight(int row, int height) { m_rowHeights[row] = height; }
@@ -286,11 +307,21 @@ void Spreadsheet::recalculateAll() {
 
 void Spreadsheet::updateDependencies(const CellAddress& addr) {
     m_depGraph.removeDependencies(addr);
+
+    // Remove old column-level deps for this formula
+    for (auto& [col, addrs] : m_colRefFormulas) {
+        addrs.erase(std::remove(addrs.begin(), addrs.end(), addr), addrs.end());
+    }
+
     auto cell = getCellIfExists(addr);
     if (cell && cell->getType() == CellType::Formula) {
         m_formulaEngine->evaluate(cell->getFormula());
         for (const auto& dep : m_formulaEngine->getLastDependencies()) {
             m_depGraph.addDependency(addr, dep);
+        }
+        // Register column-level dependencies (from A:A style references)
+        for (int col : m_formulaEngine->getLastColumnDeps()) {
+            m_colRefFormulas[col].push_back(addr);
         }
     }
 }
@@ -303,6 +334,25 @@ void Spreadsheet::recalculateDependents(const CellAddress& addr) {
         if (cell && cell->getType() == CellType::Formula) {
             cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
             recalculated.push_back(depAddr);
+        }
+    }
+    if (!recalculated.empty() && onDependentsRecalculated) {
+        onDependentsRecalculated(recalculated);
+    }
+}
+
+void Spreadsheet::recalculateColumnDependents(int col) {
+    auto it = m_colRefFormulas.find(col);
+    if (it == m_colRefFormulas.end() || it->second.empty()) return;
+
+    std::vector<CellAddress> recalculated;
+    for (const auto& depAddr : it->second) {
+        auto cell = getCellIfExists(depAddr);
+        if (cell && cell->getType() == CellType::Formula) {
+            cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
+            recalculated.push_back(depAddr);
+            // Cascade: recalculate anything that depends on this formula cell
+            recalculateDependents(depAddr);
         }
     }
     if (!recalculated.empty() && onDependentsRecalculated) {
@@ -357,6 +407,7 @@ void Spreadsheet::sortRange(const CellRange& range, int sortColumn, bool ascendi
             m_cells[CellKey{targetRow, col}] = cell;
     }
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 void Spreadsheet::insertCellsShiftRight(const CellRange& range) {
@@ -376,6 +427,7 @@ void Spreadsheet::insertCellsShiftRight(const CellRange& range) {
         for (auto& [k, c] : ri) m_cells.emplace(k, std::move(c));
     }
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 void Spreadsheet::insertCellsShiftDown(const CellRange& range) {
@@ -395,6 +447,7 @@ void Spreadsheet::insertCellsShiftDown(const CellRange& range) {
         for (auto& [k, cl] : ri) m_cells.emplace(k, std::move(cl));
     }
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 void Spreadsheet::deleteCellsShiftLeft(const CellRange& range) {
@@ -415,6 +468,7 @@ void Spreadsheet::deleteCellsShiftLeft(const CellRange& range) {
         for (auto& [k, c] : ri) m_cells.emplace(k, std::move(c));
     }
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 void Spreadsheet::deleteCellsShiftUp(const CellRange& range) {
@@ -435,6 +489,7 @@ void Spreadsheet::deleteCellsShiftUp(const CellRange& range) {
         for (auto& [k, cl] : ri) m_cells.emplace(k, std::move(cl));
     }
     m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }
 
 // ============== Document Theme ==============
@@ -504,26 +559,47 @@ const Spreadsheet::DataValidationRule* Spreadsheet::getValidationAt(int row, int
 }
 
 // ============== Fast Cell Navigation ==============
-std::vector<int> Spreadsheet::getOccupiedRowsInColumn(int col) const {
-    std::vector<int> rows;
+void Spreadsheet::buildNavIndexIfNeeded() const {
+    if (!m_navIndexDirty) return;
+    m_colIndexCache.clear();
+    m_rowIndexCache.clear();
     for (const auto& [key, cell] : m_cells) {
-        if (key.col == col && cell && cell->getType() != CellType::Empty) {
-            rows.push_back(key.row);
+        if (cell && cell->getType() != CellType::Empty) {
+            m_colIndexCache[key.col].push_back(key.row);
+            m_rowIndexCache[key.row].push_back(key.col);
         }
     }
-    std::sort(rows.begin(), rows.end());
-    return rows;
+    for (auto& [col, rows] : m_colIndexCache)
+        std::sort(rows.begin(), rows.end());
+    for (auto& [row, cols] : m_rowIndexCache)
+        std::sort(cols.begin(), cols.end());
+    m_sortedOccupiedRows.clear();
+    m_sortedOccupiedRows.reserve(m_rowIndexCache.size());
+    for (const auto& [row, _] : m_rowIndexCache)
+        m_sortedOccupiedRows.push_back(row);
+    std::sort(m_sortedOccupiedRows.begin(), m_sortedOccupiedRows.end());
+    m_navIndexDirty = false;
 }
 
-std::vector<int> Spreadsheet::getOccupiedColsInRow(int row) const {
-    std::vector<int> cols;
-    for (const auto& [key, cell] : m_cells) {
-        if (key.row == row && cell && cell->getType() != CellType::Empty) {
-            cols.push_back(key.col);
-        }
-    }
-    std::sort(cols.begin(), cols.end());
-    return cols;
+const std::vector<int>& Spreadsheet::getOccupiedRowsInColumn(int col) const {
+    static const std::vector<int> empty;
+    buildNavIndexIfNeeded();
+    auto it = m_colIndexCache.find(col);
+    if (it == m_colIndexCache.end()) return empty;
+    return it->second;
+}
+
+const std::vector<int>& Spreadsheet::getOccupiedColsInRow(int row) const {
+    static const std::vector<int> empty;
+    buildNavIndexIfNeeded();
+    auto it = m_rowIndexCache.find(row);
+    if (it == m_rowIndexCache.end()) return empty;
+    return it->second;
+}
+
+const std::vector<int>& Spreadsheet::getOccupiedRows() const {
+    buildNavIndexIfNeeded();
+    return m_sortedOccupiedRows;
 }
 
 bool Spreadsheet::validateCell(int row, int col, const QString& value) const {

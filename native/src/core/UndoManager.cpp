@@ -158,6 +158,8 @@ void UndoManager::undo(Spreadsheet* sheet) {
     m_undoStack.pop_back();
     cmd->undo(sheet);
     m_redoStack.push_back(std::move(cmd));
+    // Recalculate all formulas so dependents reflect the restored values
+    sheet->recalculateAll();
 }
 
 void UndoManager::redo(Spreadsheet* sheet) {
@@ -166,6 +168,8 @@ void UndoManager::redo(Spreadsheet* sheet) {
     m_redoStack.pop_back();
     cmd->redo(sheet);
     m_undoStack.push_back(std::move(cmd));
+    // Recalculate all formulas so dependents reflect the restored values
+    sheet->recalculateAll();
 }
 
 bool UndoManager::canUndo() const {

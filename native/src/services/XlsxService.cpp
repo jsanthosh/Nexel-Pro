@@ -1,4 +1,5 @@
 #include "XlsxService.h"
+#include "../core/DocumentTheme.h"
 #include <QFile>
 #include <QXmlStreamReader>
 #include <QXmlStreamWriter>
@@ -11,6 +12,15 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <algorithm>
+
+// Resolve a color string (theme or absolute) to "#RRGGBB" for XLSX export
+static QString resolveColorForExport(const QString& colorStr) {
+    if (DocumentTheme::isThemeColor(colorStr)) {
+        QColor c = defaultDocumentTheme().resolveColor(colorStr);
+        return c.isValid() ? c.name() : "#000000";
+    }
+    return colorStr;
+}
 
 XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
     XlsxImportResult result;
@@ -263,6 +273,7 @@ QStringList XlsxService::parseSharedStrings(const QByteArray& xmlData) {
 
     QString currentString;
     bool inSi = false;
+    bool inT = false;
 
     while (!xml.atEnd()) {
         xml.readNext();
@@ -274,11 +285,16 @@ QStringList XlsxService::parseSharedStrings(const QByteArray& xmlData) {
             } else if (xml.name() == u"si") {
                 inSi = true;
                 currentString.clear();
+            } else if (inSi && xml.name() == u"t") {
+                inT = true;
             }
-        } else if (xml.isCharacters() && inSi) {
+        } else if (xml.isCharacters() && inT) {
+            // Only capture text inside <t> elements, not XML indentation whitespace
             currentString += xml.text().toString();
         } else if (xml.isEndElement()) {
-            if (xml.name() == u"si") {
+            if (xml.name() == u"t") {
+                inT = false;
+            } else if (xml.name() == u"si") {
                 strings.append(currentString);
                 inSi = false;
             }
@@ -1006,6 +1022,12 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         xml.writeEndElement(); // sheetView
         xml.writeEndElement(); // sheetViews
 
+        // Default row/col dimensions (improves Excel compatibility)
+        xml.writeStartElement("sheetFormatPr");
+        xml.writeAttribute("defaultRowHeight", "15");
+        xml.writeAttribute("defaultColWidth", "10.71");
+        xml.writeEndElement();
+
         // Column widths
         const auto& colWidths = sheet->getColumnWidths();
         if (!colWidths.empty()) {
@@ -1042,7 +1064,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                 for (int c = 0; c <= maxCol; ++c) {
                     auto val = sheet->getCellValue(CellAddress(r, c));
                     if (val.isValid() && !val.toString().isEmpty()) { hasData = true; break; }
-                    auto cell = sheet->getCell(CellAddress(r, c));
+                    auto cell = sheet->getCellIfExists(r, c);
                     if (cell) {
                         QString key = cellStyleKey(cell->getStyle());
                         if (styleIndexMap.count(key) && styleIndexMap[key] != 0) { hasData = true; break; }
@@ -1063,8 +1085,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             }
 
             for (int c = 0; c <= maxCol; ++c) {
-                CellAddress addr(r, c);
-                auto cell = sheet->getCell(addr);
+                auto cell = sheet->getCellIfExists(r, c);
                 if (!cell) continue;
 
                 QVariant val = cell->getValue();
@@ -1088,6 +1109,14 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                 }
 
                 if (hasFormula) {
+                    // Determine if cached value is string (must set t= before child elements)
+                    if (hasValue) {
+                        bool ok;
+                        val.toDouble(&ok);
+                        if (!ok) {
+                            xml.writeAttribute("t", "str");
+                        }
+                    }
                     xml.writeTextElement("f", formula.startsWith('=') ? formula.mid(1) : formula);
                     // Write cached value
                     if (hasValue) {
@@ -1096,7 +1125,6 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                         if (ok) {
                             xml.writeTextElement("v", QString::number(num, 'g', 15));
                         } else {
-                            xml.writeAttribute("t", "str");
                             xml.writeTextElement("v", val.toString());
                         }
                     }
@@ -1180,7 +1208,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                                      totalChartCount, drawingSheetNums));
     zip.addFile("_rels/.rels", generateRels());
     zip.addFile("xl/workbook.xml", generateWorkbook(sheets));
-    zip.addFile("xl/_rels/workbook.xml.rels", generateWorkbookRels(sheetCount));
+    zip.addFile("xl/_rels/workbook.xml.rels", generateWorkbookRels(sheetCount, !sharedStrings.isEmpty()));
     zip.addFile("xl/styles.xml", generateStyles(sheets, styleIndexMap));
 
     if (!sharedStrings.isEmpty()) {
@@ -1320,12 +1348,11 @@ QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrin
     xml.writeAttribute("ContentType", "application/xml");
     xml.writeEndElement();
 
-    if (chartCount > 0) {
-        xml.writeStartElement("Default");
-        xml.writeAttribute("Extension", "json");
-        xml.writeAttribute("ContentType", "application/json");
-        xml.writeEndElement();
-    }
+    // Always register JSON content type (used by nexel-metadata.json and/or nexel-charts.json)
+    xml.writeStartElement("Default");
+    xml.writeAttribute("Extension", "json");
+    xml.writeAttribute("ContentType", "application/json");
+    xml.writeEndElement();
 
     xml.writeStartElement("Override");
     xml.writeAttribute("PartName", "/xl/workbook.xml");
@@ -1422,7 +1449,7 @@ QByteArray XlsxService::generateWorkbook(const std::vector<std::shared_ptr<Sprea
     return data;
 }
 
-QByteArray XlsxService::generateWorkbookRels(int sheetCount) {
+QByteArray XlsxService::generateWorkbookRels(int sheetCount, bool hasSharedStrings) {
     QByteArray data;
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
@@ -1446,11 +1473,13 @@ QByteArray XlsxService::generateWorkbookRels(int sheetCount) {
     xml.writeAttribute("Target", "styles.xml");
     xml.writeEndElement();
 
-    xml.writeStartElement("Relationship");
-    xml.writeAttribute("Id", QString("rId%1").arg(sheetCount + 2));
-    xml.writeAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings");
-    xml.writeAttribute("Target", "sharedStrings.xml");
-    xml.writeEndElement();
+    if (hasSharedStrings) {
+        xml.writeStartElement("Relationship");
+        xml.writeAttribute("Id", QString("rId%1").arg(sheetCount + 2));
+        xml.writeAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings");
+        xml.writeAttribute("Target", "sharedStrings.xml");
+        xml.writeEndElement();
+    }
 
     xml.writeEndElement();
     xml.writeEndDocument();
@@ -1501,7 +1530,7 @@ QByteArray XlsxService::generateStyles(const std::vector<std::shared_ptr<Spreads
         if (!fontMap.count(fk)) {
             fontMap[fk] = static_cast<int>(fonts.size());
             fonts.push_back({s.fontName, s.fontSize, s.bold, s.italic,
-                             s.underline, s.strikethrough, s.foregroundColor});
+                             s.underline, s.strikethrough, resolveColorForExport(s.foregroundColor)});
         }
     }
 
@@ -1515,7 +1544,7 @@ QByteArray XlsxService::generateStyles(const std::vector<std::shared_ptr<Spreads
     fillMap["gray125"] = 1;
 
     for (const auto& s : sortedStyles) {
-        QString bg = s.backgroundColor;
+        QString bg = resolveColorForExport(s.backgroundColor);
         if (bg != "#FFFFFF" && bg != "#ffffff") {
             if (!fillMap.count(bg)) {
                 fillMap[bg] = static_cast<int>(fills.size());
@@ -1599,10 +1628,10 @@ QByteArray XlsxService::generateStyles(const std::vector<std::shared_ptr<Spreads
         if (!borderMap.count(bk)) {
             borderMap[bk] = static_cast<int>(borderEntries.size());
             BorderEntry be;
-            be.left = {s.borderLeft.enabled, s.borderLeft.color, s.borderLeft.width};
-            be.right = {s.borderRight.enabled, s.borderRight.color, s.borderRight.width};
-            be.top = {s.borderTop.enabled, s.borderTop.color, s.borderTop.width};
-            be.bottom = {s.borderBottom.enabled, s.borderBottom.color, s.borderBottom.width};
+            be.left = {s.borderLeft.enabled, resolveColorForExport(s.borderLeft.color), s.borderLeft.width};
+            be.right = {s.borderRight.enabled, resolveColorForExport(s.borderRight.color), s.borderRight.width};
+            be.top = {s.borderTop.enabled, resolveColorForExport(s.borderTop.color), s.borderTop.width};
+            be.bottom = {s.borderBottom.enabled, resolveColorForExport(s.borderBottom.color), s.borderBottom.width};
             borderEntries.push_back(be);
         }
     }
@@ -1639,16 +1668,28 @@ QByteArray XlsxService::generateStyles(const std::vector<std::shared_ptr<Spreads
     }
     xml.writeEndElement(); // borders
 
+    // cellStyleXfs (required by XLSX spec — at least one default entry)
+    xml.writeStartElement("cellStyleXfs");
+    xml.writeAttribute("count", "1");
+    xml.writeStartElement("xf");
+    xml.writeAttribute("numFmtId", "0");
+    xml.writeAttribute("fontId", "0");
+    xml.writeAttribute("fillId", "0");
+    xml.writeAttribute("borderId", "0");
+    xml.writeEndElement(); // xf
+    xml.writeEndElement(); // cellStyleXfs
+
     // cellXfs
     xml.writeStartElement("cellXfs");
     xml.writeAttribute("count", QString::number(sortedStyles.size()));
     for (const auto& s : sortedStyles) {
         xml.writeStartElement("xf");
+        xml.writeAttribute("xfId", "0"); // Reference base style in cellStyleXfs
         // Font
         QString fk = getFontKey(s);
         xml.writeAttribute("fontId", QString::number(fontMap[fk]));
         // Fill
-        QString bg = s.backgroundColor;
+        QString bg = resolveColorForExport(s.backgroundColor);
         int fillId = 0;
         if (bg != "#FFFFFF" && bg != "#ffffff" && fillMap.count(bg)) {
             fillId = fillMap[bg];
@@ -1694,6 +1735,16 @@ QByteArray XlsxService::generateStyles(const std::vector<std::shared_ptr<Spreads
     }
     xml.writeEndElement(); // cellXfs
 
+    // cellStyles (required by XLSX spec)
+    xml.writeStartElement("cellStyles");
+    xml.writeAttribute("count", "1");
+    xml.writeStartElement("cellStyle");
+    xml.writeAttribute("name", "Normal");
+    xml.writeAttribute("xfId", "0");
+    xml.writeAttribute("builtinId", "0");
+    xml.writeEndElement(); // cellStyle
+    xml.writeEndElement(); // cellStyles
+
     xml.writeEndElement(); // styleSheet
     xml.writeEndDocument();
     buf.close();
@@ -1714,8 +1765,13 @@ QByteArray XlsxService::generateSharedStrings(const QStringList& sharedStrings) 
 
     for (const auto& s : sharedStrings) {
         xml.writeStartElement("si");
-        xml.writeTextElement("t", s);
-        xml.writeEndElement();
+        xml.writeStartElement("t");
+        if (s.startsWith(' ') || s.endsWith(' ') || s.startsWith('\t') || s.endsWith('\t')) {
+            xml.writeAttribute("xml:space", "preserve");
+        }
+        xml.writeCharacters(s);
+        xml.writeEndElement(); // t
+        xml.writeEndElement(); // si
     }
 
     xml.writeEndElement(); // sst
