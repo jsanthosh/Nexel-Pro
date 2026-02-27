@@ -1689,23 +1689,23 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     bar->addSeparator();
 
     // ===== Chat Assistant (at end of row 2) =====
-    QToolButton* chatBtn = new QToolButton(bar);
-    chatBtn->setIcon(createChatIcon());
-    chatBtn->setText("Claude");
-    chatBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    chatBtn->setToolTip("Open Claude Assistant");
-    chatBtn->setFixedHeight(24);
+    m_chatBtn = new QToolButton(bar);
+    m_chatBtn->setIcon(createChatIcon());
+    m_chatBtn->setText("Claude");
+    m_chatBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_chatBtn->setToolTip("Open Claude Assistant");
+    m_chatBtn->setFixedHeight(24);
     {
         const auto& t = ThemeManager::instance().currentTheme();
-        chatBtn->setStyleSheet(QString(
+        m_chatBtn->setStyleSheet(QString(
             "QToolButton { background: %1; color: white; border: none; border-radius: 4px; "
             "padding: 2px 10px; font-size: 11px; font-weight: bold; }"
             "QToolButton:hover { background: %2; }"
             "QToolButton:pressed { background: %3; }"
         ).arg(t.accentDarker.name(), t.accentDark.name(), t.menuBarHover.name()));
     }
-    bar->addWidget(chatBtn);
-    connect(chatBtn, &QToolButton::clicked, this, &Toolbar::chatToggleRequested);
+    bar->addWidget(m_chatBtn);
+    connect(m_chatBtn, &QToolButton::clicked, this, &Toolbar::chatToggleRequested);
 
     m_secondaryToolbar = bar;
     return bar;
@@ -1715,6 +1715,15 @@ void Toolbar::onThemeChanged() {
     setStyleSheet(buildToolbarStyle());
     if (m_secondaryToolbar) {
         m_secondaryToolbar->setStyleSheet(buildToolbarStyleRow2());
+    }
+    if (m_chatBtn) {
+        const auto& t = ThemeManager::instance().currentTheme();
+        m_chatBtn->setStyleSheet(QString(
+            "QToolButton { background: %1; color: white; border: none; border-radius: 4px; "
+            "padding: 2px 10px; font-size: 11px; font-weight: bold; }"
+            "QToolButton:hover { background: %2; }"
+            "QToolButton:pressed { background: %3; }"
+        ).arg(t.accentDarker.name(), t.accentDark.name(), t.menuBarHover.name()));
     }
 }
 

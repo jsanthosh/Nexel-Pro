@@ -132,35 +132,42 @@ ChartDialog::ChartDialog(QWidget* parent)
 
 void ChartDialog::createLayout() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(12);
+    mainLayout->setSpacing(10);
     mainLayout->setContentsMargins(16, 14, 16, 14);
 
     QHBoxLayout* topLayout = new QHBoxLayout();
-    topLayout->setSpacing(12);
+    topLayout->setSpacing(10);
 
     // Left: chart type selector
     QGroupBox* typeGroup = new QGroupBox("Chart Type");
+    typeGroup->setStyleSheet(typeGroup->styleSheet() +
+        "QGroupBox { padding: 10px 8px 8px 8px; margin-top: 8px; }");
     QVBoxLayout* typeLayout = new QVBoxLayout(typeGroup);
-    typeLayout->setContentsMargins(8, 8, 8, 8);
+    typeLayout->setContentsMargins(0, 6, 0, 0);
+    typeLayout->setSpacing(0);
     createChartTypeSelector();
     typeLayout->addWidget(m_chartTypeList);
-    typeGroup->setFixedWidth(200);
+    typeGroup->setFixedWidth(190);
     topLayout->addWidget(typeGroup);
 
     // Middle: data + options
     QVBoxLayout* midLayout = new QVBoxLayout();
-    midLayout->setSpacing(10);
+    midLayout->setSpacing(8);
 
     QGroupBox* dataGroup = new QGroupBox("Data Source");
+    dataGroup->setStyleSheet(dataGroup->styleSheet() +
+        "QGroupBox { padding: 6px 10px 6px 10px; margin-top: 8px; }");
+    dataGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     createDataPanel();
     QVBoxLayout* dataLayout = new QVBoxLayout(dataGroup);
-    dataLayout->setSpacing(8);
+    dataLayout->setContentsMargins(0, 2, 0, 0);
+    dataLayout->setSpacing(4);
     QLabel* rangeLabel = new QLabel("Data Range:");
     rangeLabel->setStyleSheet("QLabel { color: #667085; font-size: 11px; font-weight: 500; }");
     dataLayout->addWidget(rangeLabel);
     dataLayout->addWidget(m_dataRangeEdit);
     QHBoxLayout* checkLayout = new QHBoxLayout();
-    checkLayout->setSpacing(16);
+    checkLayout->setSpacing(24);
     checkLayout->addWidget(m_firstRowHeaders);
     checkLayout->addWidget(m_firstColLabels);
     checkLayout->addStretch();
@@ -168,9 +175,12 @@ void ChartDialog::createLayout() {
     midLayout->addWidget(dataGroup);
 
     QGroupBox* optGroup = new QGroupBox("Options");
+    optGroup->setStyleSheet(optGroup->styleSheet() +
+        "QGroupBox { padding: 10px 10px 8px 10px; margin-top: 8px; }");
     createOptionsPanel();
     QGridLayout* optLayout = new QGridLayout(optGroup);
-    optLayout->setSpacing(8);
+    optLayout->setContentsMargins(0, 4, 0, 0);
+    optLayout->setSpacing(6);
     optLayout->setColumnStretch(1, 1);
 
     auto optLabel = [](const QString& text) {
@@ -187,7 +197,7 @@ void ChartDialog::createLayout() {
     optLayout->addWidget(optLabel("Theme"), 3, 0);
     optLayout->addWidget(m_themeCombo, 3, 1);
     QHBoxLayout* checkLayout2 = new QHBoxLayout();
-    checkLayout2->setSpacing(16);
+    checkLayout2->setSpacing(24);
     checkLayout2->addWidget(m_showLegend);
     checkLayout2->addWidget(m_showGridLines);
     checkLayout2->addStretch();
@@ -198,11 +208,14 @@ void ChartDialog::createLayout() {
 
     // Right: preview
     QGroupBox* previewGroup = new QGroupBox("Preview");
+    previewGroup->setStyleSheet(previewGroup->styleSheet() +
+        "QGroupBox { padding: 10px 8px 8px 8px; margin-top: 8px; }");
     createPreviewPanel();
     QVBoxLayout* prevLayout = new QVBoxLayout(previewGroup);
-    prevLayout->setContentsMargins(8, 8, 8, 8);
+    prevLayout->setContentsMargins(0, 4, 0, 0);
+    prevLayout->setSpacing(0);
     prevLayout->addWidget(m_preview);
-    previewGroup->setMinimumWidth(280);
+    previewGroup->setMinimumWidth(260);
     topLayout->addWidget(previewGroup, 1);
 
     mainLayout->addLayout(topLayout, 1);
@@ -212,7 +225,7 @@ void ChartDialog::createLayout() {
     btnLayout->addStretch();
 
     QPushButton* cancelBtn = new QPushButton("Cancel");
-    cancelBtn->setFixedHeight(36);
+    cancelBtn->setFixedHeight(34);
     cancelBtn->setCursor(Qt::PointingHandCursor);
     cancelBtn->setStyleSheet(
         "QPushButton { background: white; border: 1px solid #D0D5DD; border-radius: 6px; "
@@ -224,7 +237,7 @@ void ChartDialog::createLayout() {
     btnLayout->addSpacing(8);
 
     QPushButton* insertBtn = new QPushButton("Insert Chart");
-    insertBtn->setFixedHeight(36);
+    insertBtn->setFixedHeight(34);
     insertBtn->setCursor(Qt::PointingHandCursor);
     {
         const auto& t = ThemeManager::instance().currentTheme();

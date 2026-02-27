@@ -47,7 +47,12 @@ void FormulaEngine::skipWhitespace(const QString& expr, int& pos) {
 std::vector<QVariant> FormulaEngine::flattenArgs(const std::vector<QVariant>& args) {
     std::vector<QVariant> flat;
     for (const auto& arg : args) {
-        if (arg.canConvert<std::vector<QVariant>>()) {
+        if (arg.canConvert<CellRange>()) {
+            // Lazy range: materialize values by streaming from spreadsheet
+            streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
+                flat.push_back(v);
+            });
+        } else if (arg.canConvert<std::vector<QVariant>>()) {
             auto nested = arg.value<std::vector<QVariant>>();
             for (const auto& v : nested) flat.push_back(v);
         } else {
@@ -214,6 +219,11 @@ QVariant FormulaEngine::evaluateFactor(const QString& expr, int& pos) {
                 for (const auto& c : cells) m_lastDependencies.push_back(c);
             }
 
+            // For very large ranges, store lazy reference to avoid materializing millions of values
+            if (cellCount > 100000) {
+                return QVariant::fromValue(range);
+            }
+
             std::vector<QVariant> values = getRangeValues(range);
             return QVariant::fromValue(values);
         }
@@ -336,13 +346,52 @@ QVariant FormulaEngine::evaluateFunction(const QString& fn, const std::vector<QV
 
 // ---- Aggregate functions ----
 
+// Helper: check if any argument is a lazy CellRange (large range optimization)
+static bool hasLazyRange(const std::vector<QVariant>& args) {
+    for (const auto& a : args)
+        if (a.canConvert<CellRange>()) return true;
+    return false;
+}
+
 QVariant FormulaEngine::funcSUM(const std::vector<QVariant>& args) {
+    if (hasLazyRange(args)) {
+        double sum = 0;
+        for (const auto& arg : args) {
+            if (arg.canConvert<CellRange>()) {
+                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
+                    if (!v.isNull() && v.isValid()) sum += toNumber(v);
+                });
+            } else if (arg.canConvert<std::vector<QVariant>>()) {
+                for (const auto& v : arg.value<std::vector<QVariant>>())
+                    if (!v.isNull() && v.isValid()) sum += toNumber(v);
+            } else if (!arg.isNull() && arg.isValid()) {
+                sum += toNumber(arg);
+            }
+        }
+        return sum;
+    }
     auto flat = flattenArgs(args); double sum = 0;
     for (const auto& a : flat) if (!a.isNull() && a.isValid()) sum += toNumber(a);
     return sum;
 }
 
 QVariant FormulaEngine::funcAVERAGE(const std::vector<QVariant>& args) {
+    if (hasLazyRange(args)) {
+        double sum = 0; long long count = 0;
+        for (const auto& arg : args) {
+            if (arg.canConvert<CellRange>()) {
+                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
+                    if (!v.isNull() && v.isValid()) { sum += toNumber(v); count++; }
+                });
+            } else if (arg.canConvert<std::vector<QVariant>>()) {
+                for (const auto& v : arg.value<std::vector<QVariant>>())
+                    if (!v.isNull() && v.isValid()) { sum += toNumber(v); count++; }
+            } else if (!arg.isNull() && arg.isValid()) {
+                sum += toNumber(arg); count++;
+            }
+        }
+        return count == 0 ? QVariant("#DIV/0!") : QVariant(sum / count);
+    }
     auto flat = flattenArgs(args);
     if (flat.empty()) return QVariant("#DIV/0!");
     double sum = 0; int count = 0;
@@ -351,6 +400,30 @@ QVariant FormulaEngine::funcAVERAGE(const std::vector<QVariant>& args) {
 }
 
 QVariant FormulaEngine::funcCOUNT(const std::vector<QVariant>& args) {
+    if (hasLazyRange(args)) {
+        long long count = 0;
+        for (const auto& arg : args) {
+            if (arg.canConvert<CellRange>()) {
+                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
+                    if (!v.isNull() && v.isValid()) {
+                        bool ok = false; v.toDouble(&ok);
+                        if (ok || v.typeId() == QMetaType::Int || v.typeId() == QMetaType::Double) count++;
+                    }
+                });
+            } else if (arg.canConvert<std::vector<QVariant>>()) {
+                for (const auto& v : arg.value<std::vector<QVariant>>()) {
+                    if (!v.isNull() && v.isValid()) {
+                        bool ok = false; v.toDouble(&ok);
+                        if (ok || v.typeId() == QMetaType::Int || v.typeId() == QMetaType::Double) count++;
+                    }
+                }
+            } else if (!arg.isNull() && arg.isValid()) {
+                bool ok = false; arg.toDouble(&ok);
+                if (ok || arg.typeId() == QMetaType::Int || arg.typeId() == QMetaType::Double) count++;
+            }
+        }
+        return static_cast<int>(count);
+    }
     auto flat = flattenArgs(args); int count = 0;
     for (const auto& a : flat) {
         if (!a.isNull() && a.isValid()) {
@@ -362,18 +435,66 @@ QVariant FormulaEngine::funcCOUNT(const std::vector<QVariant>& args) {
 }
 
 QVariant FormulaEngine::funcCOUNTA(const std::vector<QVariant>& args) {
+    if (hasLazyRange(args)) {
+        long long count = 0;
+        for (const auto& arg : args) {
+            if (arg.canConvert<CellRange>()) {
+                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
+                    if (!v.isNull() && v.isValid() && !v.toString().isEmpty()) count++;
+                });
+            } else if (arg.canConvert<std::vector<QVariant>>()) {
+                for (const auto& v : arg.value<std::vector<QVariant>>())
+                    if (!v.isNull() && v.isValid() && !v.toString().isEmpty()) count++;
+            } else if (!arg.isNull() && arg.isValid() && !arg.toString().isEmpty()) {
+                count++;
+            }
+        }
+        return static_cast<int>(count);
+    }
     auto flat = flattenArgs(args); int count = 0;
     for (const auto& a : flat) if (!a.isNull() && a.isValid() && !a.toString().isEmpty()) count++;
     return count;
 }
 
 QVariant FormulaEngine::funcMIN(const std::vector<QVariant>& args) {
+    if (hasLazyRange(args)) {
+        double min = std::numeric_limits<double>::max(); bool found = false;
+        for (const auto& arg : args) {
+            if (arg.canConvert<CellRange>()) {
+                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
+                    if (!v.isNull() && v.isValid()) { double d = toNumber(v); if (!found || d < min) { min = d; found = true; } }
+                });
+            } else if (arg.canConvert<std::vector<QVariant>>()) {
+                for (const auto& v : arg.value<std::vector<QVariant>>())
+                    if (!v.isNull() && v.isValid()) { double d = toNumber(v); if (!found || d < min) { min = d; found = true; } }
+            } else if (!arg.isNull() && arg.isValid()) {
+                double d = toNumber(arg); if (!found || d < min) { min = d; found = true; }
+            }
+        }
+        return found ? QVariant(min) : QVariant();
+    }
     auto flat = flattenArgs(args); double min = std::numeric_limits<double>::max(); bool found = false;
     for (const auto& a : flat) if (!a.isNull() && a.isValid()) { double v = toNumber(a); if (!found || v < min) { min = v; found = true; } }
     return found ? QVariant(min) : QVariant();
 }
 
 QVariant FormulaEngine::funcMAX(const std::vector<QVariant>& args) {
+    if (hasLazyRange(args)) {
+        double max = std::numeric_limits<double>::lowest(); bool found = false;
+        for (const auto& arg : args) {
+            if (arg.canConvert<CellRange>()) {
+                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
+                    if (!v.isNull() && v.isValid()) { double d = toNumber(v); if (!found || d > max) { max = d; found = true; } }
+                });
+            } else if (arg.canConvert<std::vector<QVariant>>()) {
+                for (const auto& v : arg.value<std::vector<QVariant>>())
+                    if (!v.isNull() && v.isValid()) { double d = toNumber(v); if (!found || d > max) { max = d; found = true; } }
+            } else if (!arg.isNull() && arg.isValid()) {
+                double d = toNumber(arg); if (!found || d > max) { max = d; found = true; }
+            }
+        }
+        return found ? QVariant(max) : QVariant();
+    }
     auto flat = flattenArgs(args); double max = std::numeric_limits<double>::lowest(); bool found = false;
     for (const auto& a : flat) if (!a.isNull() && a.isValid()) { double v = toNumber(a); if (!found || v > max) { max = v; found = true; } }
     return found ? QVariant(max) : QVariant();
@@ -650,6 +771,20 @@ std::vector<QVariant> FormulaEngine::getRangeValues(const CellRange& range) {
     }
 
     return values;
+}
+
+void FormulaEngine::streamRangeValues(const CellRange& range, std::function<void(const QVariant&)> fn) {
+    if (!m_spreadsheet) return;
+
+    int startRow = range.getStart().row;
+    int endRow = range.getEnd().row;
+    int startCol = range.getStart().col;
+    int endCol = range.getEnd().col;
+
+    // Use Spreadsheet's direct streaming method
+    for (int c = startCol; c <= endCol; c++) {
+        m_spreadsheet->streamColumnValues(c, startRow, endRow, fn);
+    }
 }
 
 std::vector<std::vector<QVariant>> FormulaEngine::getRangeValues2D(const CellRange& range) {

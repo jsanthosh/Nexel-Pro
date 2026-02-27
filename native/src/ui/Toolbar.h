@@ -126,6 +126,7 @@ private:
     QToolButton* m_vAlignMiddleBtn = nullptr;
     QToolButton* m_vAlignBottomBtn = nullptr;
     QToolBar* m_secondaryToolbar = nullptr;
+    QToolButton* m_chatBtn = nullptr;
 };
 
 #endif // TOOLBAR_H

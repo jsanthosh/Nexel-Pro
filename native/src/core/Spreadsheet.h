@@ -4,6 +4,7 @@
 #include <QString>
 #include <QVariant>
 #include <unordered_map>
+#include <unordered_set>
 #include <map>
 #include <memory>
 #include <vector>
@@ -168,6 +169,10 @@ public:
     const std::vector<int>& getOccupiedColsInRow(int row) const;
     const std::vector<int>& getOccupiedRows() const; // all rows with data, sorted
 
+    // Stream cell values directly from internal storage (avoids per-cell hash lookup)
+    void streamColumnValues(int col, int startRow, int endRow,
+                           const std::function<void(const QVariant&)>& fn) const;
+
     // Sparklines
     void setSparkline(const CellAddress& addr, const SparklineConfig& config);
     void removeSparkline(const CellAddress& addr);
@@ -246,6 +251,11 @@ private:
     mutable std::vector<int> m_sortedOccupiedRows; // all occupied rows, sorted
     mutable bool m_navIndexDirty = true;
     void buildNavIndexIfNeeded() const;
+    void navIndexInsert(int row, int col) const;
+    void navIndexRemove(int row, int col) const;
+
+    // Fast formula cell tracking — avoids scanning all cells in recalculateAll()
+    std::unordered_set<CellKey, CellKeyHash> m_formulaCells;
 
     // Column-level dependency tracking (for column references like A:A)
     std::unordered_map<int, std::vector<CellAddress>> m_colRefFormulas; // col → formulas depending on it

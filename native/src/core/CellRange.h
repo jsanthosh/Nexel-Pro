@@ -2,6 +2,7 @@
 #define CELLRANGE_H
 
 #include <QString>
+#include <QVariant>
 #include <vector>
 
 struct CellAddress {
@@ -52,5 +53,7 @@ private:
 
     void normalize();
 };
+
+Q_DECLARE_METATYPE(CellRange)
 
 #endif // CELLRANGE_H

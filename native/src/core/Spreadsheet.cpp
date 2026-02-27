@@ -47,10 +47,21 @@ QVariant Spreadsheet::getCellValue(const CellAddress& addr) {
 }
 
 void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
+    bool wasNew = (m_cells.find(CellKey{addr.row, addr.col}) == m_cells.end());
     auto cell = getCell(addr);
     cell->setValue(value);
     m_maxRowColDirty = true;
-    m_navIndexDirty = true;
+
+    // Remove from formula tracking (it's now a value cell)
+    m_formulaCells.erase(CellKey{addr.row, addr.col});
+
+    // Incremental nav index update instead of full rebuild
+    if (!m_navIndexDirty && wasNew) {
+        navIndexInsert(addr.row, addr.col);
+    } else if (m_autoRecalculate) {
+        // If nav was already dirty (bulk mode), keep it dirty
+        m_navIndexDirty = true;
+    }
 
     // Skip dependency graph work when autoRecalculate is off (bulk import mode)
     if (m_autoRecalculate) {
@@ -64,19 +75,46 @@ void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
 }
 
 void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula) {
+    bool wasNew = (m_cells.find(CellKey{addr.row, addr.col}) == m_cells.end());
     auto cell = getCell(addr);
     cell->setFormula(formula);
     m_maxRowColDirty = true;
-    m_navIndexDirty = true;
-    updateDependencies(addr);
+
+    // Track as formula cell
+    m_formulaCells.insert(CellKey{addr.row, addr.col});
+
+    // Incremental nav index update instead of full rebuild
+    if (!m_navIndexDirty && wasNew) {
+        navIndexInsert(addr.row, addr.col);
+    } else if (!m_navIndexDirty) {
+        // Existing cell changed type, nav index still valid (same position)
+    } else {
+        m_navIndexDirty = true;
+    }
+
+    // Single evaluation: compute result AND extract dependencies in one pass
+    QVariant result = m_formulaEngine->evaluate(formula);
+
+    // Update dependency graph from cached deps (no re-evaluation needed)
+    m_depGraph.removeDependencies(addr);
+    for (auto& [col, addrs] : m_colRefFormulas) {
+        addrs.erase(std::remove(addrs.begin(), addrs.end(), addr), addrs.end());
+    }
+    for (const auto& dep : m_formulaEngine->getLastDependencies()) {
+        m_depGraph.addDependency(addr, dep);
+    }
+    for (int col : m_formulaEngine->getLastColumnDeps()) {
+        m_colRefFormulas[col].push_back(addr);
+    }
 
     if (m_depGraph.hasCircularDependency(addr)) {
         cell->setComputedValue(QVariant("#CIRCULAR!"));
         return;
     }
 
+    cell->setComputedValue(result);
+
     if (m_autoRecalculate && !m_inTransaction) {
-        recalculate(addr);
         recalculateDependents(addr);
     }
 }
@@ -232,9 +270,11 @@ Cell* Spreadsheet::getOrCreateCellFast(int row, int col) {
 void Spreadsheet::finishBulkImport() {
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
+    m_formulaCells.clear();
     // Pre-build caches now (runs on the import background thread, no UI freeze)
     updateMaxRowCol();
     buildNavIndexIfNeeded();
+    // Formula tracker is populated inside buildNavIndexIfNeeded
 }
 
 void Spreadsheet::mergeBulkCells(CellMap& source) {
@@ -296,11 +336,21 @@ void Spreadsheet::recalculate(const CellAddress& addr) {
 }
 
 void Spreadsheet::recalculateAll() {
-    for (auto& pair : m_cells) {
-        if (pair.second->getType() == CellType::Formula) {
-            CellAddress addr(pair.first.row, pair.first.col);
-            pair.second->setComputedValue(m_formulaEngine->evaluate(pair.second->getFormula()));
-            updateDependencies(addr);
+    // Use formula cell tracker for O(f) instead of scanning all O(n) cells
+    if (!m_formulaCells.empty()) {
+        for (const auto& key : m_formulaCells) {
+            auto it = m_cells.find(key);
+            if (it != m_cells.end() && it->second->getType() == CellType::Formula) {
+                it->second->setComputedValue(m_formulaEngine->evaluate(it->second->getFormula()));
+            }
+        }
+    } else {
+        // Fallback: scan all cells (only needed if formula tracker wasn't populated)
+        for (auto& pair : m_cells) {
+            if (pair.second->getType() == CellType::Formula) {
+                pair.second->setComputedValue(m_formulaEngine->evaluate(pair.second->getFormula()));
+                m_formulaCells.insert(pair.first);
+            }
         }
     }
 }
@@ -563,10 +613,16 @@ void Spreadsheet::buildNavIndexIfNeeded() const {
     if (!m_navIndexDirty) return;
     m_colIndexCache.clear();
     m_rowIndexCache.clear();
+    // Also rebuild formula tracker during full scan (avoids separate O(n) pass)
+    auto& formulaCells = const_cast<std::unordered_set<CellKey, CellKeyHash>&>(m_formulaCells);
+    formulaCells.clear();
     for (const auto& [key, cell] : m_cells) {
         if (cell && cell->getType() != CellType::Empty) {
             m_colIndexCache[key.col].push_back(key.row);
             m_rowIndexCache[key.row].push_back(key.col);
+            if (cell->getType() == CellType::Formula) {
+                formulaCells.insert(key);
+            }
         }
     }
     for (auto& [col, rows] : m_colIndexCache)
@@ -581,12 +637,72 @@ void Spreadsheet::buildNavIndexIfNeeded() const {
     m_navIndexDirty = false;
 }
 
+void Spreadsheet::navIndexInsert(int row, int col) const {
+    if (m_navIndexDirty) return; // Will rebuild fully later
+    // Insert row into column index (maintain sorted order)
+    auto& colRows = m_colIndexCache[col];
+    auto it = std::lower_bound(colRows.begin(), colRows.end(), row);
+    if (it == colRows.end() || *it != row) colRows.insert(it, row);
+
+    // Insert col into row index (maintain sorted order)
+    auto& rowCols = m_rowIndexCache[row];
+    auto it2 = std::lower_bound(rowCols.begin(), rowCols.end(), col);
+    if (it2 == rowCols.end() || *it2 != col) rowCols.insert(it2, col);
+
+    // Insert into sorted occupied rows
+    auto it3 = std::lower_bound(m_sortedOccupiedRows.begin(), m_sortedOccupiedRows.end(), row);
+    if (it3 == m_sortedOccupiedRows.end() || *it3 != row) m_sortedOccupiedRows.insert(it3, row);
+}
+
+void Spreadsheet::navIndexRemove(int row, int col) const {
+    if (m_navIndexDirty) return;
+    // Remove row from column index
+    auto colIt = m_colIndexCache.find(col);
+    if (colIt != m_colIndexCache.end()) {
+        auto& rows = colIt->second;
+        auto it = std::lower_bound(rows.begin(), rows.end(), row);
+        if (it != rows.end() && *it == row) rows.erase(it);
+        if (rows.empty()) m_colIndexCache.erase(colIt);
+    }
+    // Remove col from row index
+    auto rowIt = m_rowIndexCache.find(row);
+    if (rowIt != m_rowIndexCache.end()) {
+        auto& cols = rowIt->second;
+        auto it = std::lower_bound(cols.begin(), cols.end(), col);
+        if (it != cols.end() && *it == col) cols.erase(it);
+        if (cols.empty()) {
+            m_rowIndexCache.erase(rowIt);
+            // Remove from sorted occupied rows
+            auto it2 = std::lower_bound(m_sortedOccupiedRows.begin(), m_sortedOccupiedRows.end(), row);
+            if (it2 != m_sortedOccupiedRows.end() && *it2 == row) m_sortedOccupiedRows.erase(it2);
+        }
+    }
+}
+
 const std::vector<int>& Spreadsheet::getOccupiedRowsInColumn(int col) const {
     static const std::vector<int> empty;
     buildNavIndexIfNeeded();
     auto it = m_colIndexCache.find(col);
     if (it == m_colIndexCache.end()) return empty;
     return it->second;
+}
+
+void Spreadsheet::streamColumnValues(int col, int startRow, int endRow,
+                                     const std::function<void(const QVariant&)>& fn) const {
+    buildNavIndexIfNeeded();
+    auto colIt = m_colIndexCache.find(col);
+    if (colIt == m_colIndexCache.end()) return;
+    const auto& rows = colIt->second;
+    auto lo = std::lower_bound(rows.begin(), rows.end(), startRow);
+    auto hi = std::upper_bound(rows.begin(), rows.end(), endRow);
+    for (auto it = lo; it != hi; ++it) {
+        auto cellIt = m_cells.find(CellKey{*it, col});
+        if (cellIt != m_cells.end() && cellIt->second) {
+            const auto& cell = cellIt->second;
+            fn(cell->getType() == CellType::Formula ?
+                cell->getComputedValue() : cell->getValue());
+        }
+    }
 }
 
 const std::vector<int>& Spreadsheet::getOccupiedColsInRow(int row) const {

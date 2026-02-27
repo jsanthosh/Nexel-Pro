@@ -289,10 +289,14 @@ void ChartWidget::computeAxisRange(double& minVal, double& maxVal, double& step)
 
     if (minVal == maxVal) {
         // All values identical — create a sensible range
-        if (minVal >= 0 && !isLineChart) {
-            // Non-line charts with non-negative data: range from 0 to value (or 0-1 if zero)
+        if (maxVal == 0) {
+            // All zeros: show 0 to 1 range for any chart type
             minVal = 0;
-            maxVal = (maxVal == 0) ? 1.0 : maxVal * 1.5;
+            maxVal = 1.0;
+        } else if (minVal >= 0 && !isLineChart) {
+            // Non-line charts with non-negative data: range from 0 to value
+            minVal = 0;
+            maxVal = maxVal * 1.5;
         } else {
             minVal -= 1;
             maxVal += 1;

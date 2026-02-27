@@ -160,6 +160,11 @@ private:
     bool matchesCriteria(const QVariant& value, const QString& criteria);
     QDate parseDate(const QVariant& value);
 
+    // Stream values from args (handles lazy CellRange + vector<QVariant> + scalar)
+    template<typename Func>
+    void forEachValue(const std::vector<QVariant>& args, Func fn);
+    void streamRangeValues(const CellRange& range, std::function<void(const QVariant&)> fn);
+
     // Range tracking for lookup functions
     std::vector<CellRange> m_lastRangeArgs;
 };
