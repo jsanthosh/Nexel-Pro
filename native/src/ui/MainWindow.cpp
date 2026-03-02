@@ -1,5 +1,9 @@
 #include "MainWindow.h"
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 #include "SpreadsheetView.h"
 #include "SpreadsheetModel.h"
 #include "FormulaBar.h"
