@@ -62,7 +62,7 @@
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
-    setWindowTitle("Nexel");
+    setWindowTitle("NexelBI");
     setGeometry(100, 100, 1280, 800);
 
     // Initialize with one default sheet
@@ -448,7 +448,7 @@ void MainWindow::createMenuBar() {
         QString newName = QInputDialog::getText(this, "Rename Document",
             "Document name:", QLineEdit::Normal, baseName, &ok);
         if (ok && !newName.isEmpty()) {
-            setWindowTitle("Nexel - " + newName);
+            setWindowTitle("NexelBI - " + newName);
             statusBar()->showMessage("Renamed to: " + newName);
         }
     });
@@ -957,7 +957,7 @@ void MainWindow::openFile(const QString& fileName) {
 void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& fileName, qint64 elapsedMs) {
     if (!result.sheets.empty()) {
         setSheets(result.sheets);
-        setWindowTitle("Nexel - " + QFileInfo(fileName).fileName());
+        setWindowTitle("NexelBI - " + QFileInfo(fileName).fileName());
 
         // Create chart widgets from imported charts
         static const QVector<QColor> excelColors = {
@@ -2112,7 +2112,7 @@ void MainWindow::setDirty(bool dirty) {
 }
 
 void MainWindow::updateWindowTitle() {
-    QString title = "Nexel";
+    QString title = "NexelBI";
     if (!m_currentFilePath.isEmpty()) {
         title += " - " + QFileInfo(m_currentFilePath).fileName();
     }
@@ -3072,7 +3072,7 @@ void MainWindow::applyTemplate(const TemplateResult& result) {
     }
 
     setSheets(result.sheets);
-    setWindowTitle("Nexel - " + result.sheets[0]->getSheetName());
+    setWindowTitle("NexelBI - " + result.sheets[0]->getSheetName());
 
     // Create chart widgets from template charts
     for (int i = 0; i < static_cast<int>(result.charts.size()); ++i) {
