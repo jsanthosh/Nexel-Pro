@@ -1939,6 +1939,8 @@ ImportedChart XlsxService::parseChartXml(const QByteArray& chartXml) {
     bool inValAx = false;
     bool inAxTitle = false;
     bool chartTypeSet = false;
+    bool inNumRef = false;
+    bool inStrRef = false;
 
     ImportedChartSeries currentSeries;
     QVector<QString> sharedCategories;
@@ -2001,6 +2003,18 @@ ImportedChart XlsxService::parseChartXml(const QByteArray& chartXml) {
             if (inSer && n == "val") inVal = true;
             if (inSer && n == "xVal") inXVal = true;
             if (inSer && n == "yVal") inYVal = true;
+            if (inSer && n == "numRef") inNumRef = true;
+            if (inSer && n == "strRef") inStrRef = true;
+
+            // Formula reference inside <numRef> or <strRef>
+            if (n == "f" && inSer && (inNumRef || inStrRef)) {
+                QString ref = xml.readElementText();
+                if (inVal || inYVal) {
+                    currentSeries.valRef = ref;
+                } else if (inCat || inXVal) {
+                    currentSeries.catRef = ref;
+                }
+            }
 
             // Value element inside series context
             if (n == "v" && inSer && (inVal || inYVal || inXVal || inCat || inSerTx)) {
@@ -2068,6 +2082,8 @@ ImportedChart XlsxService::parseChartXml(const QByteArray& chartXml) {
             if (n == "val") inVal = false;
             if (n == "xVal") inXVal = false;
             if (n == "yVal") inYVal = false;
+            if (n == "numRef") inNumRef = false;
+            if (n == "strRef") inStrRef = false;
             if (n == "title" && inChartTitle && !inCatAx && !inValAx) inChartTitle = false;
             if (n == "title" && inAxTitle) inAxTitle = false;
             if (n == "catAx" || n == "dateAx") { inCatAx = false; inAxTitle = false; }
@@ -2081,6 +2097,41 @@ ImportedChart XlsxService::parseChartXml(const QByteArray& chartXml) {
             if (s.categories.isEmpty()) {
                 s.categories = sharedCategories;
             }
+        }
+    }
+
+    // Construct combined dataRange from series formula references
+    if (!chart.series.isEmpty() && chart.dataRange.isEmpty()) {
+        int minRow = INT_MAX, maxRow = 0, minCol = INT_MAX, maxCol = 0;
+        bool hasRef = false;
+
+        auto processRef = [&](const QString& ref) {
+            if (ref.isEmpty()) return;
+            // Strip sheet name: "Sheet1!$A$1:$B$10" -> "$A$1:$B$10"
+            QString cellPart = ref;
+            int bangIdx = ref.lastIndexOf('!');
+            if (bangIdx >= 0) cellPart = ref.mid(bangIdx + 1);
+
+            CellRange cr(cellPart);
+            if (cr.isValid()) {
+                minRow = std::min(minRow, cr.getStart().row);
+                maxRow = std::max(maxRow, cr.getEnd().row);
+                minCol = std::min(minCol, cr.getStart().col);
+                maxCol = std::max(maxCol, cr.getEnd().col);
+                hasRef = true;
+            }
+        };
+
+        for (const auto& s : chart.series) {
+            processRef(s.valRef);
+            processRef(s.catRef);
+        }
+
+        if (hasRef) {
+            // Include header row if the range doesn't start at row 0
+            if (minRow > 0) minRow--;
+            chart.dataRange = CellAddress(minRow, minCol).toString() + ":"
+                            + CellAddress(maxRow, maxCol).toString();
         }
     }
 

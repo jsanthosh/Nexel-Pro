@@ -16,6 +16,8 @@ struct ImportedChartSeries {
     QVector<double> values;      // numeric y values
     QVector<double> xNumeric;    // numeric x values (scatter charts)
     QVector<QString> categories; // string categories (bar/line/etc)
+    QString valRef;              // cell reference from <numRef><f> inside <val>/<yVal>
+    QString catRef;              // cell reference from <strRef>/<numRef><f> inside <cat>/<xVal>
 };
 
 struct ImportedChart {

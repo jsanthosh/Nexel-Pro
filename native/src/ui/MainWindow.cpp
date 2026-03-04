@@ -996,8 +996,13 @@ void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& f
                 config.showGridLines = imported.showGridLines;
                 chart->setConfig(config);
                 chart->loadDataFromRange(imported.dataRange);
+            } else if (!imported.dataRange.isEmpty()) {
+                // Excel chart with parsed cell references: load live data from spreadsheet
+                config.dataRange = imported.dataRange;
+                chart->setConfig(config);
+                chart->loadDataFromRange(imported.dataRange);
             } else {
-                // Excel-imported chart: use inline series data
+                // Excel-imported chart without cell refs: use inline series data (fallback)
                 for (int i = 0; i < imported.series.size(); ++i) {
                     ChartSeries s;
                     s.name = imported.series[i].name;
@@ -2145,9 +2150,16 @@ void MainWindow::onInsertChart() {
     ChartDialog dialog(this);
     dialog.setSpreadsheet(m_sheets[m_activeSheetIndex]);
 
-    // Pre-fill with current selection
+    // Pre-fill with current selection; auto-detect table if single cell
     QString range = getSelectionRange();
     if (!range.isEmpty()) {
+        CellRange cr(range);
+        if (cr.isSingleCell()) {
+            CellRange detected = m_spreadsheetView->detectDataRegion(cr.getStart().row, cr.getStart().col);
+            if (!detected.isSingleCell()) {
+                range = detected.toString();
+            }
+        }
         dialog.setDataRange(range);
     }
 

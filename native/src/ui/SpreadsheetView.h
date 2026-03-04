@@ -152,6 +152,9 @@ public:
     // Theme support
     void onThemeChanged();
 
+    // Auto-detect contiguous data region from a cell
+    CellRange detectDataRegion(int startRow, int startCol) const;
+
 signals:
     void cellSelected(int row, int col, const QString& content, const QString& address);
     void formatCellsRequested();
@@ -242,9 +245,6 @@ private:
     bool isOverFillHandle(const QPoint& pos) const;
     void performFillSeries();
     QRect getSelectionBoundingRect() const;
-
-    // Auto-detect contiguous data region from a cell
-    CellRange detectDataRegion(int startRow, int startCol) const;
 
     // Efficient style application: only process occupied cells for large selections
     void applyStyleChange(std::function<void(CellStyle&)> modifier, const QList<int>& roles);
