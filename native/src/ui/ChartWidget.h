@@ -93,7 +93,7 @@ public:
 
     // Selection state
     bool isSelected() const { return m_selected; }
-    void setSelected(bool selected);
+    virtual void setSelected(bool selected);
 
     // Series visibility
     bool isSeriesVisible(int index) const;

@@ -17,6 +17,7 @@ public:
     ~NativeChartWidget() override;
 
     void setConfig(const ChartConfig& config) override;
+    void setSelected(bool selected) override;
     void loadDataFromRange(const QString& range) override;
     void refreshData() override;
     void startEntryAnimation() override;

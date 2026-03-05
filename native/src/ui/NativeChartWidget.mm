@@ -150,6 +150,13 @@ void NativeChartWidget::resumeMetalRendering()
 
 // ── Overrides ───────────────────────────────────────────────────────────────
 
+void NativeChartWidget::setSelected(bool selected)
+{
+    ChartWidget::setSelected(selected);
+    // Inset/restore the Metal overlay so Qt-drawn selection handles are visible
+    updateChildWindowGeometry();
+}
+
 void NativeChartWidget::setConfig(const ChartConfig& config)
 {
     m_config = config;
@@ -269,20 +276,34 @@ void NativeChartWidget::updateChildWindowGeometry()
 
     if (!m_childWindow || !m_nativeChartView) return;
 
+    // When selected, inset the Metal overlay so Qt-drawn selection handles
+    // (8px border with resize grips) are visible around the edges.
+    int inset = m_selected ? HANDLE_SIZE : 0;
+
+    // Apply inset to the visible rect — shrink all four sides
+    QRect overlayRect = visibleRect;
+    if (inset > 0) {
+        overlayRect.adjust(inset, inset, -inset, -inset);
+        if (overlayRect.width() < 20 || overlayRect.height() < 20) {
+            overlayRect = visibleRect;  // chart too small for inset — skip
+            inset = 0;
+        }
+    }
+
     // Convert visible rect to macOS screen coordinates (bottom-left origin)
     NSWindow* overlay = (NSWindow*)m_childWindow;
     NSScreen* screen = overlay.screen ?: [NSScreen mainScreen];
     CGFloat screenH = screen.frame.size.height;
-    CGFloat ox = visibleRect.x();
-    CGFloat oy = screenH - visibleRect.y() - visibleRect.height();
+    CGFloat ox = overlayRect.x();
+    CGFloat oy = screenH - overlayRect.y() - overlayRect.height();
 
-    [overlay setFrame:NSMakeRect(ox, oy, visibleRect.width(), visibleRect.height()) display:YES];
+    [overlay setFrame:NSMakeRect(ox, oy, overlayRect.width(), overlayRect.height()) display:YES];
 
     // Position ChartView within the overlay to show the correct portion.
-    // The overlay is smaller than the chart when clipped, so we offset
+    // The overlay is smaller than the chart when clipped/inset, so we offset
     // the ChartView so the visible portion aligns with the overlay.
-    CGFloat cvX = widgetRect.x() - visibleRect.x();  // left clip offset
-    CGFloat clipBottom = (widgetRect.y() + height()) - (visibleRect.y() + visibleRect.height());
+    CGFloat cvX = widgetRect.x() - overlayRect.x();  // left clip + inset offset
+    CGFloat clipBottom = (widgetRect.y() + height()) - (overlayRect.y() + overlayRect.height());
     CGFloat cvY = -clipBottom;  // macOS y is bottom-up: bottom clip = negative y offset
 
     ChartView* cv = (ChartView*)m_nativeChartView;
