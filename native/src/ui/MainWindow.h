@@ -9,9 +9,11 @@
 #include <QTabBar>
 #include <QToolButton>
 #include <QJsonArray>
+#include <QSettings>
 #include <memory>
 #include <vector>
 
+enum class ChartBackend;
 struct NexelTheme;
 class Spreadsheet;
 class SpreadsheetView;
@@ -197,6 +199,15 @@ private:
 
     // Macro engine
     MacroEngine* m_macroEngine = nullptr;
+
+    // Chart backend selection (macOS only for Data2App)
+    ChartBackend m_chartBackend{};  // Initialized in constructor
+    QAction* m_nativeChartAction = nullptr;
+    ChartWidget* createChartWidget(QWidget* parent);
+
+    // Lazy chart loading (off by default — all charts load eagerly)
+    bool m_lazyLoadCharts = false;
+    void loadVisibleLazyCharts();
 };
 
 #endif // MAINWINDOW_H

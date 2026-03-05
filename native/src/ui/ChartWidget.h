@@ -25,6 +25,12 @@ enum class ChartType {
     Histogram
 };
 
+// Chart rendering backend
+enum class ChartBackend {
+    QtPainter,   // Default: custom QPainter rendering
+    Data2App     // macOS-only: Metal+Skia via Data2App ChartView
+};
+
 // A single data series for chart rendering
 struct ChartSeries {
     QString name;
@@ -53,6 +59,9 @@ struct ChartConfig {
 
     // Series visibility (empty = all visible)
     QVector<bool> seriesVisible;
+
+    // X-axis category labels from data range (for Data2App JSON conversion)
+    QStringList categoryLabels;
 };
 
 class ChartWidget : public QWidget {
@@ -60,15 +69,21 @@ class ChartWidget : public QWidget {
 
 public:
     explicit ChartWidget(QWidget* parent = nullptr);
-    ~ChartWidget() = default;
+    virtual ~ChartWidget() = default;
 
-    void setConfig(const ChartConfig& config);
+    virtual void setConfig(const ChartConfig& config);
     ChartConfig config() const { return m_config; }
 
     void setSpreadsheet(std::shared_ptr<Spreadsheet> sheet);
-    void loadDataFromRange(const QString& range);
-    void refreshData();
-    void startEntryAnimation();
+    virtual void loadDataFromRange(const QString& range);
+    virtual void refreshData();
+    virtual void startEntryAnimation();
+    virtual void updateOverlayPosition() {}  // For native backend overlay repositioning
+
+    // Lazy loading: defer data loading until chart is visible
+    void setLazyLoad(bool enabled) { m_lazyLoad = enabled; }
+    bool hasLazyPending() const { return !m_pendingDataRange.isEmpty(); }
+    void loadPendingData();
 
     // Auto-generate chart titles from data range headers (only fills empty fields)
     static void autoGenerateTitles(ChartConfig& config, std::shared_ptr<Spreadsheet> sheet);
@@ -101,6 +116,21 @@ protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
+protected:
+    // Accessible to subclasses (e.g. NativeChartWidget)
+    void drawSelectionHandles(QPainter& p);
+
+    ChartConfig m_config;
+    std::shared_ptr<Spreadsheet> m_spreadsheet;
+    bool m_selected = false;
+    bool m_lazyLoad = false;
+    QString m_pendingDataRange;
+
+    static constexpr int HANDLE_SIZE = 8;
+    static constexpr int TITLE_HEIGHT = 30;
+    static constexpr int LEGEND_HEIGHT = 25;
+    static constexpr int AXIS_MARGIN = 50;
+
 private:
     // Rendering methods
     void drawChartBackground(QPainter& p, const QRect& area);
@@ -108,7 +138,6 @@ private:
     void drawAxes(QPainter& p, const QRect& plotArea);
     void drawGridLines(QPainter& p, const QRect& plotArea);
     void drawLegend(QPainter& p, const QRect& area);
-    void drawSelectionHandles(QPainter& p);
 
     // Chart-type specific rendering
     void drawLineChart(QPainter& p, const QRect& plotArea);
@@ -134,26 +163,17 @@ private:
     QVector<LegendItem> m_legendItems;
     int legendHitTest(const QPoint& pos) const;
 
-    ChartConfig m_config;
-    std::shared_ptr<Spreadsheet> m_spreadsheet;
-
     // Entry animation
     QVariantAnimation* m_entryAnim = nullptr;
     double m_animProgress = 1.0;
 
     // Interaction state
-    bool m_selected = false;
     bool m_dragging = false;
     bool m_resizing = false;
     ResizeHandle m_activeHandle = None;
     QPoint m_dragStart;
     QPoint m_dragOffset;
     QRect m_resizeStartGeometry;
-
-    static constexpr int HANDLE_SIZE = 8;
-    static constexpr int TITLE_HEIGHT = 30;
-    static constexpr int LEGEND_HEIGHT = 25;
-    static constexpr int AXIS_MARGIN = 50;
 };
 
 #endif // CHARTWIDGET_H

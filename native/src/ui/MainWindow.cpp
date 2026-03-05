@@ -15,6 +15,9 @@
 #include "DataValidationDialog.h"
 #include "ChatPanel.h"
 #include "ChartWidget.h"
+#ifdef HAS_DATA2APP
+#include "NativeChartWidget.h"
+#endif
 #include "ShapeWidget.h"
 #include "ChartDialog.h"
 #include "ShapePropertiesDialog.h"
@@ -64,6 +67,18 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
     setWindowTitle("NexelBI");
     setGeometry(100, 100, 1280, 800);
+
+#ifdef HAS_DATA2APP
+    // Load chart backend preference (Data2App available)
+    QSettings settings("Nexel", "Nexel");
+    int backendVal = settings.value("chartBackend", static_cast<int>(ChartBackend::Data2App)).toInt();
+    m_chartBackend = (backendVal == static_cast<int>(ChartBackend::QtPainter))
+        ? ChartBackend::QtPainter : ChartBackend::Data2App;
+#else
+    QSettings settings("Nexel", "Nexel");
+    m_chartBackend = ChartBackend::QtPainter;
+#endif
+    m_lazyLoadCharts = settings.value("lazyLoadCharts", false).toBool();
 
     // Initialize with one default sheet
     auto defaultSheet = std::make_shared<Spreadsheet>();
@@ -146,6 +161,15 @@ MainWindow::MainWindow(QWidget* parent)
     // Deselect charts/shapes when clicking on the spreadsheet
     m_spreadsheetView->viewport()->installEventFilter(this);
 
+    // Update native chart overlay positions when scrolling, and trigger lazy loading
+    auto updateChartOverlays = [this]() {
+        for (auto* chart : m_charts)
+            chart->updateOverlayPosition();
+        if (m_lazyLoadCharts) loadVisibleLazyCharts();
+    };
+    connect(m_spreadsheetView->verticalScrollBar(), &QScrollBar::valueChanged, this, updateChartOverlays);
+    connect(m_spreadsheetView->horizontalScrollBar(), &QScrollBar::valueChanged, this, updateChartOverlays);
+
     setAcceptDrops(true);
 
     // Global stylesheet is applied by ThemeManager::applyTheme() from main.cpp
@@ -203,6 +227,7 @@ void MainWindow::onSheetTabChanged(int index) {
 void MainWindow::switchToSheet(int index) {
     if (index < 0 || index >= static_cast<int>(m_sheets.size())) return;
     m_activeSheetIndex = index;
+    m_spreadsheetView->clearChartRangeHighlight();
     m_spreadsheetView->setSpreadsheet(m_sheets[index]);
     m_toolbar->setDocumentTheme(&m_sheets[index]->getDocumentTheme());
     m_spreadsheetView->refreshView();
@@ -226,6 +251,9 @@ void MainWindow::switchToSheet(int index) {
         img->setVisible(img->property("sheetIndex").toInt() == index);
     }
     applyZOrder();
+
+    // Load any lazy-pending charts that are now visible on this sheet
+    if (m_lazyLoadCharts) loadVisibleLazyCharts();
 
     // Update macro engine's spreadsheet reference
     if (m_macroEngine) {
@@ -256,6 +284,7 @@ void MainWindow::onSheetTabDoubleClicked(int index) {
     if (ok && !newName.isEmpty()) {
         m_sheetTabBar->setTabText(index, newName);
         m_sheets[index]->setSheetName(newName);
+        setDirty();
     }
 }
 
@@ -366,6 +395,7 @@ void MainWindow::onDuplicateSheet() {
     m_sheets.insert(m_sheets.begin() + idx + 1, copy);
     m_sheetTabBar->insertTab(idx + 1, copy->getSheetName());
     m_sheetTabBar->setCurrentIndex(idx + 1);
+    setDirty();
     statusBar()->showMessage("Duplicated sheet");
 }
 
@@ -611,6 +641,29 @@ void MainWindow::createMenuBar() {
                          QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_M));
     toolsMenu->addAction("Run &Last Macro", this, &MainWindow::onRunLastMacro,
                          QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_M));
+
+#ifdef HAS_DATA2APP
+    toolsMenu->addSeparator();
+    m_nativeChartAction = toolsMenu->addAction("Use Qt Charts (Legacy)");
+    m_nativeChartAction->setCheckable(true);
+    m_nativeChartAction->setChecked(m_chartBackend == ChartBackend::QtPainter);
+    connect(m_nativeChartAction, &QAction::toggled, this, [this](bool checked) {
+        m_chartBackend = checked ? ChartBackend::QtPainter : ChartBackend::Data2App;
+        QSettings settings("Nexel", "Nexel");
+        settings.setValue("chartBackend", static_cast<int>(m_chartBackend));
+    });
+#endif
+
+    toolsMenu->addSeparator();
+    auto* lazyAction = toolsMenu->addAction("Lazy Load Charts");
+    lazyAction->setCheckable(true);
+    lazyAction->setChecked(m_lazyLoadCharts);
+    connect(lazyAction, &QAction::toggled, this, [this](bool checked) {
+        m_lazyLoadCharts = checked;
+        QSettings settings("Nexel", "Nexel");
+        settings.setValue("lazyLoadCharts", checked);
+        if (!checked) loadVisibleLazyCharts();  // load any pending charts immediately
+    });
 }
 
 void MainWindow::createToolBar() {}
@@ -985,8 +1038,9 @@ void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& f
             int si = imported.sheetIndex;
             if (si < 0 || si >= static_cast<int>(m_sheets.size())) continue;
 
-            auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+            auto* chart = createChartWidget(m_spreadsheetView->viewport());
             chart->setSpreadsheet(m_sheets[si]);
+            chart->setLazyLoad(m_lazyLoadCharts);
 
             if (imported.isNexelNative && !imported.dataRange.isEmpty()) {
                 // Nexel-native chart: restore from dataRange
@@ -1028,6 +1082,8 @@ void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& f
             connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
             connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
             connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
+            connect(chart, &ChartWidget::chartMoved, this, [this]() { setDirty(); });
+            connect(chart, &ChartWidget::chartResized, this, [this]() { setDirty(); });
 
             chart->setProperty("sheetIndex", si);
             chart->setVisible(si == m_activeSheetIndex);
@@ -1039,6 +1095,9 @@ void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& f
             addOverlay(chart);
         }
         applyZOrder();
+
+        // Immediately load any lazy charts that are already visible
+        if (m_lazyLoadCharts) loadVisibleLazyCharts();
 
         m_currentFilePath = fileName;
         m_dirty = false;
@@ -2169,7 +2228,7 @@ void MainWindow::onInsertChart() {
         // Auto-generate titles from data headers if not specified
         ChartWidget::autoGenerateTitles(config, m_sheets[m_activeSheetIndex]);
 
-        auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+        auto* chart = createChartWidget(m_spreadsheetView->viewport());
         chart->setSpreadsheet(m_sheets[m_activeSheetIndex]);
         chart->setConfig(config);
 
@@ -2188,6 +2247,8 @@ void MainWindow::onInsertChart() {
         connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
         connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
         connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
+        connect(chart, &ChartWidget::chartMoved, this, [this]() { setDirty(); });
+        connect(chart, &ChartWidget::chartResized, this, [this]() { setDirty(); });
 
         chart->setProperty("sheetIndex", m_activeSheetIndex);
         chart->show();
@@ -2217,6 +2278,7 @@ void MainWindow::onInsertShape() {
 
         connect(shape, &ShapeWidget::editRequested, this, &MainWindow::onEditShape);
         connect(shape, &ShapeWidget::deleteRequested, this, &MainWindow::onDeleteShape);
+        connect(shape, &ShapeWidget::shapeMoved, this, [this]() { setDirty(); });
         connect(shape, &ShapeWidget::shapeSelected, this, [this](ShapeWidget* s) {
             int si = s->property("sheetIndex").toInt();
             bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
@@ -2348,6 +2410,7 @@ void MainWindow::onInsertImage() {
 
     connect(image, &ImageWidget::editRequested, this, &MainWindow::onEditImage);
     connect(image, &ImageWidget::deleteRequested, this, &MainWindow::onDeleteImage);
+    connect(image, &ImageWidget::imageMoved, this, [this]() { setDirty(); });
     connect(image, &ImageWidget::imageSelected, this, [this](ImageWidget* img) {
         int si = img->property("sheetIndex").toInt();
         bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
@@ -2790,7 +2853,7 @@ void MainWindow::insertChartFromChat(const QJsonObject& params) {
     // Auto-generate titles from data headers if not specified
     ChartWidget::autoGenerateTitles(config, m_sheets[m_activeSheetIndex]);
 
-    auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+    auto* chart = createChartWidget(m_spreadsheetView->viewport());
     chart->setSpreadsheet(m_sheets[m_activeSheetIndex]);
     chart->setConfig(config);
 
@@ -2807,12 +2870,15 @@ void MainWindow::insertChartFromChat(const QJsonObject& params) {
     connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
     connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
     connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
+    connect(chart, &ChartWidget::chartMoved, this, [this]() { setDirty(); });
+    connect(chart, &ChartWidget::chartResized, this, [this]() { setDirty(); });
 
     chart->setProperty("sheetIndex", m_activeSheetIndex);
     chart->show();
     m_charts.append(chart);
     addOverlay(chart);
     applyZOrder();
+    setDirty();
 }
 
 void MainWindow::insertShapeFromChat(const QJsonObject& params) {
@@ -2908,6 +2974,7 @@ void MainWindow::insertImageFromChat(const QJsonObject& params) {
 
     connect(image, &ImageWidget::editRequested, this, &MainWindow::onEditImage);
     connect(image, &ImageWidget::deleteRequested, this, &MainWindow::onDeleteImage);
+    connect(image, &ImageWidget::imageMoved, this, [this]() { setDirty(); });
     connect(image, &ImageWidget::imageSelected, this, [this](ImageWidget* img) {
         int si = img->property("sheetIndex").toInt();
         bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
@@ -3010,7 +3077,7 @@ void MainWindow::onCreatePivotTable() {
             int endCol = result.numRowHeaderColumns + static_cast<int>(result.columnLabels.size()) - 1;
             chartCfg.dataRange = CellRange(headerRow, 0, endRow, endCol).toString();
 
-            auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+            auto* chart = createChartWidget(m_spreadsheetView->viewport());
             chart->setSpreadsheet(pivotSheet);
             chart->setConfig(chartCfg);
             chart->loadDataFromRange(chartCfg.dataRange);
@@ -3022,6 +3089,8 @@ void MainWindow::onCreatePivotTable() {
             connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
             connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
             connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
+            connect(chart, &ChartWidget::chartMoved, this, [this]() { setDirty(); });
+            connect(chart, &ChartWidget::chartResized, this, [this]() { setDirty(); });
 
             chart->setProperty("sheetIndex", pivotSheetIdx);
             chart->show();
@@ -3092,8 +3161,9 @@ void MainWindow::applyTemplate(const TemplateResult& result) {
                        ? result.chartSheetIndices[i] : 0;
         if (sheetIdx >= static_cast<int>(m_sheets.size())) continue;
 
-        auto* chart = new ChartWidget(m_spreadsheetView->viewport());
+        auto* chart = createChartWidget(m_spreadsheetView->viewport());
         chart->setSpreadsheet(m_sheets[sheetIdx]);
+        chart->setLazyLoad(m_lazyLoadCharts);
         chart->setConfig(result.charts[i]);
 
         if (!result.charts[i].dataRange.isEmpty()) {
@@ -3108,6 +3178,8 @@ void MainWindow::applyTemplate(const TemplateResult& result) {
         connect(chart, &ChartWidget::deleteRequested, this, &MainWindow::onDeleteChart);
         connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
         connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
+        connect(chart, &ChartWidget::chartMoved, this, [this]() { setDirty(); });
+        connect(chart, &ChartWidget::chartResized, this, [this]() { setDirty(); });
 
         chart->setProperty("sheetIndex", sheetIdx);
         chart->setVisible(sheetIdx == m_activeSheetIndex);
@@ -3121,4 +3193,24 @@ void MainWindow::applyTemplate(const TemplateResult& result) {
     applyZOrder();
 
     statusBar()->showMessage("Template applied: " + result.sheets[0]->getSheetName());
+}
+
+ChartWidget* MainWindow::createChartWidget(QWidget* parent) {
+#ifdef HAS_DATA2APP
+    if (m_chartBackend == ChartBackend::Data2App)
+        return new NativeChartWidget(parent);
+#endif
+    return new ChartWidget(parent);
+}
+
+void MainWindow::loadVisibleLazyCharts() {
+    QRect viewport = m_spreadsheetView->viewport()->rect();
+    for (auto* chart : m_charts) {
+        if (!chart->hasLazyPending()) continue;
+        if (chart->property("sheetIndex").toInt() != m_activeSheetIndex) continue;
+        // Check if chart geometry intersects the visible viewport
+        if (viewport.intersects(chart->geometry())) {
+            chart->loadPendingData();
+        }
+    }
 }

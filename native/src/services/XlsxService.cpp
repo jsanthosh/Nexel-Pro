@@ -185,11 +185,13 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
         }
     }
 
-    // Load Nexel-native chart configs if present
+    // Load Nexel-native chart configs if present — these are the authoritative
+    // source, so they replace any Excel chart entries parsed above.
     QByteArray nexelChartsData = zip.fileData("xl/nexel-charts.json");
     if (!nexelChartsData.isEmpty()) {
         QJsonDocument doc = QJsonDocument::fromJson(nexelChartsData);
-        if (doc.isArray()) {
+        if (doc.isArray() && !doc.array().isEmpty()) {
+            result.charts.clear();  // drop Excel chart duplicates
             for (const auto& val : doc.array()) {
                 QJsonObject obj = val.toObject();
                 ImportedChart chart;

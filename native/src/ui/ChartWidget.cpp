@@ -148,8 +148,23 @@ void ChartWidget::startEntryAnimation() {
     m_entryAnim->start();
 }
 
+void ChartWidget::loadPendingData() {
+    if (m_pendingDataRange.isEmpty()) return;
+    QString range = m_pendingDataRange;
+    m_pendingDataRange.clear();
+    m_lazyLoad = false;  // disable so loadDataFromRange proceeds; stays off since data is now loaded
+    loadDataFromRange(range);
+}
+
 void ChartWidget::loadDataFromRange(const QString& range) {
     if (!m_spreadsheet || range.isEmpty()) return;
+
+    // If lazy load is enabled, defer loading until chart is visible
+    if (m_lazyLoad) {
+        m_pendingDataRange = range;
+        m_config.dataRange = range;
+        return;
+    }
 
     m_config.dataRange = range;
     m_config.series.clear();
@@ -183,6 +198,8 @@ void ChartWidget::loadDataFromRange(const QString& range) {
         xValues.append(ok ? num : static_cast<double>(r - startRow));
         categories.append(text);
     }
+
+    m_config.categoryLabels = categories;
 
     // Each remaining column becomes a series
     for (int c = startCol + 1; c <= endCol; ++c) {
@@ -233,6 +250,7 @@ void ChartWidget::refreshData() {
 
     auto colors = getThemeColors();
     QVector<double> xValues;
+    QStringList categories;
 
     for (int r = startRow + 1; r <= endRow; ++r) {
         auto val = m_spreadsheet->getCellValue(CellAddress(r, startCol));
@@ -240,7 +258,10 @@ void ChartWidget::refreshData() {
         bool ok;
         double num = text.toDouble(&ok);
         xValues.append(ok ? num : static_cast<double>(r - startRow));
+        categories.append(text);
     }
+
+    m_config.categoryLabels = categories;
 
     for (int c = startCol + 1; c <= endCol; ++c) {
         ChartSeries series;

@@ -5,6 +5,10 @@ project(NativeSpreadsheet
     HOMEPAGE_URL "https://spreadsheet.local"
     DESCRIPTION "High-performance native spreadsheet application")
 
+if(APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
+
 # C++ Standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -145,6 +149,48 @@ set(UI_SOURCES
     src/ui/Theme.h
 )
 
+# Data2App ChartView (optional, macOS only — auto-detected)
+set(CHARTVIEW_SOURCES "")
+set(HAS_DATA2APP FALSE)
+if(APPLE)
+    set(CHARTVIEW_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../data2app_chartview_demo")
+    set(CHARTVIEW_EXTERNAL_DIR "${CHARTVIEW_DIR}/external")
+    if(EXISTS "${CHARTVIEW_DIR}/source/ChartView.mm")
+        list(APPEND CMAKE_PREFIX_PATH
+            "${CHARTVIEW_EXTERNAL_DIR}/boost"
+            "${CHARTVIEW_EXTERNAL_DIR}/rapidjson"
+            "${CHARTVIEW_EXTERNAL_DIR}/skia"
+            "${CHARTVIEW_EXTERNAL_DIR}/data2pixels"
+            "${CHARTVIEW_EXTERNAL_DIR}/pixels2canvas"
+            "${CHARTVIEW_EXTERNAL_DIR}/data2chart"
+        )
+        find_package(Boost         1.82.0  CONFIG QUIET EXACT)
+        find_package(RapidJSON     1.1.0   CONFIG QUIET EXACT)
+        find_package(Skia          118.0.0 CONFIG QUIET EXACT)
+        find_package(Data2Pixels   1.0.0   CONFIG QUIET EXACT)
+        find_package(Pixels2Canvas 1.0.0   CONFIG QUIET EXACT)
+        find_package(Data2Chart    1.0.0   CONFIG QUIET EXACT)
+
+        if(Boost_FOUND AND RapidJSON_FOUND AND Skia_FOUND
+           AND Data2Pixels_FOUND AND Pixels2Canvas_FOUND AND Data2Chart_FOUND)
+            set(HAS_DATA2APP TRUE)
+            message(STATUS "Data2App ChartView: ENABLED (Metal+Skia rendering)")
+            set(CHARTVIEW_SOURCES
+                src/ui/NativeChartWidget.mm
+                ${CHARTVIEW_DIR}/source/ChartView.mm
+                ${CHARTVIEW_DIR}/source/MetalView.mm
+                ${CHARTVIEW_DIR}/source/ChartManager.cpp
+                ${CHARTVIEW_DIR}/source/Chart.cpp
+                ${CHARTVIEW_DIR}/source/Utils.cpp
+            )
+        else()
+            message(STATUS "Data2App ChartView: DISABLED (missing dependencies)")
+        endif()
+    else()
+        message(STATUS "Data2App ChartView: DISABLED (not found)")
+    endif()
+endif()
+
 # Main Application
 set(APP_SOURCES
     src/main.cpp
@@ -157,6 +203,7 @@ add_executable(NativeSpreadsheet
     ${DATABASE_SOURCES}
     ${SERVICES_SOURCES}
     ${UI_SOURCES}
+    ${CHARTVIEW_SOURCES}
     resources/resources.qrc
 )
 
@@ -200,6 +247,52 @@ if(APPLE)
         INSTALL_RPATH "@executable_path/../Frameworks"
         BUILD_RPATH_USE_ORIGIN ON
     )
+
+    # ── Data2App ChartView (only if detected) ──
+    if(HAS_DATA2APP)
+        target_include_directories(NativeSpreadsheet PRIVATE
+            "${CHARTVIEW_DIR}/include"
+            "${CHARTVIEW_DIR}/source"
+        )
+
+        target_link_libraries(NativeSpreadsheet
+            Boost::headers
+            RapidJSON
+            skia::skia skia::skparagraph skia::skshaper skia::skunicode skia::svg
+            data2pixels::data2pixels
+            pixels2canvas::pixels2canvas
+            data2chart::data2chart
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework Cocoa"
+            "-framework Foundation"
+            "-framework QuartzCore"
+            "-framework CoreGraphics"
+            "-framework CoreText"
+            "-framework CoreFoundation"
+            "-framework CoreServices"
+            "-framework UniformTypeIdentifiers"
+        )
+
+        target_compile_definitions(NativeSpreadsheet PRIVATE
+            HAS_DATA2APP
+            P2C_BUILD_FOR_MACOS
+            P2C_USE_SKIA_ENGINE
+            P2C_USE_METAL_BACKEND
+            D2C_USE_SKIA_ENGINE
+        )
+
+        # Compile Data2App .cpp and .mm files as Obj-C++
+        set_source_files_properties(
+            src/ui/NativeChartWidget.mm
+            ${CHARTVIEW_DIR}/source/ChartView.mm
+            ${CHARTVIEW_DIR}/source/MetalView.mm
+            ${CHARTVIEW_DIR}/source/ChartManager.cpp
+            ${CHARTVIEW_DIR}/source/Chart.cpp
+            ${CHARTVIEW_DIR}/source/Utils.cpp
+            PROPERTIES COMPILE_FLAGS "-x objective-c++"
+        )
+    endif()
 endif()
 
 # Windows specific settings
