@@ -964,6 +964,15 @@ void SpreadsheetView::applyTableStyle(int themeIndex) {
         table.columnNames.append(name);
     }
 
+    // Remove any existing table that overlaps this range before adding the new one
+    const auto& existing = m_spreadsheet->getTables();
+    for (const auto& t : existing) {
+        if (t.range.intersects(table.range)) {
+            m_spreadsheet->removeTable(t.name);
+            break;
+        }
+    }
+
     m_spreadsheet->addTable(table);
     refreshView();
 }
