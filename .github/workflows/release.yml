@@ -322,14 +322,14 @@ jobs:
             | Windows (64-bit) | `Nexel-${{ github.ref_name }}-Windows-x64.zip` |
             | Linux (64-bit) | `Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage` |
 
-            ### What's New in v5.2.0
-            - **Data2App Metal Charts (macOS)**: Optional Metal/Skia chart rendering via Data2App — auto-detected at build time, falls back to Qt painter
-            - **Chart Auto-Detect**: Click any cell and insert chart — automatically detects the full data table range
-            - **XLSX Chart Import Fix**: Excel charts now import with live data ranges instead of showing blank
-            - **Lazy Chart Loading**: Optional toggle in Tools menu to defer chart data loading until visible (for large files)
-            - **Dirty State Tracking**: Chart/shape/image move/resize, sheet rename/duplicate now prompt to save on close
-            - **11 Bug Fixes**: Malformed JSON from hidden series, timer double-fire, multi-monitor coordinates, NaN/Inf data handling, and more
-            - **Chart Range Highlight**: No longer persists when switching sheets
+            ### What's New in v5.3.0
+            - **Interactive Pivot Report Filters**: Excel-style dropdown filters on pivot tables — select/deselect values and the pivot recomputes live
+            - **XLSX Export Fix**: Fixed NaN/Infinity values causing Excel "repair content" error on open
+            - **Chart Label Centering**: X-axis category labels now centered under each bar group
+            - **Auto-Filter State Fix**: Filter dropdown icons no longer persist when switching sheets
+            - **XLSX Compatibility**: Added dimension element, moved custom metadata to docMetadata/ folder, fixed shared string count
+            - **Pivot Chart Fix**: Grand Total columns excluded from chart data range
+            - **Pivot Filter Dialog**: Enhanced with field reordering, drag-and-drop support
           files: |
             artifacts/**/*
           draft: false
