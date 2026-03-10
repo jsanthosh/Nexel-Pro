@@ -358,6 +358,12 @@ void NativeChartWidget::updateNativeConfiguration()
 
     std::string json = chartConfigToJson(m_config);
 
+    qDebug() << "[NativeChart] updateNativeConfiguration:"
+             << "categoryLabels=" << m_config.categoryLabels.size()
+             << (m_config.categoryLabels.isEmpty() ? "(EMPTY - using xValues fallback)" : m_config.categoryLabels.join(", "))
+             << "series=" << m_config.series.size()
+             << "dataRange=" << m_config.dataRange;
+
     // Defer config push to allow the NSView to be properly attached.
     connect(m_configPushTimer, &QTimer::timeout, this, [this, json]() {
         if (!m_nativeChartView) return;

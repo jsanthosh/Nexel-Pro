@@ -523,18 +523,21 @@ void ChartWidget::drawAxes(QPainter& p, const QRect& plotArea) {
                    Qt::AlignRight | Qt::AlignVCenter, label);
     }
 
-    // X axis category labels
+    // X axis category labels — centered under each bar group
     if (!m_config.series.isEmpty() && !m_config.series[0].xValues.isEmpty()) {
         int n = m_config.series[0].xValues.size();
         int maxLabels = qMax(1, plotArea.width() / 50);
         int labelStep = qMax(1, n / maxLabels);
+        double groupWidth = static_cast<double>(plotArea.width()) / n;
 
         for (int i = 0; i < n; i += labelStep) {
-            double frac = (n > 1) ? static_cast<double>(i) / (n - 1) : 0.5;
-            int x = plotArea.left() + static_cast<int>(frac * plotArea.width());
+            int x = plotArea.left() + static_cast<int>(i * groupWidth + groupWidth / 2);
             p.drawLine(x, plotArea.bottom(), x, plotArea.bottom() + 4);
-            p.drawText(QRect(x - 25, plotArea.bottom() + 5, 50, 16),
-                       Qt::AlignCenter, QString::number(i + 1));
+            QString label = (i < m_config.categoryLabels.size())
+                            ? m_config.categoryLabels[i]
+                            : QString::number(i + 1);
+            p.drawText(QRect(x - 35, plotArea.bottom() + 5, 70, 16),
+                       Qt::AlignCenter, label);
         }
     }
 

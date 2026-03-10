@@ -68,7 +68,8 @@ private:
     // Export helpers
     static QString columnIndexToLetter(int col);
     static QByteArray generateContentTypes(int sheetCount, bool hasSharedStrings,
-                                             int chartCount, const std::vector<int>& drawingSheetNums);
+                                             int chartCount, const std::vector<int>& drawingSheetNums,
+                                             bool hasCustomJson = false);
     static QByteArray generateRels();
     static QByteArray generateWorkbook(const std::vector<std::shared_ptr<Spreadsheet>>& sheets);
     static QByteArray generateWorkbookRels(int sheetCount, bool hasSharedStrings);

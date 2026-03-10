@@ -24,6 +24,7 @@ public:
                               QWidget* parent = nullptr);
 
     PivotConfig getConfig() const;
+    void loadConfig(const PivotConfig& config);
 
 private slots:
     void onAddRowField();

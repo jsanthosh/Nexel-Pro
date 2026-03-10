@@ -562,6 +562,7 @@ void MainWindow::createMenuBar() {
     dataMenu->addAction("&Data Validation...", this, &MainWindow::onDataValidation);
     dataMenu->addSeparator();
     dataMenu->addAction("Create &Pivot Table...", this, &MainWindow::onCreatePivotTable);
+    dataMenu->addAction("&Edit Pivot Table...", this, &MainWindow::onEditPivotTable);
     dataMenu->addAction("&Refresh Pivot Table", this, &MainWindow::onRefreshPivotTable,
                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
     dataMenu->addSeparator();
@@ -826,6 +827,7 @@ void MainWindow::connectSignals() {
     connect(m_chatPanel, &ChatPanel::executeActions, this, &MainWindow::onChatActions);
 
     connect(m_spreadsheetView, &SpreadsheetView::formatCellsRequested, this, &MainWindow::onFormatCells);
+    connect(m_spreadsheetView, &SpreadsheetView::pivotFilterChanged, this, &MainWindow::onPivotFilterChanged);
 
     connect(m_spreadsheetView, &SpreadsheetView::cellSelected,
             this, [this](int row, int col, const QString& content, const QString& address) {
@@ -3023,6 +3025,14 @@ void MainWindow::onCreatePivotTable() {
     CellRange sourceRange;
     if (!rangeStr.isEmpty()) {
         sourceRange = CellRange(rangeStr);
+        // Single cell selected — auto-detect the contiguous data region
+        if (sourceRange.isSingleCell()) {
+            CellRange detected = m_spreadsheetView->detectDataRegion(
+                sourceRange.getStart().row, sourceRange.getStart().col);
+            if (!detected.isSingleCell()) {
+                sourceRange = detected;
+            }
+        }
     } else {
         int maxRow = sheet->getMaxRow();
         int maxCol = sheet->getMaxColumn();
@@ -3070,12 +3080,25 @@ void MainWindow::onCreatePivotTable() {
             chartCfg.showLegend = true;
             chartCfg.showGridLines = true;
 
-            // Build chart data range from pivot output
-            int headerRow = result.dataStartRow - 1;
+            // Account for filter rows written at top of pivot sheet (all filter fields)
+            int filterRowOffset = static_cast<int>(config.filterFields.size());
+            if (filterRowOffset > 0) filterRowOffset++; // blank separator row
+
+            // Build chart data range from pivot output (exclude Grand Total column)
+            int headerRow = filterRowOffset + result.dataStartRow - 1;
             if (headerRow < 0) headerRow = 0;
             int endRow = headerRow + static_cast<int>(result.rowLabels.size());
-            int endCol = result.numRowHeaderColumns + static_cast<int>(result.columnLabels.size()) - 1;
+            int numDataCols = static_cast<int>(result.columnLabels.size());
+            if (config.showGrandTotalColumn)
+                numDataCols -= static_cast<int>(config.valueFields.size());
+            int endCol = result.numRowHeaderColumns + numDataCols - 1;
+            if (endCol < result.numRowHeaderColumns) endCol = result.numRowHeaderColumns;
             chartCfg.dataRange = CellRange(headerRow, 0, endRow, endCol).toString();
+
+            // Pre-populate category labels from pivot row labels
+            for (const auto& rowLabel : result.rowLabels) {
+                chartCfg.categoryLabels.append(rowLabel.empty() ? "" : rowLabel[0]);
+            }
 
             auto* chart = createChartWidget(m_spreadsheetView->viewport());
             chart->setSpreadsheet(pivotSheet);
@@ -3098,6 +3121,22 @@ void MainWindow::onCreatePivotTable() {
             m_charts.append(chart);
             addOverlay(chart);
             applyZOrder();
+        }
+
+        // Enable auto-filter on pivot output header row
+        {
+            // Account for filter rows (all filter fields are always written)
+            int filterRowOffset = static_cast<int>(config.filterFields.size());
+            if (filterRowOffset > 0) filterRowOffset++; // blank row after filter rows
+
+            // Header row is at filterRowOffset + (dataStartRow - 1)
+            // dataStartRow is the number of column header rows (typically 1)
+            int headerRow = filterRowOffset + result.dataStartRow - 1;
+            if (headerRow < 0) headerRow = 0;
+            int endRow = headerRow + static_cast<int>(result.rowLabels.size());
+            int endCol = result.numRowHeaderColumns + static_cast<int>(result.columnLabels.size()) - 1;
+            if (endCol < 0) endCol = 0;
+            m_spreadsheetView->enableAutoFilter(CellRange(headerRow, 0, endRow, endCol));
         }
 
         statusBar()->showMessage("Pivot table created on sheet: " + pivotSheet->getSheetName());
@@ -3133,6 +3172,293 @@ void MainWindow::onRefreshPivotTable() {
 
     m_spreadsheetView->setSpreadsheet(sheet); // refresh view
     statusBar()->showMessage("Pivot table refreshed");
+}
+
+void MainWindow::onPivotFilterChanged(int filterIndex, QStringList /*selectedValues*/) {
+    if (m_sheets.empty()) return;
+
+    auto sheet = m_sheets[m_activeSheetIndex];
+    const PivotConfig* existing = sheet->getPivotConfig();
+    if (!existing || filterIndex < 0
+        || filterIndex >= static_cast<int>(existing->filterFields.size()))
+        return;
+
+    int srcIdx = existing->sourceSheetIndex;
+    if (srcIdx < 0 || srcIdx >= static_cast<int>(m_sheets.size())) return;
+
+    auto sourceSheet = m_sheets[srcIdx];
+    const PivotFilterField& ff = existing->filterFields[filterIndex];
+
+    // Get all unique values for this filter field from the source
+    PivotEngine engine;
+    QStringList uniqueVals = engine.getUniqueValues(
+        sourceSheet, existing->sourceRange, ff.sourceColumnIndex);
+    if (uniqueVals.isEmpty()) return;
+
+    // Show value picker dialog
+    QDialog dlg(this);
+    dlg.setWindowTitle("Filter: " + ff.name);
+    dlg.setMinimumSize(280, 360);
+    dlg.setStyleSheet(ThemeManager::dialogStylesheet());
+
+    QVBoxLayout* layout = new QVBoxLayout(&dlg);
+    layout->addWidget(new QLabel("Select values to include:"));
+
+    // Search box
+    QLineEdit* searchBox = new QLineEdit();
+    searchBox->setPlaceholderText("Search...");
+    layout->addWidget(searchBox);
+
+    QListWidget* valList = new QListWidget();
+    valList->setUniformItemSizes(true);
+    for (const auto& val : uniqueVals) {
+        auto* item = new QListWidgetItem(val, valList);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        // Pre-check: if selectedValues is empty (= all) or contains this value
+        bool checked = ff.selectedValues.isEmpty()
+                       || ff.selectedValues.contains(val);
+        item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
+        item->setForeground(QColor("#1D2939"));
+    }
+    layout->addWidget(valList);
+
+    // Search filtering
+    connect(searchBox, &QLineEdit::textChanged, [valList](const QString& text) {
+        for (int i = 0; i < valList->count(); ++i) {
+            auto* item = valList->item(i);
+            item->setHidden(!text.isEmpty()
+                && !item->text().contains(text, Qt::CaseInsensitive));
+        }
+    });
+
+    // Select All / Clear buttons
+    QHBoxLayout* selBtnLayout = new QHBoxLayout();
+    auto* selectAllBtn = new QPushButton("Select All");
+    auto* selectNoneBtn = new QPushButton("Clear");
+    selBtnLayout->addWidget(selectAllBtn);
+    selBtnLayout->addWidget(selectNoneBtn);
+    selBtnLayout->addStretch();
+    layout->addLayout(selBtnLayout);
+
+    connect(selectAllBtn, &QPushButton::clicked, [valList]() {
+        for (int i = 0; i < valList->count(); ++i)
+            if (!valList->item(i)->isHidden())
+                valList->item(i)->setCheckState(Qt::Checked);
+    });
+    connect(selectNoneBtn, &QPushButton::clicked, [valList]() {
+        for (int i = 0; i < valList->count(); ++i)
+            if (!valList->item(i)->isHidden())
+                valList->item(i)->setCheckState(Qt::Unchecked);
+    });
+
+    QDialogButtonBox* btns = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    layout->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    // Collect selected values
+    QStringList selected;
+    for (int i = 0; i < valList->count(); ++i) {
+        if (valList->item(i)->checkState() == Qt::Checked)
+            selected.append(valList->item(i)->text());
+    }
+
+    // Build updated config
+    PivotConfig newConfig = *existing;
+    if (selected.size() == uniqueVals.size()) {
+        newConfig.filterFields[filterIndex].selectedValues.clear(); // all = no filter
+    } else {
+        newConfig.filterFields[filterIndex].selectedValues = selected;
+    }
+
+    // Recompute pivot
+    engine.setSource(sourceSheet, newConfig);
+    PivotResult result = engine.compute();
+
+    // Clear and rewrite pivot sheet
+    sheet->clearRange(CellRange(0, 0, sheet->getMaxRow() + 1, sheet->getMaxColumn() + 1));
+    engine.writeToSheet(sheet, result, newConfig);
+    sheet->setPivotConfig(std::make_unique<PivotConfig>(newConfig));
+
+    m_spreadsheetView->setSpreadsheet(sheet);
+
+    // Update chart if auto-chart is on
+    if (newConfig.autoChart && !result.rowLabels.empty()) {
+        // Remove existing charts on this sheet
+        for (int i = m_charts.size() - 1; i >= 0; --i) {
+            if (m_charts[i]->property("sheetIndex").toInt() == m_activeSheetIndex) {
+                removeOverlay(m_charts[i]);
+                m_charts[i]->deleteLater();
+                m_charts.removeAt(i);
+            }
+        }
+
+        ChartConfig chartCfg;
+        chartCfg.type = static_cast<ChartType>(newConfig.chartType);
+        chartCfg.title = newConfig.valueFields[0].displayName();
+        chartCfg.showLegend = true;
+        chartCfg.showGridLines = true;
+
+        int filterRowOffset = static_cast<int>(newConfig.filterFields.size());
+        if (filterRowOffset > 0) filterRowOffset++; // blank separator
+
+        int headerRow = filterRowOffset + result.dataStartRow - 1;
+        if (headerRow < 0) headerRow = 0;
+        int endRow = headerRow + static_cast<int>(result.rowLabels.size());
+        int numDataCols = static_cast<int>(result.columnLabels.size());
+        if (newConfig.showGrandTotalColumn)
+            numDataCols -= static_cast<int>(newConfig.valueFields.size());
+        int endCol = result.numRowHeaderColumns + numDataCols - 1;
+        if (endCol < result.numRowHeaderColumns) endCol = result.numRowHeaderColumns;
+        chartCfg.dataRange = CellRange(headerRow, 0, endRow, endCol).toString();
+
+        for (const auto& rowLabel : result.rowLabels)
+            chartCfg.categoryLabels.append(rowLabel.empty() ? "" : rowLabel[0]);
+
+        auto* chart = createChartWidget(m_spreadsheetView->viewport());
+        chart->setSpreadsheet(sheet);
+        chart->setConfig(chartCfg);
+        chart->loadDataFromRange(chartCfg.dataRange);
+
+        QRect viewRect = m_spreadsheetView->viewport()->rect();
+        chart->setGeometry(qMax(10, viewRect.width() / 2 - 50), 20, 420, 320);
+        chart->setProperty("sheetIndex", m_activeSheetIndex);
+        connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
+        connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
+        connect(chart, &ChartWidget::chartMoved, this, [this]() { setDirty(); });
+        connect(chart, &ChartWidget::chartResized, this, [this]() { setDirty(); });
+
+        chart->show();
+        chart->startEntryAnimation();
+        m_charts.append(chart);
+        addOverlay(chart);
+        applyZOrder();
+    }
+
+    // Re-enable auto-filter on pivot header row
+    {
+        int filterRowOffset = static_cast<int>(newConfig.filterFields.size());
+        if (filterRowOffset > 0) filterRowOffset++;
+        int hdrRow = filterRowOffset + result.dataStartRow - 1;
+        if (hdrRow < 0) hdrRow = 0;
+        int endRow = hdrRow + static_cast<int>(result.rowLabels.size());
+        int endCol = result.numRowHeaderColumns
+                     + static_cast<int>(result.columnLabels.size()) - 1;
+        if (endCol < 0) endCol = 0;
+        m_spreadsheetView->enableAutoFilter(CellRange(hdrRow, 0, endRow, endCol));
+    }
+
+    setDirty();
+    statusBar()->showMessage("Pivot filter updated");
+}
+
+void MainWindow::onEditPivotTable() {
+    if (m_sheets.empty()) return;
+
+    auto sheet = m_sheets[m_activeSheetIndex];
+    const PivotConfig* existing = sheet->getPivotConfig();
+    if (!existing) {
+        QMessageBox::information(this, "Edit Pivot Table",
+            "The current sheet is not a pivot table.");
+        return;
+    }
+
+    int srcIdx = existing->sourceSheetIndex;
+    if (srcIdx < 0 || srcIdx >= static_cast<int>(m_sheets.size())) {
+        QMessageBox::warning(this, "Edit Pivot Table",
+            "Source sheet no longer exists.");
+        return;
+    }
+
+    auto sourceSheet = m_sheets[srcIdx];
+    PivotTableDialog dialog(sourceSheet, existing->sourceRange, this);
+    dialog.setWindowTitle("Edit Pivot Table");
+    dialog.loadConfig(*existing);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        PivotConfig config = dialog.getConfig();
+        config.sourceSheetIndex = srcIdx;
+
+        if (config.valueFields.empty()) {
+            QMessageBox::warning(this, "Edit Pivot Table",
+                "Please add at least one value field.");
+            return;
+        }
+
+        PivotEngine engine;
+        engine.setSource(sourceSheet, config);
+        PivotResult result = engine.compute();
+
+        // Clear and rewrite the pivot sheet
+        sheet->clearRange(CellRange(0, 0, sheet->getMaxRow() + 1, sheet->getMaxColumn() + 1));
+        engine.writeToSheet(sheet, result, config);
+
+        // Update stored config
+        sheet->setPivotConfig(std::make_unique<PivotConfig>(config));
+
+        m_spreadsheetView->setSpreadsheet(sheet);
+
+        // Update chart if auto-chart is on
+        if (config.autoChart && !result.rowLabels.empty()) {
+            // Remove existing charts on this sheet
+            for (int i = m_charts.size() - 1; i >= 0; --i) {
+                if (m_charts[i]->property("sheetIndex").toInt() == m_activeSheetIndex) {
+                    removeOverlay(m_charts[i]);
+                    m_charts[i]->deleteLater();
+                    m_charts.removeAt(i);
+                }
+            }
+
+            ChartConfig chartCfg;
+            chartCfg.type = static_cast<ChartType>(config.chartType);
+            chartCfg.title = config.valueFields[0].displayName();
+            chartCfg.showLegend = true;
+            chartCfg.showGridLines = true;
+
+            // Account for filter rows (all filter fields are always written)
+            int filterRowOffset = static_cast<int>(config.filterFields.size());
+            if (filterRowOffset > 0) filterRowOffset++; // blank separator row
+
+            int headerRow = filterRowOffset + result.dataStartRow - 1;
+            if (headerRow < 0) headerRow = 0;
+            int endRow = headerRow + static_cast<int>(result.rowLabels.size());
+            int numDataCols = static_cast<int>(result.columnLabels.size());
+            if (config.showGrandTotalColumn)
+                numDataCols -= static_cast<int>(config.valueFields.size());
+            int endCol = result.numRowHeaderColumns + numDataCols - 1;
+            if (endCol < result.numRowHeaderColumns) endCol = result.numRowHeaderColumns;
+            chartCfg.dataRange = CellRange(headerRow, 0, endRow, endCol).toString();
+
+            // Pre-populate category labels from pivot row labels
+            for (const auto& rowLabel : result.rowLabels) {
+                chartCfg.categoryLabels.append(rowLabel.empty() ? "" : rowLabel[0]);
+            }
+
+            auto* chart = createChartWidget(m_spreadsheetView->viewport());
+            chart->setSpreadsheet(sheet);
+            chart->setConfig(chartCfg);
+            chart->loadDataFromRange(chartCfg.dataRange);
+
+            QRect viewRect = m_spreadsheetView->viewport()->rect();
+            chart->setGeometry(qMax(10, viewRect.width() / 2 - 50), 20, 420, 320);
+            chart->setProperty("sheetIndex", m_activeSheetIndex);
+            connect(chart, &ChartWidget::propertiesRequested, this, &MainWindow::onChartPropertiesRequested);
+            connect(chart, &ChartWidget::chartSelected, this, &MainWindow::onChartSelected);
+            connect(chart, &ChartWidget::chartMoved, this, [this]() { setDirty(); });
+            connect(chart, &ChartWidget::chartResized, this, [this]() { setDirty(); });
+
+            chart->show();
+            chart->startEntryAnimation();
+            m_charts.append(chart);
+            addOverlay(chart);
+            applyZOrder();
+        }
+
+        statusBar()->showMessage("Pivot table updated");
+    }
 }
 
 // ============== Template Gallery ==============

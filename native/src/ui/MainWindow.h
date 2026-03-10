@@ -124,7 +124,9 @@ private slots:
 
     // Pivot table
     void onCreatePivotTable();
+    void onEditPivotTable();
     void onRefreshPivotTable();
+    void onPivotFilterChanged(int filterIndex, QStringList selectedValues);
 
     // Templates
     void onTemplateGallery();

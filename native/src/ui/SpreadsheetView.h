@@ -123,6 +123,7 @@ public:
 
     // Auto Filter
     void toggleAutoFilter();
+    void enableAutoFilter(const CellRange& range);
     bool isFilterActive() const { return m_filterActive; }
     void clearAllFilters();
 
@@ -155,11 +156,15 @@ public:
     // Auto-detect contiguous data region from a cell
     CellRange detectDataRegion(int startRow, int startCol) const;
 
+    // Pivot report filter dropdown
+    void showPivotFilterDropdown(int filterIndex);
+
 signals:
     void cellSelected(int row, int col, const QString& content, const QString& address);
     void formatCellsRequested();
     void cellReferenceInserted(const QString& ref);
     void cellReferenceReplaced(const QString& newRef);
+    void pivotFilterChanged(int filterIndex, QStringList selectedValues);
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;

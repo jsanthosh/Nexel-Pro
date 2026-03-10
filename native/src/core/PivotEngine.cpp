@@ -317,16 +317,36 @@ void PivotEngine::writeToSheet(std::shared_ptr<Spreadsheet> targetSheet,
 
     int currentRow = 0;
 
-    // Write filter summary
+    // Write report filter rows (one per filter field, always shown)
     for (const auto& filter : config.filterFields) {
-        if (filter.selectedValues.isEmpty()) continue;
-        targetSheet->setCellValue(CellAddress(currentRow, 0), filter.name + ":");
-        auto cell = targetSheet->getCell(CellAddress(currentRow, 0));
-        CellStyle style = cell->getStyle();
-        style.bold = true;
-        cell->setStyle(style);
+        // Col 0: field name
+        targetSheet->setCellValue(CellAddress(currentRow, 0), filter.name);
+        {
+            auto cell = targetSheet->getCell(CellAddress(currentRow, 0));
+            CellStyle style = cell->getStyle();
+            style.bold = true;
+            style.backgroundColor = "#E8ECF0";
+            cell->setStyle(style);
+        }
 
-        targetSheet->setCellValue(CellAddress(currentRow, 1), filter.selectedValues.join(", "));
+        // Col 1: selection indicator with dropdown arrow
+        QString displayText;
+        if (filter.selectedValues.isEmpty()) {
+            displayText = QString::fromUtf8("(All)  \u25BC");
+        } else if (filter.selectedValues.size() == 1) {
+            displayText = filter.selectedValues[0] + QString::fromUtf8("  \u25BC");
+        } else {
+            displayText = QString("(Multiple Items)  %1").arg(QString::fromUtf8("\u25BC"));
+        }
+        targetSheet->setCellValue(CellAddress(currentRow, 1), displayText);
+        {
+            auto cell = targetSheet->getCell(CellAddress(currentRow, 1));
+            CellStyle style = cell->getStyle();
+            style.backgroundColor = "#D6E4F0";
+            style.foregroundColor = "#1D2939";
+            cell->setStyle(style);
+        }
+
         currentRow++;
     }
     bool hasFilterRows = currentRow > 0;

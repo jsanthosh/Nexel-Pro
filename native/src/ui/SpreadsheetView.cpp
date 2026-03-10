@@ -8,6 +8,7 @@
 #include "../core/MacroEngine.h"
 #include "../core/FillSeries.h"
 #include "../core/TableStyle.h"
+#include "../core/PivotEngine.h"
 #include "../services/DocumentService.h"
 #include <QHeaderView>
 #include <QKeyEvent>
@@ -51,6 +52,11 @@ void SpreadsheetView::setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet) {
     destroyFreezeViews();
     m_frozenRow = -1;
     m_frozenCol = -1;
+
+    // Clear auto-filter state from previous sheet
+    m_filterActive = false;
+    m_columnFilters.clear();
+    disconnect(horizontalHeader(), &QHeaderView::sectionClicked, this, nullptr);
 
     m_spreadsheet = spreadsheet;
 
@@ -975,6 +981,13 @@ void SpreadsheetView::applyTableStyle(int themeIndex) {
 
     m_spreadsheet->addTable(table);
     refreshView();
+
+    // Restore selection after model reset (resetModel clears Qt selection)
+    QModelIndex topLeft = m_model->index(minRow, minCol);
+    QModelIndex bottomRight = m_model->index(maxRow, maxCol);
+    selectionModel()->select(QItemSelection(topLeft, bottomRight),
+                             QItemSelectionModel::ClearAndSelect);
+    setCurrentIndex(topLeft);
 }
 
 // ============== Auto Filter ==============
@@ -998,6 +1011,49 @@ void SpreadsheetView::toggleAutoFilter() {
 
     // Connect horizontal header clicks to show filter dropdown
     // (Disconnect any previous connection first)
+    disconnect(horizontalHeader(), &QHeaderView::sectionClicked, this, nullptr);
+    connect(horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int logicalIndex) {
+        if (!m_filterActive) return;
+        int startCol = m_filterRange.getStart().col;
+        int endCol = m_filterRange.getEnd().col;
+        if (logicalIndex >= startCol && logicalIndex <= endCol) {
+            showFilterDropdown(logicalIndex);
+        }
+    });
+
+    viewport()->update();
+}
+
+void SpreadsheetView::showPivotFilterDropdown(int filterIndex) {
+    if (!m_spreadsheet || !m_spreadsheet->isPivotSheet()) return;
+    const PivotConfig* pc = m_spreadsheet->getPivotConfig();
+    if (!pc || filterIndex < 0 || filterIndex >= static_cast<int>(pc->filterFields.size()))
+        return;
+
+    const PivotFilterField& ff = pc->filterFields[filterIndex];
+
+    // Get unique values from the SOURCE sheet (not the pivot output)
+    // We need access to the source sheet — it's stored by index in the config
+    // The caller (MainWindow) will have connected us; for now we just need
+    // the source sheet. We'll use a PivotEngine to get unique values.
+    // Since we don't have the source sheets vector here, we emit the signal
+    // with the filter index and let MainWindow handle the heavy lifting.
+    // But we CAN show the dialog here using the stored config info.
+
+    // We need the source sheet — get it via a signal roundtrip would be complex.
+    // Instead, store a helper pointer. But the simplest approach: just emit
+    // a signal and let MainWindow show the dialog and recompute.
+    // However, for better UX let's emit the signal directly.
+    emit pivotFilterChanged(filterIndex, {});  // empty list = signal to show picker
+}
+
+void SpreadsheetView::enableAutoFilter(const CellRange& range) {
+    if (m_filterActive) clearAllFilters();
+    m_filterRange = range;
+    m_filterHeaderRow = range.getStart().row;
+    m_filterActive = true;
+    m_columnFilters.clear();
+
     disconnect(horizontalHeader(), &QHeaderView::sectionClicked, this, nullptr);
     connect(horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int logicalIndex) {
         if (!m_filterActive) return;
@@ -2551,6 +2607,20 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
                     event->accept();
                     return;
                 }
+            }
+        }
+    }
+
+    // Pivot report filter: clicking col 1 of a filter row opens value picker
+    if (m_spreadsheet && m_spreadsheet->isPivotSheet() && event->button() == Qt::LeftButton) {
+        const PivotConfig* pc = m_spreadsheet->getPivotConfig();
+        if (pc && !pc->filterFields.empty()) {
+            QModelIndex clickedIdx = indexAt(event->pos());
+            if (clickedIdx.isValid() && clickedIdx.column() == 1
+                && clickedIdx.row() < static_cast<int>(pc->filterFields.size())) {
+                showPivotFilterDropdown(clickedIdx.row());
+                event->accept();
+                return;
             }
         }
     }

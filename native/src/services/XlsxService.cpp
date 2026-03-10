@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <algorithm>
+#include <cmath>
 
 // Resolve a color string (theme or absolute) to "#RRGGBB" for XLSX export
 static QString resolveColorForExport(const QString& colorStr) {
@@ -136,7 +137,8 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
     }
 
     // Load Nexel-native metadata (picklist/checkbox definitions)
-    QByteArray nexelMetaData = zip.fileData("xl/nexel-metadata.json");
+    QByteArray nexelMetaData = zip.fileData("docMetadata/nexel-metadata.json");
+    if (nexelMetaData.isEmpty()) nexelMetaData = zip.fileData("xl/nexel-metadata.json"); // legacy
     if (!nexelMetaData.isEmpty()) {
         QJsonDocument metaDoc = QJsonDocument::fromJson(nexelMetaData);
         if (metaDoc.isObject()) {
@@ -169,6 +171,28 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
                     }
                 }
 
+                // Restore table styles
+                if (sheetObj.contains("tables")) {
+                    for (const auto& tblVal : sheetObj["tables"].toArray()) {
+                        QJsonObject tblObj = tblVal.toObject();
+                        SpreadsheetTable tbl;
+                        tbl.name = tblObj["name"].toString();
+                        tbl.range = CellRange(tblObj["range"].toString());
+                        tbl.hasHeaderRow = tblObj["hasHeaderRow"].toBool(true);
+                        tbl.bandedRows = tblObj["bandedRows"].toBool(true);
+                        for (const auto& cn : tblObj["columnNames"].toArray())
+                            tbl.columnNames.append(cn.toString());
+                        QJsonObject themeObj = tblObj["theme"].toObject();
+                        tbl.theme.name = themeObj["name"].toString();
+                        tbl.theme.headerBg = QColor(themeObj["headerBg"].toString());
+                        tbl.theme.headerFg = QColor(themeObj["headerFg"].toString());
+                        tbl.theme.bandedRow1 = QColor(themeObj["bandedRow1"].toString());
+                        tbl.theme.bandedRow2 = QColor(themeObj["bandedRow2"].toString());
+                        tbl.theme.borderColor = QColor(themeObj["borderColor"].toString());
+                        sheet->addTable(tbl);
+                    }
+                }
+
                 // Restore checkboxes
                 if (sheetObj.contains("checkboxes")) {
                     for (const auto& cbVal : sheetObj["checkboxes"].toArray()) {
@@ -187,7 +211,8 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
 
     // Load Nexel-native chart configs if present — these are the authoritative
     // source, so they replace any Excel chart entries parsed above.
-    QByteArray nexelChartsData = zip.fileData("xl/nexel-charts.json");
+    QByteArray nexelChartsData = zip.fileData("docMetadata/nexel-charts.json");
+    if (nexelChartsData.isEmpty()) nexelChartsData = zip.fileData("xl/nexel-charts.json"); // legacy
     if (!nexelChartsData.isEmpty()) {
         QJsonDocument doc = QJsonDocument::fromJson(nexelChartsData);
         if (doc.isArray() && !doc.array().isEmpty()) {
@@ -953,31 +978,12 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         });
     }
 
-    // Generate shared strings
+    // Collect shared strings from all sheets
     QStringList sharedStrings;
     std::map<QString, int> ssMap; // string -> index
-
-    // Generate sheet data
     std::vector<QByteArray> sheetXmls;
-    for (const auto& sheet : sheets) {
-        QStringList localSS;
-        QByteArray sheetXml = generateSheet(sheet.get(), styleIndexMap, localSS);
-        // Merge local shared strings into global
-        for (const auto& s : localSS) {
-            if (ssMap.find(s) == ssMap.end()) {
-                ssMap[s] = sharedStrings.size();
-                sharedStrings.append(s);
-            }
-        }
-        sheetXmls.push_back(sheetXml);
-    }
 
-    // Now regenerate sheets with correct shared string indices
-    sharedStrings.clear();
-    ssMap.clear();
-    sheetXmls.clear();
     for (const auto& sheet : sheets) {
-        // First pass: collect strings
         sheet->forEachCell([&](int, int, const Cell& cell) {
             if (cell.getType() == CellType::Text || cell.getType() == CellType::Empty) {
                 QString val = cell.getValue().toString();
@@ -1012,6 +1018,18 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         xml.writeStartElement("worksheet");
         xml.writeAttribute("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
         xml.writeAttribute("xmlns:r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+
+        // Dimension element (required by Excel for validation)
+        {
+            int dimMaxRow = sheet->getMaxRow();
+            int dimMaxCol = sheet->getMaxColumn();
+            if (dimMaxRow < 0) dimMaxRow = 0;
+            if (dimMaxCol < 0) dimMaxCol = 0;
+            QString dimRef = "A1:" + columnIndexToLetter(dimMaxCol) + QString::number(dimMaxRow + 1);
+            xml.writeStartElement("dimension");
+            xml.writeAttribute("ref", dimRef);
+            xml.writeEndElement();
+        }
 
         // Sheet views (gridline visibility)
         xml.writeStartElement("sheetViews");
@@ -1114,8 +1132,8 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                     // Determine if cached value is string (must set t= before child elements)
                     if (hasValue) {
                         bool ok;
-                        val.toDouble(&ok);
-                        if (!ok) {
+                        double d = val.toDouble(&ok);
+                        if (!ok || std::isnan(d) || std::isinf(d)) {
                             xml.writeAttribute("t", "str");
                         }
                     }
@@ -1124,7 +1142,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                     if (hasValue) {
                         bool ok;
                         double num = val.toDouble(&ok);
-                        if (ok) {
+                        if (ok && !std::isnan(num) && !std::isinf(num)) {
                             xml.writeTextElement("v", QString::number(num, 'g', 15));
                         } else {
                             xml.writeTextElement("v", val.toString());
@@ -1133,7 +1151,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                 } else if (hasValue) {
                     bool ok;
                     double num = val.toDouble(&ok);
-                    if (ok && cell->getType() == CellType::Number) {
+                    if (ok && !std::isnan(num) && !std::isinf(num) && cell->getType() == CellType::Number) {
                         xml.writeTextElement("v", QString::number(num, 'g', 15));
                     } else {
                         // Shared string reference
@@ -1202,12 +1220,28 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         }
     }
 
+    // Determine if we'll have custom JSON parts (for content type registration)
+    bool hasCustomJson = !charts.empty(); // nexel-charts.json
+    if (!hasCustomJson) {
+        for (const auto& sheet : sheets) {
+            if (!sheet->getValidationRules().empty() || !sheet->getTables().empty()) {
+                hasCustomJson = true;
+                break;
+            }
+            bool hasCheckbox = false;
+            sheet->forEachCell([&](int, int, const Cell& cell) {
+                if (cell.getStyle().numberFormat == "Checkbox") hasCheckbox = true;
+            });
+            if (hasCheckbox) { hasCustomJson = true; break; }
+        }
+    }
+
     QZipWriter zip(filePath);
     if (zip.status() != QZipWriter::NoError) return false;
 
     zip.addFile("[Content_Types].xml",
                 generateContentTypes(sheetCount, !sharedStrings.isEmpty(),
-                                     totalChartCount, drawingSheetNums));
+                                     totalChartCount, drawingSheetNums, hasCustomJson));
     zip.addFile("_rels/.rels", generateRels());
     zip.addFile("xl/workbook.xml", generateWorkbook(sheets));
     zip.addFile("xl/_rels/workbook.xml.rels", generateWorkbookRels(sheetCount, !sharedStrings.isEmpty()));
@@ -1271,7 +1305,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             chartsArray.append(obj);
         }
         QJsonDocument doc(chartsArray);
-        zip.addFile("xl/nexel-charts.json", doc.toJson(QJsonDocument::Compact));
+        zip.addFile("docMetadata/nexel-charts.json", doc.toJson(QJsonDocument::Compact));
     }
 
     // Save Nexel-native metadata (picklist/checkbox definitions)
@@ -1314,14 +1348,41 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             });
             if (!checkboxCells.isEmpty()) sheetObj["checkboxes"] = checkboxCells;
 
-            if (sheetObj.contains("picklists") || sheetObj.contains("checkboxes")) {
+            // Table styles
+            const auto& tables = sheet->getTables();
+            if (!tables.empty()) {
+                QJsonArray tablesArray;
+                for (const auto& tbl : tables) {
+                    QJsonObject tblObj;
+                    tblObj["name"] = tbl.name;
+                    tblObj["range"] = tbl.range.toString();
+                    tblObj["hasHeaderRow"] = tbl.hasHeaderRow;
+                    tblObj["bandedRows"] = tbl.bandedRows;
+                    QJsonArray colNames;
+                    for (const auto& cn : tbl.columnNames) colNames.append(cn);
+                    tblObj["columnNames"] = colNames;
+                    // Theme
+                    QJsonObject themeObj;
+                    themeObj["name"] = tbl.theme.name;
+                    themeObj["headerBg"] = tbl.theme.headerBg.name();
+                    themeObj["headerFg"] = tbl.theme.headerFg.name();
+                    themeObj["bandedRow1"] = tbl.theme.bandedRow1.name();
+                    themeObj["bandedRow2"] = tbl.theme.bandedRow2.name();
+                    themeObj["borderColor"] = tbl.theme.borderColor.name();
+                    tblObj["theme"] = themeObj;
+                    tablesArray.append(tblObj);
+                }
+                sheetObj["tables"] = tablesArray;
+            }
+
+            if (sheetObj.contains("picklists") || sheetObj.contains("checkboxes") || sheetObj.contains("tables")) {
                 sheetsArray.append(sheetObj);
             }
         }
         if (!sheetsArray.isEmpty()) {
             metadata["sheets"] = sheetsArray;
             QJsonDocument metaDoc(metadata);
-            zip.addFile("xl/nexel-metadata.json", metaDoc.toJson(QJsonDocument::Compact));
+            zip.addFile("docMetadata/nexel-metadata.json", metaDoc.toJson(QJsonDocument::Compact));
         }
     }
 
@@ -1330,7 +1391,8 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 }
 
 QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrings,
-                                               int chartCount, const std::vector<int>& drawingSheetNums) {
+                                               int chartCount, const std::vector<int>& drawingSheetNums,
+                                               bool hasCustomJson) {
     QByteArray data;
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
@@ -1350,11 +1412,13 @@ QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrin
     xml.writeAttribute("ContentType", "application/xml");
     xml.writeEndElement();
 
-    // Always register JSON content type (used by nexel-metadata.json and/or nexel-charts.json)
-    xml.writeStartElement("Default");
-    xml.writeAttribute("Extension", "json");
-    xml.writeAttribute("ContentType", "application/json");
-    xml.writeEndElement();
+    // Register JSON content type only when custom JSON parts are included
+    if (hasCustomJson) {
+        xml.writeStartElement("Default");
+        xml.writeAttribute("Extension", "json");
+        xml.writeAttribute("ContentType", "application/json");
+        xml.writeEndElement();
+    }
 
     xml.writeStartElement("Override");
     xml.writeAttribute("PartName", "/xl/workbook.xml");
@@ -1762,7 +1826,6 @@ QByteArray XlsxService::generateSharedStrings(const QStringList& sharedStrings) 
     xml.writeStartDocument();
     xml.writeStartElement("sst");
     xml.writeAttribute("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
-    xml.writeAttribute("count", QString::number(sharedStrings.size()));
     xml.writeAttribute("uniqueCount", QString::number(sharedStrings.size()));
 
     for (const auto& s : sharedStrings) {
