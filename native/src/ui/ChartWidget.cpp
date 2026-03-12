@@ -9,6 +9,8 @@
 #include <QKeyEvent>
 #include <QMenu>
 #include <QApplication>
+#include <QScrollBar>
+#include <QAbstractScrollArea>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -37,6 +39,11 @@ ChartWidget::ChartWidget(QWidget* parent)
     setAttribute(Qt::WA_DeleteOnClose, false);
     setMouseTracking(true);
     setFocusPolicy(Qt::ClickFocus);
+
+    // Auto-scroll timer for dragging near viewport edges
+    m_autoScrollTimer = new QTimer(this);
+    m_autoScrollTimer->setInterval(16);  // ~60fps for fast, smooth scrolling
+    connect(m_autoScrollTimer, &QTimer::timeout, this, &ChartWidget::onAutoScroll);
 
     // Entry animation
     m_entryAnim = new QVariantAnimation(this);
@@ -685,6 +692,56 @@ void ChartWidget::drawLegend(QPainter& p, const QRect& area) {
     p.setFont(baseFont);
 }
 
+void ChartWidget::computeLegendLayout() {
+    m_legendItems.clear();
+    if (!m_config.showLegend || m_config.series.isEmpty()) return;
+
+    QFont baseFont("Arial", 9);
+    QFontMetrics fm(baseFont);
+    QRect area = rect();
+    int y = area.bottom() - LEGEND_HEIGHT;
+
+    bool isPieType = (m_config.type == ChartType::Pie || m_config.type == ChartType::Donut);
+    if (isPieType && !m_config.series.isEmpty()) {
+        const auto& s = m_config.series[0];
+        int count = s.yValues.size();
+        QStringList sliceLabels = m_config.categoryLabels;
+
+        int totalWidth = 0;
+        for (int i = 0; i < count; ++i) {
+            QString label = (i < sliceLabels.size() && !sliceLabels[i].isEmpty())
+                ? sliceLabels[i] : QString("Slice %1").arg(i + 1);
+            totalWidth += 14 + fm.horizontalAdvance(label) + 16;
+        }
+        int x = (area.width() - totalWidth) / 2;
+        for (int i = 0; i < count; ++i) {
+            QString label = (i < sliceLabels.size() && !sliceLabels[i].isEmpty())
+                ? sliceLabels[i] : QString("Slice %1").arg(i + 1);
+            int itemStartX = x;
+            x += 14 + fm.horizontalAdvance(label) + 16;
+            LegendItem item;
+            item.rect = QRect(itemStartX - 2, y, x - itemStartX + 4, LEGEND_HEIGHT);
+            item.seriesIndex = i;
+            m_legendItems.append(item);
+        }
+        return;
+    }
+
+    int totalWidth = 0;
+    for (const auto& s : m_config.series)
+        totalWidth += 14 + fm.horizontalAdvance(s.name) + 16;
+    int x = (area.width() - totalWidth) / 2;
+    for (int i = 0; i < m_config.series.size(); ++i) {
+        const auto& s = m_config.series[i];
+        int itemStartX = x;
+        x += 14 + fm.horizontalAdvance(s.name) + 16;
+        LegendItem item;
+        item.rect = QRect(itemStartX - 2, y, x - itemStartX + 4, LEGEND_HEIGHT);
+        item.seriesIndex = i;
+        m_legendItems.append(item);
+    }
+}
+
 void ChartWidget::drawSelectionHandles(QPainter& p) {
     QColor handleColor = ThemeManager::instance().currentTheme().selectionHandleColor;
     p.setPen(QPen(handleColor, 2));
@@ -1114,11 +1171,20 @@ void ChartWidget::mouseMoveEvent(QMouseEvent* event) {
             emit chartResized(this);
         }
     } else if (m_dragging) {
-        QPoint newPos = event->globalPosition().toPoint() - m_dragOffset;
-        // Constrain to parent
+        QPoint globalPos = event->globalPosition().toPoint();
+        m_lastGlobalPos = globalPos;
+        QPoint rawPos = globalPos - m_dragOffset;
+        QPoint newPos = rawPos;
+        // Constrain to parent viewport
+        bool clampedAtEdge = false;
         if (parentWidget()) {
-            newPos.setX(qBound(0, newPos.x(), parentWidget()->width() - width()));
-            newPos.setY(qBound(0, newPos.y(), parentWidget()->height() - height()));
+            int maxX = parentWidget()->width() - width();
+            int maxY = parentWidget()->height() - height();
+            newPos.setX(qBound(0, rawPos.x(), maxX));
+            newPos.setY(qBound(0, rawPos.y(), maxY));
+            // Auto-scroll triggers when chart hits any viewport edge
+            clampedAtEdge = (rawPos.x() < 0 || rawPos.x() > maxX ||
+                             rawPos.y() < 0 || rawPos.y() > maxY);
         }
         QPoint delta = newPos - pos();
         move(newPos);
@@ -1131,6 +1197,12 @@ void ChartWidget::mouseMoveEvent(QMouseEvent* event) {
             }
         }
         emit chartMoved(this);
+
+        // Start auto-scroll as soon as chart hits viewport edge.
+        // Don't stop here on !clampedAtEdge — let onAutoScroll() handle stopping
+        // so a tiny mouse wiggle doesn't kill the scroll.
+        if (clampedAtEdge && !m_autoScrollTimer->isActive())
+            m_autoScrollTimer->start();
     } else {
         // Show pointing hand cursor over legend items
         if (m_config.showLegend && legendHitTest(event->pos()) >= 0) {
@@ -1145,7 +1217,53 @@ void ChartWidget::mouseReleaseEvent(QMouseEvent*) {
     m_dragging = false;
     m_resizing = false;
     m_activeHandle = None;
+    m_autoScrollTimer->stop();
     setCursor(Qt::ArrowCursor);
+}
+
+void ChartWidget::onAutoScroll() {
+    if (!m_dragging || !parentWidget()) return;
+
+    // parentWidget() is the viewport; its parent is the QAbstractScrollArea (QTableView)
+    auto* scrollArea = qobject_cast<QAbstractScrollArea*>(parentWidget()->parentWidget());
+    if (!scrollArea) return;
+
+    // Determine scroll direction from where the unclamped position would be
+    QPoint rawPos = m_lastGlobalPos - m_dragOffset;
+    int maxX = parentWidget()->width() - width();
+    int maxY = parentWidget()->height() - height();
+
+    // QTableView uses scroll-per-item: scroll 5 rows / 2 cols per 16ms tick
+    // (5 rows * 60 ticks/sec = ~300 rows/sec — very fast)
+    int dx = 0, dy = 0;
+    if (rawPos.y() > maxY)
+        dy = 5;
+    else if (rawPos.y() < 0)
+        dy = -5;
+    if (rawPos.x() > maxX)
+        dx = 2;
+    else if (rawPos.x() < 0)
+        dx = -2;
+
+    if (dx == 0 && dy == 0) { m_autoScrollTimer->stop(); return; }
+
+    QScrollBar* vBar = scrollArea->verticalScrollBar();
+    QScrollBar* hBar = scrollArea->horizontalScrollBar();
+
+    int oldV = vBar->value(), oldH = hBar->value();
+    if (dy) vBar->setValue(vBar->value() + dy);
+    if (dx) hBar->setValue(hBar->value() + dx);
+
+    // Stop if scroll didn't actually happen (hit min/max)
+    if (vBar->value() == oldV && hBar->value() == oldH) {
+        m_autoScrollTimer->stop();
+        return;
+    }
+
+    // Chart stays at the viewport edge while the grid scrolls underneath.
+    // Its effective grid position advances with the scroll.
+    // Emit chartMoved so overlays (e.g. Data2App) reposition.
+    emit chartMoved(this);
 }
 
 void ChartWidget::mouseDoubleClickEvent(QMouseEvent*) {

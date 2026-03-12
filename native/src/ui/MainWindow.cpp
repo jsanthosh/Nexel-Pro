@@ -53,6 +53,7 @@
 #include <QTabBar>
 #include <QToolButton>
 #include <QScrollBar>
+#include <QHeaderView>
 #include <QDockWidget>
 #include <QJsonObject>
 #include <QTimer>
@@ -162,14 +163,38 @@ MainWindow::MainWindow(QWidget* parent)
     // Deselect charts/shapes when clicking on the spreadsheet
     m_spreadsheetView->viewport()->installEventFilter(this);
 
-    // Update native chart overlay positions when scrolling, and trigger lazy loading
-    auto updateChartOverlays = [this]() {
-        for (auto* chart : m_charts)
-            chart->updateOverlayPosition();
+    // Move charts, shapes, and images with the grid when scrolling (Excel-like anchoring).
+    // Uses rowViewportPosition(0) / columnViewportPosition(0) for exact pixel tracking.
+    auto moveOverlays = [this]() {
+        int row0Y = m_spreadsheetView->rowViewportPosition(0);
+        int col0X = m_spreadsheetView->columnViewportPosition(0);
+        int dy = row0Y - m_lastVScrollValue;  // positive = scrolled up, negative = scrolled down
+        int dx = col0X - m_lastHScrollValue;
+        m_lastVScrollValue = row0Y;
+        m_lastHScrollValue = col0X;
+
+        if (dy != 0 || dx != 0) {
+            QPoint offset(dx, dy);
+            for (auto* chart : m_charts) {
+                if (chart->property("sheetIndex").toInt() != m_activeSheetIndex) continue;
+                if (chart->isDragging()) continue;
+                chart->move(chart->pos() + offset);
+            }
+            for (auto* shape : m_shapes) {
+                if (shape->property("sheetIndex").toInt() != m_activeSheetIndex) continue;
+                if (shape->isDragging()) continue;
+                shape->move(shape->pos() + offset);
+            }
+            for (auto* img : m_images) {
+                if (img->property("sheetIndex").toInt() != m_activeSheetIndex) continue;
+                img->move(img->pos() + offset);
+            }
+        }
+        for (auto* chart : m_charts) chart->updateOverlayPosition();
         if (m_lazyLoadCharts) loadVisibleLazyCharts();
     };
-    connect(m_spreadsheetView->verticalScrollBar(), &QScrollBar::valueChanged, this, updateChartOverlays);
-    connect(m_spreadsheetView->horizontalScrollBar(), &QScrollBar::valueChanged, this, updateChartOverlays);
+    connect(m_spreadsheetView->verticalScrollBar(), &QScrollBar::valueChanged, this, moveOverlays);
+    connect(m_spreadsheetView->horizontalScrollBar(), &QScrollBar::valueChanged, this, moveOverlays);
 
     setAcceptDrops(true);
 
@@ -283,6 +308,8 @@ void MainWindow::onSheetTabChanged(int index) {
 void MainWindow::switchToSheet(int index) {
     if (index < 0 || index >= static_cast<int>(m_sheets.size())) return;
     m_activeSheetIndex = index;
+    m_lastVScrollValue = m_spreadsheetView->rowViewportPosition(0);
+    m_lastHScrollValue = m_spreadsheetView->columnViewportPosition(0);
     m_spreadsheetView->clearChartRangeHighlight();
     m_spreadsheetView->setAllSheets(m_sheets);
     m_spreadsheetView->setSpreadsheet(m_sheets[index]);

@@ -5,6 +5,7 @@
 #include <QColor>
 #include <QPoint>
 #include <QString>
+#include <QTimer>
 
 enum class ShapeType {
     Rectangle,
@@ -44,6 +45,7 @@ public:
     ShapeConfig config() const { return m_config; }
 
     bool isSelected() const { return m_selected; }
+    bool isDragging() const { return m_dragging; }
     void setSelected(bool selected);
 
 signals:
@@ -82,6 +84,11 @@ private:
     // Resize handles
     enum ResizeHandle { None, TopLeft, TopRight, BottomLeft, BottomRight, Top, Bottom, Left, Right };
     ResizeHandle hitTestHandle(const QPoint& pos) const;
+
+    // Auto-scroll when dragging near viewport edges
+    QTimer* m_autoScrollTimer = nullptr;
+    QPoint m_lastGlobalPos;
+    void onAutoScroll();
 
     ShapeConfig m_config;
     bool m_selected = false;

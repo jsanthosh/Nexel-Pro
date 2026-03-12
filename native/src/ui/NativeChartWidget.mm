@@ -160,6 +160,8 @@ void NativeChartWidget::setSelected(bool selected)
 void NativeChartWidget::setConfig(const ChartConfig& config)
 {
     m_config = config;
+    // Populate legend hit-test rects for mouse interaction
+    computeLegendLayout();
     // Only push to native if we already have series data;
     // otherwise wait for loadDataFromRange() to provide it.
     if (!m_config.series.isEmpty()) {
@@ -171,6 +173,7 @@ void NativeChartWidget::loadDataFromRange(const QString& range)
 {
     // Parent loads data into m_config.series from spreadsheet (may defer under lazy load)
     ChartWidget::loadDataFromRange(range);
+    computeLegendLayout();
     // Only push to native renderer if data was actually loaded (not deferred)
     if (!m_config.series.isEmpty()) {
         updateNativeConfiguration();
@@ -181,6 +184,7 @@ void NativeChartWidget::refreshData()
 {
     // Parent loads data into m_config.series from spreadsheet
     ChartWidget::refreshData();
+    computeLegendLayout();
     // Push updated data to the native renderer
     updateNativeConfiguration();
 }
@@ -215,6 +219,7 @@ void NativeChartWidget::paintEvent(QPaintEvent* event)
 void NativeChartWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
+    computeLegendLayout();  // Recompute legend rects for new size
     updateChildWindowGeometry();
 }
 
@@ -315,17 +320,22 @@ void NativeChartWidget::updateChildWindowGeometry()
     // Ensure overlay is visible (may have been hidden by clipping or hideEvent)
     if (wasHidden && !m_configPending) {
         overlay.alphaValue = 1.0;
+    }
 
-        // Trigger a single-frame redraw only when chart scrolls back into view
-        // after being hidden — not on every scroll repositioning.
+    // Always trigger a redraw when the overlay is visible and MTKView is paused.
+    // This covers both hidden→visible transitions and cases where the Metal
+    // buffer went stale while partially clipped.
+    if (!m_configPending) {
         for (NSView* subview in cv.subviews) {
             if ([subview isKindOfClass:[MTKView class]]) {
                 MTKView* mtkView = (MTKView*)subview;
                 if (mtkView.paused) {
                     mtkView.enableSetNeedsDisplay = YES;
                     [mtkView setNeedsDisplay:YES];
-                    // Reset after queuing the redraw so it doesn't stay in on-demand mode
-                    dispatch_async(dispatch_get_main_queue(), ^{
+                    // Use dispatch_after to give Metal time to actually draw
+                    // before disabling on-demand mode
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)),
+                                   dispatch_get_main_queue(), ^{
                         mtkView.enableSetNeedsDisplay = NO;
                     });
                 }

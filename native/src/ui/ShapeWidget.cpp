@@ -8,6 +8,8 @@
 #include <QMenu>
 #include <QInputDialog>
 #include <QApplication>
+#include <QScrollBar>
+#include <QAbstractScrollArea>
 #include <QtMath>
 #include <cmath>
 
@@ -18,6 +20,11 @@ ShapeWidget::ShapeWidget(QWidget* parent)
     setAttribute(Qt::WA_DeleteOnClose, false);
     setMouseTracking(true);
     setFocusPolicy(Qt::ClickFocus);
+
+    // Auto-scroll timer for dragging near viewport edges
+    m_autoScrollTimer = new QTimer(this);
+    m_autoScrollTimer->setInterval(16);  // ~60fps for fast, smooth scrolling
+    connect(m_autoScrollTimer, &QTimer::timeout, this, &ShapeWidget::onAutoScroll);
 }
 
 void ShapeWidget::setConfig(const ShapeConfig& config) {
@@ -263,10 +270,20 @@ void ShapeWidget::mouseMoveEvent(QMouseEvent* event) {
             setGeometry(geo);
         }
     } else if (m_dragging) {
-        QPoint newPos = event->globalPosition().toPoint() - m_dragOffset;
+        QPoint globalPos = event->globalPosition().toPoint();
+        m_lastGlobalPos = globalPos;
+        QPoint rawPos = globalPos - m_dragOffset;
+        QPoint newPos = rawPos;
+        // Constrain to parent viewport
+        bool clampedAtEdge = false;
         if (parentWidget()) {
-            newPos.setX(qBound(0, newPos.x(), parentWidget()->width() - width()));
-            newPos.setY(qBound(0, newPos.y(), parentWidget()->height() - height()));
+            int maxX = parentWidget()->width() - width();
+            int maxY = parentWidget()->height() - height();
+            newPos.setX(qBound(0, rawPos.x(), maxX));
+            newPos.setY(qBound(0, rawPos.y(), maxY));
+            // Auto-scroll triggers when shape hits any viewport edge
+            clampedAtEdge = (rawPos.x() < 0 || rawPos.x() > maxX ||
+                             rawPos.y() < 0 || rawPos.y() > maxY);
         }
         QPoint delta = newPos - pos();
         move(newPos);
@@ -279,6 +296,12 @@ void ShapeWidget::mouseMoveEvent(QMouseEvent* event) {
             }
         }
         emit shapeMoved(this);
+
+        // Start auto-scroll as soon as shape hits viewport edge.
+        // Don't stop here on !clampedAtEdge — let onAutoScroll() handle stopping
+        // so a tiny mouse wiggle doesn't kill the scroll.
+        if (clampedAtEdge && !m_autoScrollTimer->isActive())
+            m_autoScrollTimer->start();
     } else if (m_selected) {
         ResizeHandle h = hitTestHandle(event->pos());
         switch (h) {
@@ -295,6 +318,47 @@ void ShapeWidget::mouseReleaseEvent(QMouseEvent*) {
     m_dragging = false;
     m_resizing = false;
     m_activeHandle = None;
+    m_autoScrollTimer->stop();
+}
+
+void ShapeWidget::onAutoScroll() {
+    if (!m_dragging || !parentWidget()) return;
+
+    // parentWidget() is the viewport; its parent is the QAbstractScrollArea (QTableView)
+    auto* scrollArea = qobject_cast<QAbstractScrollArea*>(parentWidget()->parentWidget());
+    if (!scrollArea) return;
+
+    // Determine scroll direction from where the unclamped position would be
+    QPoint rawPos = m_lastGlobalPos - m_dragOffset;
+    int maxX = parentWidget()->width() - width();
+    int maxY = parentWidget()->height() - height();
+
+    int dx = 0, dy = 0;
+    if (rawPos.y() > maxY)
+        dy = 5;
+    else if (rawPos.y() < 0)
+        dy = -5;
+    if (rawPos.x() > maxX)
+        dx = 2;
+    else if (rawPos.x() < 0)
+        dx = -2;
+
+    if (dx == 0 && dy == 0) { m_autoScrollTimer->stop(); return; }
+
+    QScrollBar* vBar = scrollArea->verticalScrollBar();
+    QScrollBar* hBar = scrollArea->horizontalScrollBar();
+
+    int oldV = vBar->value(), oldH = hBar->value();
+    if (dy) vBar->setValue(vBar->value() + dy);
+    if (dx) hBar->setValue(hBar->value() + dx);
+
+    // Stop if scroll didn't actually happen (hit min/max)
+    if (vBar->value() == oldV && hBar->value() == oldH) {
+        m_autoScrollTimer->stop();
+        return;
+    }
+
+    emit shapeMoved(this);
 }
 
 void ShapeWidget::mouseDoubleClickEvent(QMouseEvent*) {

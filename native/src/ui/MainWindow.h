@@ -168,6 +168,8 @@ private:
     // Charts, shapes, and images (flat lists; each widget has "sheetIndex" property)
     ChartWidget* m_selectedChart = nullptr;
     QVector<ChartWidget*> m_charts;
+    int m_lastVScrollValue = 0;  // rowViewportPosition(0) — pixel Y of row 0
+    int m_lastHScrollValue = 0;  // columnViewportPosition(0) — pixel X of col 0
     QVector<ShapeWidget*> m_shapes;
     QVector<ImageWidget*> m_images;
 

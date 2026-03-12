@@ -8,6 +8,7 @@
 #include <QColor>
 #include <QVector>
 #include <QVariantAnimation>
+#include <QTimer>
 #include <memory>
 
 class Spreadsheet;
@@ -93,6 +94,7 @@ public:
 
     // Selection state
     bool isSelected() const { return m_selected; }
+    bool isDragging() const { return m_dragging; }
     virtual void setSelected(bool selected);
 
     // Series visibility
@@ -119,6 +121,7 @@ protected:
 protected:
     // Accessible to subclasses (e.g. NativeChartWidget)
     void drawSelectionHandles(QPainter& p);
+    void computeLegendLayout();  // Populate m_legendItems without drawing
 
     ChartConfig m_config;
     std::shared_ptr<Spreadsheet> m_spreadsheet;
@@ -162,6 +165,11 @@ private:
     struct LegendItem { QRect rect; int seriesIndex; };
     QVector<LegendItem> m_legendItems;
     int legendHitTest(const QPoint& pos) const;
+
+    // Auto-scroll during drag
+    QTimer* m_autoScrollTimer = nullptr;
+    QPoint m_lastGlobalPos;  // Last known cursor position during drag
+    void onAutoScroll();
 
     // Entry animation
     QVariantAnimation* m_entryAnim = nullptr;
