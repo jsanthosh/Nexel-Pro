@@ -26,14 +26,15 @@ int main(int argc, char* argv[]) {
     // Load saved theme
     ThemeManager::instance().loadSavedTheme();
 
-    // Create main window
-    MainWindow window;
-    ThemeManager::instance().applyTheme(&window);
-    window.show();
+    // Create main window (heap-allocated so closing one window doesn't quit the app)
+    MainWindow* window = new MainWindow();
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    ThemeManager::instance().applyTheme(window);
+    window->show();
 
     // Open file passed as command-line argument
     if (argc > 1) {
-        window.openFile(QString::fromLocal8Bit(argv[1]));
+        window->openFile(QString::fromLocal8Bit(argv[1]));
     }
 
     return app.exec();

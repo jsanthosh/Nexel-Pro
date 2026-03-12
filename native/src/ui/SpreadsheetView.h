@@ -27,6 +27,7 @@ public:
 
     void setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet);
     std::shared_ptr<Spreadsheet> getSpreadsheet() const;
+    void setAllSheets(const std::vector<std::shared_ptr<Spreadsheet>>& sheets) { m_allSheets = sheets; }
     SpreadsheetModel* getModel() const { return m_model; }
 
     // Editing operations
@@ -174,6 +175,7 @@ protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void currentChanged(const QModelIndex& current, const QModelIndex& previous) override;
+    void selectionChanged(const QItemSelection& selected, const QItemSelection& deselected) override;
     void closeEditor(QWidget* editor, QAbstractItemDelegate::EndEditHint hint) override;
     void commitData(QWidget* editor) override;
 
@@ -186,6 +188,7 @@ private slots:
 
 private:
     std::shared_ptr<Spreadsheet> m_spreadsheet;
+    std::vector<std::shared_ptr<Spreadsheet>> m_allSheets;  // All workbook sheets (for cross-sheet picklist)
     SpreadsheetModel* m_model = nullptr;
     CellDelegate* m_delegate = nullptr;
     MacroEngine* m_macroEngine = nullptr;

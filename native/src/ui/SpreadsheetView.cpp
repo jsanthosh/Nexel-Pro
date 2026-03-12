@@ -33,6 +33,9 @@
 #include <QScrollBar>
 #include <QTextEdit>
 #include <QColorDialog>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QRadioButton>
 #include <QShortcut>
 #include <algorithm>
 
@@ -384,6 +387,14 @@ void SpreadsheetView::currentChanged(const QModelIndex& current, const QModelInd
     }
 
     emitCellSelected(current);
+}
+
+void SpreadsheetView::selectionChanged(const QItemSelection& selected, const QItemSelection& deselected) {
+    // Invalidate old fill handle rect before selection updates
+    if (!m_fillHandleRect.isNull()) {
+        viewport()->update(m_fillHandleRect.adjusted(-2, -2, 2, 2));
+    }
+    QTableView::selectionChanged(selected, deselected);
 }
 
 // ============== Clipboard operations ==============
@@ -3519,12 +3530,63 @@ void SpreadsheetView::showCreatePicklistDialog() {
     title->setStyleSheet("QLabel { font-size: 15px; font-weight: 600; color: #111827; }");
     lo->addWidget(title);
 
-    QLabel* sub = new QLabel("Set label and color for each option:", &dlg);
+    // === Source toggle: Manual vs Cell Range ===
+    QRadioButton* manualRadio = new QRadioButton("Enter manually", &dlg);
+    QRadioButton* rangeRadio = new QRadioButton("From cell range", &dlg);
+    manualRadio->setChecked(true);
+    manualRadio->setStyleSheet("QRadioButton { font-size: 12px; color: #374151; }");
+    rangeRadio->setStyleSheet("QRadioButton { font-size: 12px; color: #374151; }");
+    QHBoxLayout* sourceRow = new QHBoxLayout();
+    sourceRow->setSpacing(16);
+    sourceRow->addWidget(manualRadio);
+    sourceRow->addWidget(rangeRadio);
+    sourceRow->addStretch();
+    lo->addLayout(sourceRow);
+
+    // --- Range source panel (hidden by default) ---
+    QWidget* rangePanel = new QWidget(&dlg);
+    QFormLayout* rangeLo = new QFormLayout(rangePanel);
+    rangeLo->setContentsMargins(0, 0, 0, 0);
+    rangeLo->setSpacing(8);
+
+    QComboBox* sheetCombo = new QComboBox(rangePanel);
+    for (const auto& s : m_allSheets) {
+        sheetCombo->addItem(s->getSheetName());
+    }
+    if (m_spreadsheet) {
+        int idx = sheetCombo->findText(m_spreadsheet->getSheetName());
+        if (idx >= 0) sheetCombo->setCurrentIndex(idx);
+    }
+    sheetCombo->setStyleSheet(
+        "QComboBox { border: 1px solid #D1D5DB; border-radius: 6px; padding: 6px 8px; font-size: 13px; }"
+        "QComboBox:focus { border-color: #2563EB; }");
+    rangeLo->addRow("Sheet:", sheetCombo);
+
+    QLineEdit* rangeEdit = new QLineEdit(rangePanel);
+    rangeEdit->setPlaceholderText("e.g. A1:A10");
+    rangeLo->addRow("Range:", rangeEdit);
+
+    rangePanel->setVisible(false);
+    lo->addWidget(rangePanel);
+
+    // --- Manual source panel ---
+    QWidget* manualPanel = new QWidget(&dlg);
+    QVBoxLayout* manualLo = new QVBoxLayout(manualPanel);
+    manualLo->setContentsMargins(0, 0, 0, 0);
+    manualLo->setSpacing(6);
+
+    // Toggle panel visibility
+    QObject::connect(manualRadio, &QRadioButton::toggled, &dlg, [manualPanel, rangePanel](bool checked) {
+        manualPanel->setVisible(checked);
+        rangePanel->setVisible(!checked);
+    });
+
+    QLabel* sub = new QLabel("Set label and color for each option:", manualPanel);
     sub->setStyleSheet("QLabel { font-size: 12px; color: #6B7280; }");
-    lo->addWidget(sub);
+    manualLo->addWidget(sub);
 
     // Scrollable list of option rows
-    QScrollArea* scroll = new QScrollArea(&dlg);
+    QScrollArea* scroll = new QScrollArea(manualPanel);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setMinimumHeight(200);
@@ -3598,23 +3660,24 @@ void SpreadsheetView::showCreatePicklistDialog() {
 
     listLo->addStretch();
     scroll->setWidget(listWidget);
-    lo->addWidget(scroll, 1);
+    manualLo->addWidget(scroll, 1);
 
     // Add option button
-    QPushButton* addBtn = new QPushButton("+ Add Option", &dlg);
+    QPushButton* addBtn = new QPushButton("+ Add Option", manualPanel);
     addBtn->setCursor(Qt::PointingHandCursor);
     addBtn->setFixedHeight(30);
     addBtn->setStyleSheet(
         "QPushButton { background: transparent; color: #2563EB; border: 1px dashed #93C5FD; "
         "border-radius: 6px; font-size: 12px; font-weight: 500; }"
         "QPushButton:hover { background: #EFF6FF; }");
-    lo->addWidget(addBtn);
+    manualLo->addWidget(addBtn);
     connect(addBtn, &QPushButton::clicked, &dlg, [&, addOptionRow]() {
         int idx = optionRows->size();
         addOptionRow("", "", idx);
         listWidget->adjustSize();
     });
 
+    lo->addWidget(manualPanel, 1);
     lo->addSpacing(4);
     QHBoxLayout* btnRow = new QHBoxLayout();
     btnRow->addStretch();
@@ -3644,16 +3707,53 @@ void SpreadsheetView::showCreatePicklistDialog() {
     if (dlg.exec() == QDialog::Accepted) {
         QStringList newOpts;
         QStringList newColors;
-        for (const auto& opt : *optionRows) {
-            if (!opt.text) continue; // removed
-            QString t = opt.text->text().trimmed();
-            if (!t.isEmpty()) {
-                newOpts.append(t);
-                newColors.append(opt.color);
+        QString sourceRef;
+
+        if (rangeRadio->isChecked()) {
+            // Resolve values from cell range
+            QString sheetName = sheetCombo->currentText();
+            QString rangeText = rangeEdit->text().trimmed();
+            if (rangeText.isEmpty()) return;
+
+            // Find target sheet
+            std::shared_ptr<Spreadsheet> targetSheet;
+            for (const auto& s : m_allSheets) {
+                if (s->getSheetName() == sheetName) { targetSheet = s; break; }
+            }
+            if (!targetSheet) return;
+
+            CellRange cr(rangeText);
+            if (!cr.isValid()) return;
+
+            for (int r = cr.getStart().row; r <= cr.getEnd().row; ++r) {
+                for (int c = cr.getStart().col; c <= cr.getEnd().col; ++c) {
+                    QVariant val = targetSheet->getCellValue(CellAddress(r, c));
+                    QString s = val.toString().trimmed();
+                    if (!s.isEmpty()) newOpts.append(s);
+                }
+            }
+            sourceRef = sheetName + "!" + rangeText;
+        } else {
+            // Manual entry
+            for (const auto& opt : *optionRows) {
+                if (!opt.text) continue;
+                QString t = opt.text->text().trimmed();
+                if (!t.isEmpty()) {
+                    newOpts.append(t);
+                    newColors.append(opt.color);
+                }
             }
         }
+
         if (!newOpts.isEmpty()) {
             insertPicklist(newOpts, newColors);
+            // Store source range reference in the validation rule
+            if (!sourceRef.isEmpty()) {
+                auto& rules = m_spreadsheet->getValidationRules();
+                if (!rules.empty()) {
+                    rules.back().listSourceRange = sourceRef;
+                }
+            }
         }
     }
 }

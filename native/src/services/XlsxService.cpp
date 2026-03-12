@@ -796,7 +796,7 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
 
         if (xml.isStartElement() && xml.name() == u"c") {
             QStringView ref = xml.attributes().value("r");
-            QStringView type = xml.attributes().value("t");
+            QString type = xml.attributes().value("t").toString();  // Must own string — QStringView invalidated by readNext()
             int styleIdx = xml.attributes().value("s").toInt();
 
             int row, col;

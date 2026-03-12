@@ -52,10 +52,46 @@ DataValidationDialog::DataValidationDialog(const CellRange& range, QWidget* pare
     m_value2Edit = new QLineEdit(this);
     settingsLayout->addRow(m_value2Label, m_value2Edit);
 
-    m_listLabel = new QLabel("Source (comma-separated):", this);
-    m_listEdit = new QTextEdit(this);
+    m_listLabel = new QLabel("Source:", this);
+
+    // List source: manual or cell range
+    QWidget* listSourceWidget = new QWidget(this);
+    QVBoxLayout* listSourceLo = new QVBoxLayout(listSourceWidget);
+    listSourceLo->setContentsMargins(0, 0, 0, 0);
+    listSourceLo->setSpacing(6);
+
+    m_manualRadio = new QRadioButton("Comma-separated list", listSourceWidget);
+    m_rangeRadio = new QRadioButton("From cell range", listSourceWidget);
+    m_manualRadio->setChecked(true);
+    QHBoxLayout* radioRow = new QHBoxLayout();
+    radioRow->setSpacing(12);
+    radioRow->addWidget(m_manualRadio);
+    radioRow->addWidget(m_rangeRadio);
+    radioRow->addStretch();
+    listSourceLo->addLayout(radioRow);
+
+    m_listEdit = new QTextEdit(listSourceWidget);
     m_listEdit->setMaximumHeight(60);
-    settingsLayout->addRow(m_listLabel, m_listEdit);
+    listSourceLo->addWidget(m_listEdit);
+
+    // Range source panel
+    m_rangeSourcePanel = new QWidget(listSourceWidget);
+    QFormLayout* rangePanelLo = new QFormLayout(m_rangeSourcePanel);
+    rangePanelLo->setContentsMargins(0, 0, 0, 0);
+    m_sheetCombo = new QComboBox(m_rangeSourcePanel);
+    rangePanelLo->addRow("Sheet:", m_sheetCombo);
+    m_rangeEdit = new QLineEdit(m_rangeSourcePanel);
+    m_rangeEdit->setPlaceholderText("e.g. A1:A10");
+    rangePanelLo->addRow("Range:", m_rangeEdit);
+    m_rangeSourcePanel->setVisible(false);
+    listSourceLo->addWidget(m_rangeSourcePanel);
+
+    connect(m_manualRadio, &QRadioButton::toggled, this, [this](bool checked) {
+        m_listEdit->setVisible(checked);
+        m_rangeSourcePanel->setVisible(!checked);
+    });
+
+    settingsLayout->addRow(m_listLabel, listSourceWidget);
 
     m_formulaLabel = new QLabel("Formula:", this);
     m_formulaEdit = new QLineEdit(this);
@@ -153,7 +189,10 @@ void DataValidationDialog::updateFieldVisibility() {
     m_value2Edit->setVisible(showValue2);
 
     m_listLabel->setVisible(isList);
-    m_listEdit->setVisible(isList);
+    m_listEdit->setVisible(isList && m_manualRadio->isChecked());
+    if (m_rangeSourcePanel) m_rangeSourcePanel->setVisible(isList && m_rangeRadio->isChecked());
+    if (m_manualRadio) m_manualRadio->setVisible(isList);
+    if (m_rangeRadio) m_rangeRadio->setVisible(isList);
 
     m_formulaLabel->setVisible(isCustom);
     m_formulaEdit->setVisible(isCustom);
@@ -176,12 +215,35 @@ Spreadsheet::DataValidationRule DataValidationDialog::getRule() const {
     rule.value2 = m_value2Edit->text();
     rule.customFormula = m_formulaEdit->text();
 
-    // Parse list items
-    QString listText = m_listEdit->toPlainText();
-    if (!listText.isEmpty()) {
-        rule.listItems = listText.split(",", Qt::SkipEmptyParts);
-        for (auto& item : rule.listItems) {
-            item = item.trimmed();
+    // Parse list items — manual or from cell range
+    if (rule.type == Spreadsheet::DataValidationRule::List && m_rangeRadio && m_rangeRadio->isChecked()) {
+        // Resolve values from cell range
+        QString sheetName = m_sheetCombo->currentText();
+        QString rangeText = m_rangeEdit->text().trimmed();
+        std::shared_ptr<Spreadsheet> targetSheet;
+        for (const auto& s : m_sheets) {
+            if (s->getSheetName() == sheetName) { targetSheet = s; break; }
+        }
+        if (targetSheet && !rangeText.isEmpty()) {
+            CellRange cr(rangeText);
+            if (cr.isValid()) {
+                for (int r = cr.getStart().row; r <= cr.getEnd().row; ++r) {
+                    for (int c = cr.getStart().col; c <= cr.getEnd().col; ++c) {
+                        QVariant val = targetSheet->getCellValue(CellAddress(r, c));
+                        QString s = val.toString().trimmed();
+                        if (!s.isEmpty()) rule.listItems.append(s);
+                    }
+                }
+            }
+            rule.listSourceRange = sheetName + "!" + rangeText;
+        }
+    } else {
+        QString listText = m_listEdit->toPlainText();
+        if (!listText.isEmpty()) {
+            rule.listItems = listText.split(",", Qt::SkipEmptyParts);
+            for (auto& item : rule.listItems) {
+                item = item.trimmed();
+            }
         }
     }
 
@@ -207,7 +269,22 @@ void DataValidationDialog::setRule(const Spreadsheet::DataValidationRule& rule) 
     m_value1Edit->setText(rule.value1);
     m_value2Edit->setText(rule.value2);
     m_formulaEdit->setText(rule.customFormula);
-    m_listEdit->setPlainText(rule.listItems.join(", "));
+
+    // Restore list source: range or manual
+    if (!rule.listSourceRange.isEmpty() && m_rangeRadio) {
+        m_rangeRadio->setChecked(true);
+        // Parse "SheetName!A1:A10"
+        int excl = rule.listSourceRange.indexOf('!');
+        if (excl >= 0) {
+            QString sheetName = rule.listSourceRange.left(excl);
+            QString rangeText = rule.listSourceRange.mid(excl + 1);
+            int idx = m_sheetCombo->findText(sheetName);
+            if (idx >= 0) m_sheetCombo->setCurrentIndex(idx);
+            m_rangeEdit->setText(rangeText);
+        }
+    } else {
+        m_listEdit->setPlainText(rule.listItems.join(", "));
+    }
 
     m_showInputMsg->setChecked(rule.showInputMessage);
     m_inputTitle->setText(rule.inputTitle);
@@ -220,4 +297,14 @@ void DataValidationDialog::setRule(const Spreadsheet::DataValidationRule& rule) 
     m_errorMessage->setPlainText(rule.errorMessage);
 
     updateFieldVisibility();
+}
+
+void DataValidationDialog::setSheets(const std::vector<std::shared_ptr<Spreadsheet>>& sheets) {
+    m_sheets = sheets;
+    if (m_sheetCombo) {
+        m_sheetCombo->clear();
+        for (const auto& s : sheets) {
+            m_sheetCombo->addItem(s->getSheetName());
+        }
+    }
 }

@@ -118,6 +118,7 @@ public:
         QString value2;
         QStringList listItems;
         QStringList listItemColors; // per-option background colors (hex), parallel to listItems
+        QString listSourceRange;    // e.g. "Sheet2!A1:A10" — empty means manual list
         QString customFormula;
         QString inputTitle;
         QString inputMessage;

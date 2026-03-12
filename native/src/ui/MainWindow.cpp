@@ -55,6 +55,7 @@
 #include <QScrollBar>
 #include <QDockWidget>
 #include <QJsonObject>
+#include <QTimer>
 #include <QJsonArray>
 #include <QProgressDialog>
 #include <QtConcurrent>
@@ -175,6 +176,14 @@ MainWindow::MainWindow(QWidget* parent)
     // Global stylesheet is applied by ThemeManager::applyTheme() from main.cpp
     // Apply theme to sub-widgets
     onThemeChanged();
+
+    // Ensure cell A1 is focused on startup (deferred so widget has keyboard focus)
+    QTimer::singleShot(0, this, [this]() {
+        if (m_spreadsheetView && m_spreadsheetView->model()) {
+            m_spreadsheetView->setCurrentIndex(m_spreadsheetView->model()->index(0, 0));
+            m_spreadsheetView->setFocus();
+        }
+    });
 }
 
 void MainWindow::createSheetTabBar() {
@@ -214,6 +223,53 @@ void MainWindow::createSheetTabBar() {
     connect(m_sheetTabBar, &QTabBar::currentChanged, this, &MainWindow::onSheetTabChanged);
     connect(m_sheetTabBar, &QTabBar::tabBarDoubleClicked, this, &MainWindow::onSheetTabDoubleClicked);
 
+    // Reorder underlying m_sheets when user drags tabs
+    connect(m_sheetTabBar, &QTabBar::tabMoved, this, [this](int from, int to) {
+        if (from < 0 || from >= static_cast<int>(m_sheets.size())) return;
+        if (to < 0 || to >= static_cast<int>(m_sheets.size())) return;
+
+        // Move the sheet in the vector
+        auto sheet = m_sheets[from];
+        m_sheets.erase(m_sheets.begin() + from);
+        m_sheets.insert(m_sheets.begin() + to, sheet);
+
+        // Update sheetIndex property on all overlays to match new positions
+        for (auto* c : m_charts) {
+            int si = c->property("sheetIndex").toInt();
+            if (si == from) {
+                c->setProperty("sheetIndex", to);
+            } else if (from < to && si > from && si <= to) {
+                c->setProperty("sheetIndex", si - 1);
+            } else if (from > to && si >= to && si < from) {
+                c->setProperty("sheetIndex", si + 1);
+            }
+        }
+        for (auto* s : m_shapes) {
+            int si = s->property("sheetIndex").toInt();
+            if (si == from) {
+                s->setProperty("sheetIndex", to);
+            } else if (from < to && si > from && si <= to) {
+                s->setProperty("sheetIndex", si - 1);
+            } else if (from > to && si >= to && si < from) {
+                s->setProperty("sheetIndex", si + 1);
+            }
+        }
+        for (auto* img : m_images) {
+            int si = img->property("sheetIndex").toInt();
+            if (si == from) {
+                img->setProperty("sheetIndex", to);
+            } else if (from < to && si > from && si <= to) {
+                img->setProperty("sheetIndex", si - 1);
+            } else if (from > to && si >= to && si < from) {
+                img->setProperty("sheetIndex", si + 1);
+            }
+        }
+
+        // Update active sheet index to follow the current tab
+        m_activeSheetIndex = m_sheetTabBar->currentIndex();
+        setDirty();
+    });
+
     // Right-click context menu on tab bar
     m_sheetTabBar->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_sheetTabBar, &QTabBar::customContextMenuRequested, this, &MainWindow::showSheetContextMenu);
@@ -228,6 +284,7 @@ void MainWindow::switchToSheet(int index) {
     if (index < 0 || index >= static_cast<int>(m_sheets.size())) return;
     m_activeSheetIndex = index;
     m_spreadsheetView->clearChartRangeHighlight();
+    m_spreadsheetView->setAllSheets(m_sheets);
     m_spreadsheetView->setSpreadsheet(m_sheets[index]);
     m_toolbar->setDocumentTheme(&m_sheets[index]->getDocumentTheme());
     m_spreadsheetView->refreshView();
@@ -1139,32 +1196,26 @@ void MainWindow::finishCsvOpen(const std::shared_ptr<Spreadsheet>& spreadsheet,
 }
 
 void MainWindow::onNewDocument() {
-    if (m_dirty) {
-        auto result = QMessageBox::question(this, "Unsaved Changes",
-            "Do you want to save your changes before creating a new document?",
-            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
-        if (result == QMessageBox::Save) {
-            onSaveDocument();
-        } else if (result == QMessageBox::Cancel) {
-            return;
+    // Open a new window instead of replacing the current document
+    MainWindow* newWindow = new MainWindow();
+    newWindow->setAttribute(Qt::WA_DeleteOnClose);
+    ThemeManager::instance().applyTheme(newWindow);
+
+    // Offset the new window slightly right and down from the current one (like Excel)
+    QPoint pos = this->pos();
+    newWindow->move(pos.x() + 30, pos.y() + 30);
+    newWindow->resize(this->size());
+
+    newWindow->show();
+
+    // Ensure cell A1 is focused in the new window (deferred so widget has keyboard focus)
+    QTimer::singleShot(0, newWindow, [newWindow]() {
+        if (newWindow->m_spreadsheetView && newWindow->m_spreadsheetView->model()) {
+            QModelIndex a1 = newWindow->m_spreadsheetView->model()->index(0, 0);
+            newWindow->m_spreadsheetView->setCurrentIndex(a1);
+            newWindow->m_spreadsheetView->setFocus();
         }
-    }
-
-    // Release old sheet data early — avoids holding large datasets in memory
-    // while building the new document
-    m_sheets.clear();
-
-    auto sheet = std::make_shared<Spreadsheet>();
-    sheet->setSheetName("Sheet1");
-    std::vector<std::shared_ptr<Spreadsheet>> sheets = { sheet };
-    setSheets(sheets);
-
-    m_currentFilePath.clear();
-    m_dirty = false;
-    m_toolbar->setSaveEnabled(false);
-    DocumentService::instance().createNewDocument("Untitled");
-    updateWindowTitle();
-    statusBar()->showMessage("New document created");
+    });
 }
 
 void MainWindow::onOpenDocument() {
@@ -1345,7 +1396,10 @@ void MainWindow::onExportCsv() {
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (!m_dirty) {
         event->accept();
-        _exit(0); // Fast exit: skip slow destructor cleanup for large datasets
+        // Only fast-exit if this is the last window
+        if (QApplication::topLevelWidgets().count() <= 1)
+            _exit(0);
+        return;
     }
 
     auto result = QMessageBox::question(this, "Unsaved Changes",
@@ -1355,10 +1409,12 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (result == QMessageBox::Save) {
         onSaveDocument();
         event->accept();
-        _exit(0);
+        if (QApplication::topLevelWidgets().count() <= 1)
+            _exit(0);
     } else if (result == QMessageBox::Discard) {
         event->accept();
-        _exit(0);
+        if (QApplication::topLevelWidgets().count() <= 1)
+            _exit(0);
     } else {
         event->ignore();
     }
@@ -1664,6 +1720,7 @@ void MainWindow::onDataValidation() {
 
     CellRange range(CellAddress(minRow, minCol), CellAddress(maxRow, maxCol));
     DataValidationDialog dialog(range, this);
+    dialog.setSheets(m_sheets);
 
     // Load existing rule if present
     const auto* existing = sheet->getValidationAt(minRow, minCol);
