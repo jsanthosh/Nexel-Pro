@@ -885,6 +885,12 @@ void MainWindow::connectSignals() {
 
     connect(m_spreadsheetView, &SpreadsheetView::formatCellsRequested, this, &MainWindow::onFormatCells);
     connect(m_spreadsheetView, &SpreadsheetView::pivotFilterChanged, this, &MainWindow::onPivotFilterChanged);
+    connect(m_spreadsheetView, &SpreadsheetView::requestSwitchToSheet, this, [this](int index) {
+        if (index >= 0 && index < static_cast<int>(m_sheets.size())) {
+            m_sheetTabBar->setCurrentIndex(index);
+            switchToSheet(index);
+        }
+    });
 
     connect(m_spreadsheetView, &SpreadsheetView::cellSelected,
             this, [this](int row, int col, const QString& content, const QString& address) {

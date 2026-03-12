@@ -160,6 +160,15 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
                         for (const auto& item : plObj["options"].toArray()) {
                             rule.listItems.append(item.toString());
                         }
+                        if (plObj.contains("sourceRange")) {
+                            rule.listSourceRange = plObj["sourceRange"].toString();
+                            rule.listSortMode = plObj["sortMode"].toInt(0);
+                            rule.listIgnoreBlanks = plObj["ignoreBlanks"].toBool(true);
+                        }
+                        if (plObj.contains("optionColors")) {
+                            for (const auto& c : plObj["optionColors"].toArray())
+                                rule.listItemColors.append(c.toString());
+                        }
                         sheet->addValidationRule(rule);
                         // Set Picklist numberFormat on cells in range
                         for (const auto& addr : rule.range.getCells()) {
@@ -203,6 +212,33 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
                         style.numberFormat = "Checkbox";
                         cell->setStyle(style);
                         cell->setValue(QVariant(cbObj["checked"].toBool()));
+                    }
+                }
+
+                // Restore conditional formatting rules
+                if (sheetObj.contains("conditionalFormats")) {
+                    for (const auto& cfVal : sheetObj["conditionalFormats"].toArray()) {
+                        QJsonObject cfObj = cfVal.toObject();
+                        CellRange range(cfObj["range"].toString());
+                        auto condType = static_cast<ConditionType>(cfObj["type"].toInt());
+                        auto rule = std::make_shared<ConditionalFormat>(range, condType);
+                        if (cfObj.contains("value1"))
+                            rule->setValue1(cfObj["value1"].toVariant());
+                        if (cfObj.contains("value2"))
+                            rule->setValue2(cfObj["value2"].toVariant());
+                        if (cfObj.contains("formula"))
+                            rule->setFormula(cfObj["formula"].toString());
+                        QJsonObject styleObj = cfObj["style"].toObject();
+                        CellStyle st;
+                        st.bold = styleObj["bold"].toBool();
+                        st.italic = styleObj["italic"].toBool();
+                        st.underline = styleObj["underline"].toBool();
+                        if (styleObj.contains("fontColor"))
+                            st.foregroundColor = styleObj["fontColor"].toString();
+                        if (styleObj.contains("bgColor"))
+                            st.backgroundColor = styleObj["bgColor"].toString();
+                        rule->setStyle(st);
+                        sheet->getConditionalFormatting().addRule(rule);
                     }
                 }
             }
@@ -1320,12 +1356,23 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             // Picklist/Checkbox cells: scan for cells with these formats
             QJsonArray picklistRules;
             for (const auto& rule : sheet->getValidationRules()) {
-                if (rule.type == Spreadsheet::DataValidationRule::List && !rule.listItems.isEmpty()) {
+                if (rule.type == Spreadsheet::DataValidationRule::List &&
+                    (!rule.listItems.isEmpty() || !rule.listSourceRange.isEmpty())) {
                     QJsonObject ruleObj;
                     ruleObj["range"] = rule.range.toString();
                     QJsonArray items;
                     for (const auto& item : rule.listItems) items.append(item);
                     ruleObj["options"] = items;
+                    if (!rule.listSourceRange.isEmpty()) {
+                        ruleObj["sourceRange"] = rule.listSourceRange;
+                        ruleObj["sortMode"] = rule.listSortMode;
+                        ruleObj["ignoreBlanks"] = rule.listIgnoreBlanks;
+                    }
+                    if (!rule.listItemColors.isEmpty()) {
+                        QJsonArray colorsArr;
+                        for (const auto& c : rule.listItemColors) colorsArr.append(c);
+                        ruleObj["optionColors"] = colorsArr;
+                    }
                     picklistRules.append(ruleObj);
                 }
             }
@@ -1375,7 +1422,34 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                 sheetObj["tables"] = tablesArray;
             }
 
-            if (sheetObj.contains("picklists") || sheetObj.contains("checkboxes") || sheetObj.contains("tables")) {
+            // Conditional formatting rules
+            const auto& cfRules = sheet->getConditionalFormatting().getAllRules();
+            if (!cfRules.empty()) {
+                QJsonArray cfArray;
+                for (const auto& rule : cfRules) {
+                    QJsonObject rObj;
+                    rObj["range"] = rule->getRange().toString();
+                    rObj["type"] = static_cast<int>(rule->getType());
+                    if (!rule->getValue1().isNull())
+                        rObj["value1"] = QJsonValue::fromVariant(rule->getValue1());
+                    if (!rule->getValue2().isNull())
+                        rObj["value2"] = QJsonValue::fromVariant(rule->getValue2());
+                    if (!rule->getFormula().isEmpty())
+                        rObj["formula"] = rule->getFormula();
+                    const CellStyle& st = rule->getStyle();
+                    QJsonObject styleObj;
+                    if (st.bold) styleObj["bold"] = true;
+                    if (st.italic) styleObj["italic"] = true;
+                    if (st.underline) styleObj["underline"] = true;
+                    if (st.foregroundColor != "#000000") styleObj["fontColor"] = st.foregroundColor;
+                    if (st.backgroundColor != "#FFFFFF") styleObj["bgColor"] = st.backgroundColor;
+                    rObj["style"] = styleObj;
+                    cfArray.append(rObj);
+                }
+                sheetObj["conditionalFormats"] = cfArray;
+            }
+
+            if (sheetObj.contains("picklists") || sheetObj.contains("checkboxes") || sheetObj.contains("tables") || sheetObj.contains("conditionalFormats")) {
                 sheetsArray.append(sheetObj);
             }
         }

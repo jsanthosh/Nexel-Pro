@@ -1,8 +1,7 @@
 #ifndef DEPENDENCYGRAPH_H
 #define DEPENDENCYGRAPH_H
 
-#include <QString>
-#include <string>
+#include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -20,15 +19,21 @@ public:
     void clear();
 
 private:
-    static std::string key(const CellAddress& addr);
+    static uint64_t pack(const CellAddress& addr) {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(addr.row)) << 32)
+             | static_cast<uint64_t>(static_cast<uint32_t>(addr.col));
+    }
+    static CellAddress unpack(uint64_t key) {
+        return CellAddress(static_cast<int>(key >> 32), static_cast<int>(key & 0xFFFFFFFF));
+    }
 
     // cell -> set of cells that depend on it
-    std::unordered_map<std::string, std::unordered_set<std::string>> m_dependents;
+    std::unordered_map<uint64_t, std::unordered_set<uint64_t>> m_dependents;
     // cell -> set of cells it depends on
-    std::unordered_map<std::string, std::unordered_set<std::string>> m_dependencies;
+    std::unordered_map<uint64_t, std::unordered_set<uint64_t>> m_dependencies;
 
-    bool detectCycle(const std::string& start, const std::string& current,
-                     std::unordered_set<std::string>& visited) const;
+    bool detectCycle(uint64_t start, uint64_t current,
+                     std::unordered_set<uint64_t>& visited) const;
 };
 
 #endif // DEPENDENCYGRAPH_H

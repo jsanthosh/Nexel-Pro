@@ -4,6 +4,7 @@
 #include <QString>
 #include <QVariant>
 #include <vector>
+#include <deque>
 #include <memory>
 #include "Cell.h"
 #include "CellRange.h"
@@ -139,8 +140,8 @@ public:
     void clear();
 
 private:
-    std::vector<std::unique_ptr<UndoCommand>> m_undoStack;
-    std::vector<std::unique_ptr<UndoCommand>> m_redoStack;
+    std::deque<std::unique_ptr<UndoCommand>> m_undoStack;
+    std::deque<std::unique_ptr<UndoCommand>> m_redoStack;
     static constexpr size_t MAX_UNDO = 100;
 };
 

@@ -430,6 +430,19 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
     bool isSelected = option.state & QStyle::State_Selected;
     bool hasFocus = option.state & QStyle::State_HasFocus;
 
+    // --- Check if this is a Picklist/Checkbox cell (skip selection tint) ---
+    bool isPicklistOrCheckbox = false;
+    if (m_spreadsheetView) {
+        auto sp = m_spreadsheetView->getSpreadsheet();
+        if (sp) {
+            auto c = sp->getCellIfExists(index.row(), index.column());
+            if (c) {
+                const auto& fmt = c->getStyle().numberFormat;
+                isPicklistOrCheckbox = (fmt == "Picklist" || fmt == "Checkbox");
+            }
+        }
+    }
+
     // --- Background ---
     QColor bgColor(Qt::white);
     QVariant bgData = index.data(Qt::BackgroundRole);
@@ -440,7 +453,10 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         }
     }
 
-    if (isSelected && !hasFocus) {
+    if (isPicklistOrCheckbox) {
+        // Picklist/Checkbox cells: always white bg, no selection tint
+        painter->fillRect(rect, Qt::white);
+    } else if (isSelected && !hasFocus) {
         // Multi-select: light blue tint over cell background
         painter->fillRect(rect, bgColor);
         painter->fillRect(rect, ThemeManager::instance().currentTheme().selectionTint);
@@ -477,8 +493,7 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
                     skipText = true;
                 } else if (style.numberFormat == "Picklist") {
                     QString val = cell->getValue().toString();
-                    // Always fill white bg to override focus/selection highlight
-                    painter->fillRect(rect, Qt::white);
+                    // White bg already painted above (isPicklistOrCheckbox branch)
                     const auto* rule = spreadsheet->getValidationAt(index.row(), index.column());
                     QStringList options = rule ? rule->listItems : QStringList();
                     QStringList colors = rule ? rule->listItemColors : QStringList();

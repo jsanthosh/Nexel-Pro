@@ -1,12 +1,65 @@
 #include "Spreadsheet.h"
 #include "PivotEngine.h"
 #include <algorithm>
+#include <QRegularExpression>
+
+// Helper: adjust formula cell references for row/column insert/delete
+// mode: 'R' = row shift, 'C' = column shift
+// atIndex: 0-based row or column where insert/delete happens
+// delta: positive for insert, negative for delete
+static QString shiftFormulaRefs(const QString& formula, char mode, int atIndex, int delta) {
+    static QRegularExpression cellRefRe("(\\$?)([A-Za-z]+)(\\$?)(\\d+)");
+    QString result;
+    int lastEnd = 0;
+    auto it = cellRefRe.globalMatch(formula);
+    while (it.hasNext()) {
+        auto match = it.next();
+        result += formula.mid(lastEnd, match.capturedStart() - lastEnd);
+
+        bool colAbsolute = !match.captured(1).isEmpty();
+        QString colLetters = match.captured(2);
+        bool rowAbsolute = !match.captured(3).isEmpty();
+        int rowNum = match.captured(4).toInt(); // 1-based
+
+        if (mode == 'R') {
+            // Shift row references at or after atIndex (0-based → 1-based = atIndex+1)
+            if (rowNum > atIndex) { // rowNum is 1-based, atIndex is 0-based
+                rowNum += delta;
+                if (rowNum < 1) rowNum = 1;
+            }
+        } else if (mode == 'C') {
+            // Shift column references at or after atIndex
+            int colIdx = 0;
+            for (QChar ch : colLetters)
+                colIdx = colIdx * 26 + (ch.toUpper().toLatin1() - 'A');
+            if (colIdx >= atIndex) {
+                colIdx += delta;
+                if (colIdx < 0) colIdx = 0;
+                bool wasUpper = !colLetters.isEmpty() && colLetters[0].isUpper();
+                colLetters.clear();
+                int c = colIdx + 1; // convert back to 1-based for letter encoding
+                while (c > 0) {
+                    colLetters = QChar((wasUpper ? 'A' : 'a') + (c - 1) % 26) + colLetters;
+                    c = (c - 1) / 26;
+                }
+            }
+        }
+
+        result += (colAbsolute ? "$" : "") + colLetters + (rowAbsolute ? "$" : "") + QString::number(rowNum);
+        lastEnd = match.capturedEnd();
+    }
+    result += formula.mid(lastEnd);
+    return result;
+}
 
 Spreadsheet::Spreadsheet()
     : m_sheetName("Sheet1"), m_rowCount(1000), m_columnCount(256),
       m_autoRecalculate(true), m_inTransaction(false) {
     m_formulaEngine = std::make_unique<FormulaEngine>(this);
     m_cells.reserve(4096);
+    m_conditionalFormatting.setFormulaEvaluator([this](const QString& formula) -> QVariant {
+        return m_formulaEngine->evaluate(formula);
+    });
 }
 
 Spreadsheet::~Spreadsheet() = default;
@@ -158,9 +211,39 @@ void Spreadsheet::insertRow(int row, int count) {
     }
     for (const auto& key : toRemove) m_cells.erase(key);
     for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
+    // Shift formula references
+    for (auto& [key, cell] : m_cells) {
+        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
+            QString adjusted = shiftFormulaRefs(cell->getFormula(), 'R', row, count);
+            if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
+        }
+    }
+    // Shift merged regions
+    for (auto& mr : m_mergedRegions) {
+        auto s = mr.range.getStart(); auto e = mr.range.getEnd();
+        if (s.row >= row) s.row += count;
+        if (e.row >= row) e.row += count;
+        mr.range = CellRange(s, e);
+    }
+    // Shift validation rules
+    for (auto& rule : m_validationRules) {
+        auto s = rule.range.getStart(); auto e = rule.range.getEnd();
+        if (s.row >= row) s.row += count;
+        if (e.row >= row) e.row += count;
+        rule.range = CellRange(s, e);
+    }
+    // Shift tables
+    for (auto& tbl : m_tables) {
+        auto s = tbl.range.getStart(); auto e = tbl.range.getEnd();
+        if (s.row >= row) s.row += count;
+        if (e.row >= row) e.row += count;
+        tbl.range = CellRange(s, e);
+    }
     m_rowCount += count;
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
+    m_depGraph.clear();
+    rebuildDependencyGraph();
 }
 
 void Spreadsheet::insertColumn(int column, int count) {
@@ -174,9 +257,35 @@ void Spreadsheet::insertColumn(int column, int count) {
     }
     for (const auto& key : toRemove) m_cells.erase(key);
     for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
+    for (auto& [key, cell] : m_cells) {
+        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
+            QString adjusted = shiftFormulaRefs(cell->getFormula(), 'C', column, count);
+            if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
+        }
+    }
+    for (auto& mr : m_mergedRegions) {
+        auto s = mr.range.getStart(); auto e = mr.range.getEnd();
+        if (s.col >= column) s.col += count;
+        if (e.col >= column) e.col += count;
+        mr.range = CellRange(s, e);
+    }
+    for (auto& rule : m_validationRules) {
+        auto s = rule.range.getStart(); auto e = rule.range.getEnd();
+        if (s.col >= column) s.col += count;
+        if (e.col >= column) e.col += count;
+        rule.range = CellRange(s, e);
+    }
+    for (auto& tbl : m_tables) {
+        auto s = tbl.range.getStart(); auto e = tbl.range.getEnd();
+        if (s.col >= column) s.col += count;
+        if (e.col >= column) e.col += count;
+        tbl.range = CellRange(s, e);
+    }
     m_columnCount += count;
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
+    m_depGraph.clear();
+    rebuildDependencyGraph();
 }
 
 void Spreadsheet::deleteRow(int row, int count) {
@@ -192,9 +301,40 @@ void Spreadsheet::deleteRow(int row, int count) {
     }
     for (const auto& key : toRemove) m_cells.erase(key);
     for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
+    for (auto& [key, cell] : m_cells) {
+        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
+            QString adjusted = shiftFormulaRefs(cell->getFormula(), 'R', row, -count);
+            if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
+        }
+    }
+    // Remove merged regions in deleted rows, shift others
+    m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
+        [row, count](const MergedRegion& mr) {
+            return mr.range.getStart().row >= row && mr.range.getEnd().row < row + count;
+        }), m_mergedRegions.end());
+    for (auto& mr : m_mergedRegions) {
+        auto s = mr.range.getStart(); auto e = mr.range.getEnd();
+        if (s.row >= row + count) s.row -= count;
+        if (e.row >= row + count) e.row -= count;
+        mr.range = CellRange(s, e);
+    }
+    for (auto& rule : m_validationRules) {
+        auto s = rule.range.getStart(); auto e = rule.range.getEnd();
+        if (s.row >= row + count) s.row -= count;
+        if (e.row >= row + count) e.row -= count;
+        rule.range = CellRange(s, e);
+    }
+    for (auto& tbl : m_tables) {
+        auto s = tbl.range.getStart(); auto e = tbl.range.getEnd();
+        if (s.row >= row + count) s.row -= count;
+        if (e.row >= row + count) e.row -= count;
+        tbl.range = CellRange(s, e);
+    }
     m_rowCount -= count;
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
+    m_depGraph.clear();
+    rebuildDependencyGraph();
 }
 
 void Spreadsheet::deleteColumn(int column, int count) {
@@ -210,9 +350,39 @@ void Spreadsheet::deleteColumn(int column, int count) {
     }
     for (const auto& key : toRemove) m_cells.erase(key);
     for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
+    for (auto& [key, cell] : m_cells) {
+        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
+            QString adjusted = shiftFormulaRefs(cell->getFormula(), 'C', column, -count);
+            if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
+        }
+    }
+    m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
+        [column, count](const MergedRegion& mr) {
+            return mr.range.getStart().col >= column && mr.range.getEnd().col < column + count;
+        }), m_mergedRegions.end());
+    for (auto& mr : m_mergedRegions) {
+        auto s = mr.range.getStart(); auto e = mr.range.getEnd();
+        if (s.col >= column + count) s.col -= count;
+        if (e.col >= column + count) e.col -= count;
+        mr.range = CellRange(s, e);
+    }
+    for (auto& rule : m_validationRules) {
+        auto s = rule.range.getStart(); auto e = rule.range.getEnd();
+        if (s.col >= column + count) s.col -= count;
+        if (e.col >= column + count) e.col -= count;
+        rule.range = CellRange(s, e);
+    }
+    for (auto& tbl : m_tables) {
+        auto s = tbl.range.getStart(); auto e = tbl.range.getEnd();
+        if (s.col >= column + count) s.col -= count;
+        if (e.col >= column + count) e.col -= count;
+        tbl.range = CellRange(s, e);
+    }
     m_columnCount -= count;
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
+    m_depGraph.clear();
+    rebuildDependencyGraph();
 }
 
 QString Spreadsheet::getSheetName() const { return m_sheetName; }
@@ -275,6 +445,22 @@ void Spreadsheet::finishBulkImport() {
     updateMaxRowCol();
     buildNavIndexIfNeeded();
     // Formula tracker is populated inside buildNavIndexIfNeeded
+}
+
+void Spreadsheet::rebuildDependencyGraph() {
+    m_colRefFormulas.clear();
+    for (auto& [key, cell] : m_cells) {
+        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
+            CellAddress addr(key.row, key.col);
+            m_formulaEngine->evaluate(cell->getFormula());
+            for (const auto& dep : m_formulaEngine->getLastDependencies()) {
+                m_depGraph.addDependency(addr, dep);
+            }
+            for (int col : m_formulaEngine->getLastColumnDeps()) {
+                m_colRefFormulas[col].push_back(addr);
+            }
+        }
+    }
 }
 
 void Spreadsheet::mergeBulkCells(CellMap& source) {

@@ -119,6 +119,8 @@ public:
         QStringList listItems;
         QStringList listItemColors; // per-option background colors (hex), parallel to listItems
         QString listSourceRange;    // e.g. "Sheet2!A1:A10" — empty means manual list
+        int listSortMode = 0;      // 0=None, 1=A-Z, 2=Z-A
+        bool listIgnoreBlanks = true;
         QString customFormula;
         QString inputTitle;
         QString inputMessage;
@@ -163,6 +165,7 @@ public:
     // Caller MUST call setAutoRecalculate(false) before and finishBulkImport() after.
     Cell* getOrCreateCellFast(int row, int col);
     void finishBulkImport();
+    void rebuildDependencyGraph();
 
     // Fast cell navigation — uses lazy cached index, O(1) after first build.
     // Returns const references to sorted vectors of occupied row/col indices.

@@ -887,7 +887,10 @@ QVariant FormulaEngine::funcHLOOKUP(const std::vector<QVariant>& args) {
                     match = true;
             }
         }
-        if (match) return table[rowIdx - 1][c];
+        if (match) {
+            if (c < table[rowIdx - 1].size()) return table[rowIdx - 1][c];
+            return QVariant("#REF!");
+        }
     }
     return QVariant("#N/A");
 }
@@ -926,8 +929,9 @@ QVariant FormulaEngine::funcINDEX(const std::vector<QVariant>& args) {
     CellRange range = m_lastRangeArgs[0];
     auto table = getRangeValues2D(range);
 
+    if (table.empty()) return QVariant("#REF!");
     if (rowNum < 1 || rowNum > static_cast<int>(table.size())) return QVariant("#REF!");
-    if (colNum < 1 || colNum > static_cast<int>(table[0].size())) return QVariant("#REF!");
+    if (table[0].empty() || colNum < 1 || colNum > static_cast<int>(table[0].size())) return QVariant("#REF!");
     return table[rowNum - 1][colNum - 1];
 }
 

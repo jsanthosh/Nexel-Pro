@@ -5,6 +5,7 @@
 #include <QVariant>
 #include <vector>
 #include <memory>
+#include <functional>
 #include "CellRange.h"
 #include "Cell.h"
 
@@ -27,13 +28,17 @@ public:
     const CellRange& getRange() const;
     ConditionType getType() const;
     const CellStyle& getStyle() const;
+    const QVariant& getValue1() const { return m_value1; }
+    const QVariant& getValue2() const { return m_value2; }
+    const QString& getFormula() const { return m_formula; }
 
     void setValue1(const QVariant& value);
     void setValue2(const QVariant& value);
     void setFormula(const QString& formula);
     void setStyle(const CellStyle& style);
 
-    bool matches(const QVariant& cellValue) const;
+    using FormulaEvaluator = std::function<QVariant(const QString&)>;
+    bool matches(const QVariant& cellValue, const FormulaEvaluator& evaluator = nullptr) const;
 
 private:
     CellRange m_range;
@@ -58,6 +63,10 @@ public:
     // Get rules for a specific range
     std::vector<std::shared_ptr<ConditionalFormat>> getRulesForRange(const CellRange& range) const;
 
+    // Set formula evaluator for formula-based conditions
+    using FormulaEvaluator = ConditionalFormat::FormulaEvaluator;
+    void setFormulaEvaluator(const FormulaEvaluator& evaluator) { m_evaluator = evaluator; }
+
     // Get style for a cell
     CellStyle getEffectiveStyle(const CellAddress& addr, const QVariant& cellValue, const CellStyle& baseStyle) const;
 
@@ -69,6 +78,7 @@ public:
 
 private:
     std::vector<std::shared_ptr<ConditionalFormat>> m_rules;
+    FormulaEvaluator m_evaluator;
 };
 
 #endif // CONDITIONALFORMATTING_H

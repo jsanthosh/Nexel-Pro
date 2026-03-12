@@ -32,7 +32,7 @@ void ConditionalFormat::setStyle(const CellStyle& style) {
     m_style = style;
 }
 
-bool ConditionalFormat::matches(const QVariant& cellValue) const {
+bool ConditionalFormat::matches(const QVariant& cellValue, const FormulaEvaluator& evaluator) const {
     switch (m_type) {
         case ConditionType::Equal:
             return cellValue == m_value1;
@@ -52,7 +52,13 @@ bool ConditionalFormat::matches(const QVariant& cellValue) const {
         case ConditionType::CellContains:
             return cellValue.toString().contains(m_value1.toString());
         case ConditionType::Formula:
-            // TODO: Evaluate formula
+            if (evaluator && !m_formula.isEmpty()) {
+                QVariant result = evaluator(m_formula);
+                if (result.typeId() == QMetaType::Bool) return result.toBool();
+                if (result.typeId() == QMetaType::Double || result.typeId() == QMetaType::Int)
+                    return result.toDouble() != 0.0;
+                return !result.toString().isEmpty() && result.toString().toLower() != "false";
+            }
             return false;
     }
     return false;
@@ -82,7 +88,7 @@ CellStyle ConditionalFormatting::getEffectiveStyle(const CellAddress& addr, cons
     CellStyle effective = baseStyle;
 
     for (const auto& rule : m_rules) {
-        if (rule->getRange().contains(addr) && rule->matches(cellValue)) {
+        if (rule->getRange().contains(addr) && rule->matches(cellValue, m_evaluator)) {
             const CellStyle& ruleStyle = rule->getStyle();
             if (ruleStyle.bold) effective.bold = true;
             if (ruleStyle.italic) effective.italic = true;

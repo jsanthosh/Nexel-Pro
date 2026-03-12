@@ -98,6 +98,7 @@ public:
     void insertCheckbox();
     void toggleCheckbox(int row, int col);
     void showPicklistPopup(const QModelIndex& index);
+    QStringList resolvePicklistFromRange(const QString& listSourceRange) const;
     void openPicklistManageDialog(int row, int col);
     void openPicklistManagerDialog();
 
@@ -166,6 +167,7 @@ signals:
     void cellReferenceInserted(const QString& ref);
     void cellReferenceReplaced(const QString& newRef);
     void pivotFilterChanged(int filterIndex, QStringList selectedValues);
+    void requestSwitchToSheet(int index);
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -193,6 +195,7 @@ private:
     CellDelegate* m_delegate = nullptr;
     MacroEngine* m_macroEngine = nullptr;
     int m_zoomLevel;
+    int m_baseFontSize = 11;
 
     // Format painter state
     bool m_formatPainterActive = false;
@@ -204,6 +207,7 @@ private:
         CellStyle style;
         CellType type;
         QString formula;
+        CellAddress sourceAddr;  // original cell position for formula ref adjustment
     };
     std::vector<std::vector<ClipboardCell>> m_internalClipboard;
     QString m_internalClipboardText;

@@ -139,7 +139,7 @@ void UndoManager::execute(std::unique_ptr<UndoCommand> cmd, Spreadsheet* sheet) 
     m_redoStack.clear();
 
     if (m_undoStack.size() > MAX_UNDO) {
-        m_undoStack.erase(m_undoStack.begin());
+        m_undoStack.pop_front();
     }
 }
 
@@ -148,7 +148,7 @@ void UndoManager::pushCommand(std::unique_ptr<UndoCommand> cmd) {
     m_redoStack.clear();
 
     if (m_undoStack.size() > MAX_UNDO) {
-        m_undoStack.erase(m_undoStack.begin());
+        m_undoStack.pop_front();
     }
 }
 
