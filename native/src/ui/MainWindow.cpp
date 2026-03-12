@@ -67,7 +67,7 @@
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
-    setWindowTitle("NexelBI");
+    setWindowTitle("Nexel 6");
     setGeometry(100, 100, 1280, 800);
 
 #ifdef HAS_DATA2APP
@@ -163,33 +163,9 @@ MainWindow::MainWindow(QWidget* parent)
     // Deselect charts/shapes when clicking on the spreadsheet
     m_spreadsheetView->viewport()->installEventFilter(this);
 
-    // Move charts, shapes, and images with the grid when scrolling (Excel-like anchoring).
-    // Uses rowViewportPosition(0) / columnViewportPosition(0) for exact pixel tracking.
+    // Reposition all overlays from their cell anchors on every scroll (Excel-like anchoring).
     auto moveOverlays = [this]() {
-        int row0Y = m_spreadsheetView->rowViewportPosition(0);
-        int col0X = m_spreadsheetView->columnViewportPosition(0);
-        int dy = row0Y - m_lastVScrollValue;  // positive = scrolled up, negative = scrolled down
-        int dx = col0X - m_lastHScrollValue;
-        m_lastVScrollValue = row0Y;
-        m_lastHScrollValue = col0X;
-
-        if (dy != 0 || dx != 0) {
-            QPoint offset(dx, dy);
-            for (auto* chart : m_charts) {
-                if (chart->property("sheetIndex").toInt() != m_activeSheetIndex) continue;
-                if (chart->isDragging()) continue;
-                chart->move(chart->pos() + offset);
-            }
-            for (auto* shape : m_shapes) {
-                if (shape->property("sheetIndex").toInt() != m_activeSheetIndex) continue;
-                if (shape->isDragging()) continue;
-                shape->move(shape->pos() + offset);
-            }
-            for (auto* img : m_images) {
-                if (img->property("sheetIndex").toInt() != m_activeSheetIndex) continue;
-                img->move(img->pos() + offset);
-            }
-        }
+        repositionAllOverlays();
         for (auto* chart : m_charts) chart->updateOverlayPosition();
         if (m_lazyLoadCharts) loadVisibleLazyCharts();
     };
@@ -308,8 +284,6 @@ void MainWindow::onSheetTabChanged(int index) {
 void MainWindow::switchToSheet(int index) {
     if (index < 0 || index >= static_cast<int>(m_sheets.size())) return;
     m_activeSheetIndex = index;
-    m_lastVScrollValue = m_spreadsheetView->rowViewportPosition(0);
-    m_lastHScrollValue = m_spreadsheetView->columnViewportPosition(0);
     m_spreadsheetView->clearChartRangeHighlight();
     m_spreadsheetView->setAllSheets(m_sheets);
     m_spreadsheetView->setSpreadsheet(m_sheets[index]);
@@ -335,6 +309,7 @@ void MainWindow::switchToSheet(int index) {
         img->setVisible(img->property("sheetIndex").toInt() == index);
     }
     applyZOrder();
+    repositionAllOverlays();
 
     // Load any lazy-pending charts that are now visible on this sheet
     if (m_lazyLoadCharts) loadVisibleLazyCharts();
@@ -562,7 +537,7 @@ void MainWindow::createMenuBar() {
         QString newName = QInputDialog::getText(this, "Rename Document",
             "Document name:", QLineEdit::Normal, baseName, &ok);
         if (ok && !newName.isEmpty()) {
-            setWindowTitle("NexelBI - " + newName);
+            setWindowTitle("Nexel 6 - " + newName);
             statusBar()->showMessage("Renamed to: " + newName);
         }
     });
@@ -1102,7 +1077,7 @@ void MainWindow::openFile(const QString& fileName) {
 void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& fileName, qint64 elapsedMs) {
     if (!result.sheets.empty()) {
         setSheets(result.sheets);
-        setWindowTitle("NexelBI - " + QFileInfo(fileName).fileName());
+        setWindowTitle("Nexel 6 - " + QFileInfo(fileName).fileName());
 
         // Create chart widgets from imported charts
         static const QVector<QColor> excelColors = {
@@ -2279,7 +2254,7 @@ void MainWindow::setDirty(bool dirty) {
 }
 
 void MainWindow::updateWindowTitle() {
-    QString title = "NexelBI";
+    QString title = "Nexel 6";
     if (!m_currentFilePath.isEmpty()) {
         title += " - " + QFileInfo(m_currentFilePath).fileName();
     }
@@ -2739,9 +2714,106 @@ void MainWindow::deleteSelectedOverlays() {
 
 // ============== Overlay Z-Order & Grouping ==============
 
+// ---------------------------------------------------------------------------
+// Cell-anchor helpers: Excel-like overlay positioning
+// Each overlay stores dynamic properties: anchorRow, anchorCol, anchorOffsetX,
+// anchorOffsetY — the pixel offset from the top-left of the anchor cell.
+// On scroll we recompute the viewport pixel position from these anchors.
+// ---------------------------------------------------------------------------
+
+void MainWindow::anchorOverlayToCell(QWidget* overlay) {
+    // Convert the overlay's current viewport position to a cell anchor.
+    QPoint pos = overlay->pos();  // relative to viewport
+
+    // Find the row whose top edge is at or above pos.y()
+    int anchorRow = m_spreadsheetView->rowAt(pos.y());
+    int anchorCol = m_spreadsheetView->columnAt(pos.x());
+
+    // If pos is above/left of all visible rows/cols, clamp to 0
+    if (anchorRow < 0) anchorRow = 0;
+    if (anchorCol < 0) anchorCol = 0;
+
+    // Pixel offset within the anchor cell
+    int cellX = m_spreadsheetView->columnViewportPosition(anchorCol);
+    int cellY = m_spreadsheetView->rowViewportPosition(anchorRow);
+    int offsetX = pos.x() - cellX;
+    int offsetY = pos.y() - cellY;
+
+    overlay->setProperty("anchorRow", anchorRow);
+    overlay->setProperty("anchorCol", anchorCol);
+    overlay->setProperty("anchorOffsetX", offsetX);
+    overlay->setProperty("anchorOffsetY", offsetY);
+}
+
+void MainWindow::repositionAnchoredOverlay(QWidget* overlay) {
+    if (overlay->property("sheetIndex").toInt() != m_activeSheetIndex) return;
+
+    // Skip overlays being dragged — they follow the cursor
+    auto* chart = qobject_cast<ChartWidget*>(overlay);
+    if (chart && chart->isDragging()) return;
+    auto* shape = qobject_cast<ShapeWidget*>(overlay);
+    if (shape && shape->isDragging()) return;
+
+    int row = overlay->property("anchorRow").toInt();
+    int col = overlay->property("anchorCol").toInt();
+    int offX = overlay->property("anchorOffsetX").toInt();
+    int offY = overlay->property("anchorOffsetY").toInt();
+
+    // Compute pixel position of anchor cell in viewport
+    int cellX = m_spreadsheetView->columnViewportPosition(col);
+    int cellY = m_spreadsheetView->rowViewportPosition(row);
+
+    // If anchor cell is scrolled out of view, rowViewportPosition returns -1.
+    // Accumulate row/col heights to get the correct off-screen position.
+    if (cellY == -1) {
+        int firstVisRow = m_spreadsheetView->rowAt(0);
+        if (firstVisRow < 0) firstVisRow = 0;
+        cellY = 0;
+        if (row < firstVisRow) {
+            for (int r = row; r < firstVisRow; ++r)
+                cellY -= m_spreadsheetView->rowHeight(r);
+        } else {
+            for (int r = firstVisRow; r < row; ++r)
+                cellY += m_spreadsheetView->rowHeight(r);
+        }
+    }
+    if (cellX == -1) {
+        int firstVisCol = m_spreadsheetView->columnAt(0);
+        if (firstVisCol < 0) firstVisCol = 0;
+        cellX = 0;
+        if (col < firstVisCol) {
+            for (int c = col; c < firstVisCol; ++c)
+                cellX -= m_spreadsheetView->columnWidth(c);
+        } else {
+            for (int c = firstVisCol; c < col; ++c)
+                cellX += m_spreadsheetView->columnWidth(c);
+        }
+    }
+
+    overlay->move(cellX + offX, cellY + offY);
+}
+
+void MainWindow::repositionAllOverlays() {
+    for (auto* c : m_charts) repositionAnchoredOverlay(c);
+    for (auto* s : m_shapes) repositionAnchoredOverlay(s);
+    for (auto* i : m_images) repositionAnchoredOverlay(i);
+}
+
 void MainWindow::addOverlay(QWidget* w) {
     if (!m_overlayZOrder.contains(w))
         m_overlayZOrder.append(w);
+
+    // Anchor to the cell under the overlay's current position
+    anchorOverlayToCell(w);
+
+    // Re-anchor when overlay is moved or resized by the user
+    if (auto* chart = qobject_cast<ChartWidget*>(w)) {
+        connect(chart, &ChartWidget::chartMoved, this, [this, chart]() { anchorOverlayToCell(chart); });
+        connect(chart, &ChartWidget::chartResized, this, [this, chart]() { anchorOverlayToCell(chart); });
+    }
+    if (auto* shape = qobject_cast<ShapeWidget*>(w)) {
+        connect(shape, &ShapeWidget::shapeMoved, this, [this, shape]() { anchorOverlayToCell(shape); });
+    }
 }
 
 void MainWindow::removeOverlay(QWidget* w) {
@@ -3580,7 +3652,7 @@ void MainWindow::applyTemplate(const TemplateResult& result) {
     }
 
     setSheets(result.sheets);
-    setWindowTitle("NexelBI - " + result.sheets[0]->getSheetName());
+    setWindowTitle("Nexel 6 - " + result.sheets[0]->getSheetName());
 
     // Create chart widgets from template charts
     for (int i = 0; i < static_cast<int>(result.charts.size()); ++i) {
