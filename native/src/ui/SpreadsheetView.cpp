@@ -58,6 +58,13 @@ void SpreadsheetView::setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet) {
     m_columnFilters.clear();
     disconnect(horizontalHeader(), &QHeaderView::sectionClicked, this, nullptr);
 
+    // Detach view from old model BEFORE deleting it — avoids Qt processing
+    // teardown signals on a large model (e.g. 90K rows), which causes lag.
+    setModel(nullptr);
+    clearSpans();
+    delete m_model;
+    m_model = nullptr;
+
     m_spreadsheet = spreadsheet;
 
     // Register callback for formula recalculation flash animation
@@ -69,14 +76,10 @@ void SpreadsheetView::setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet) {
         };
     }
 
-    if (m_model) {
-        delete m_model;
-    }
     m_model = new SpreadsheetModel(m_spreadsheet, this);
     setModel(m_model);
 
-    // Clear all old spans and re-apply from the new spreadsheet's merged regions
-    clearSpans();
+    // Re-apply merged regions from the new spreadsheet
     if (m_spreadsheet) {
         for (const auto& mr : m_spreadsheet->getMergedRegions()) {
             int r0 = mr.range.getStart().row;
@@ -780,18 +783,48 @@ void SpreadsheetView::sortAscending() {
     if (!current.isValid() || !m_spreadsheet) return;
 
     int col = current.column();
-    int maxRow = m_spreadsheet->getMaxRow();
-    int maxCol = m_spreadsheet->getMaxColumn();
-    if (maxRow < 1 && maxCol < 1) return;
-    if (maxRow < 1) maxRow = 1;
 
-    CellRange range(CellAddress(0, 0), CellAddress(maxRow, qMax(maxCol, col)));
+    // Use the user's selection if it spans multiple rows; otherwise sort the whole data region
+    QModelIndexList selected = selectionModel()->selectedIndexes();
+    CellRange range;
+    if (selected.size() > 1) {
+        int minR = INT_MAX, maxR = 0, minC = INT_MAX, maxC = 0;
+        for (const auto& idx : selected) {
+            minR = qMin(minR, idx.row());
+            maxR = qMax(maxR, idx.row());
+            minC = qMin(minC, idx.column());
+            maxC = qMax(maxC, idx.column());
+        }
+        if (minR < maxR) {
+            range = CellRange(CellAddress(minR, minC), CellAddress(maxR, maxC));
+        }
+    }
+
+    if (!range.isValid()) {
+        int maxRow = m_spreadsheet->getMaxRow();
+        int maxCol = m_spreadsheet->getMaxColumn();
+        if (maxRow < 1 && maxCol < 1) return;
+        if (maxRow < 1) maxRow = 1;
+        range = CellRange(CellAddress(0, 0), CellAddress(maxRow, qMax(maxCol, col)));
+    }
+
     m_spreadsheet->sortRange(range, col, true);
+
+    // Save selection bounds before reset clears them
+    int selMinR = range.getStart().row, selMaxR = range.getEnd().row;
+    int selMinC = range.getStart().col, selMaxC = range.getEnd().col;
 
     // Full model reset to ensure view refreshes completely
     if (m_model) {
         m_model->resetModel();
     }
+
+    // Restore the selection range — set current index first, then select,
+    // so setCurrentIndex doesn't clear the restored selection.
+    QModelIndex topLeft = m_model->index(selMinR, selMinC);
+    QModelIndex bottomRight = m_model->index(selMaxR, selMaxC);
+    selectionModel()->setCurrentIndex(topLeft, QItemSelectionModel::NoUpdate);
+    selectionModel()->select(QItemSelection(topLeft, bottomRight), QItemSelectionModel::ClearAndSelect);
 }
 
 void SpreadsheetView::sortDescending() {
@@ -799,17 +832,47 @@ void SpreadsheetView::sortDescending() {
     if (!current.isValid() || !m_spreadsheet) return;
 
     int col = current.column();
-    int maxRow = m_spreadsheet->getMaxRow();
-    int maxCol = m_spreadsheet->getMaxColumn();
-    if (maxRow < 1 && maxCol < 1) return;
-    if (maxRow < 1) maxRow = 1;
 
-    CellRange range(CellAddress(0, 0), CellAddress(maxRow, qMax(maxCol, col)));
+    // Use the user's selection if it spans multiple rows; otherwise sort the whole data region
+    QModelIndexList selected = selectionModel()->selectedIndexes();
+    CellRange range;
+    if (selected.size() > 1) {
+        int minR = INT_MAX, maxR = 0, minC = INT_MAX, maxC = 0;
+        for (const auto& idx : selected) {
+            minR = qMin(minR, idx.row());
+            maxR = qMax(maxR, idx.row());
+            minC = qMin(minC, idx.column());
+            maxC = qMax(maxC, idx.column());
+        }
+        if (minR < maxR) {
+            range = CellRange(CellAddress(minR, minC), CellAddress(maxR, maxC));
+        }
+    }
+
+    if (!range.isValid()) {
+        int maxRow = m_spreadsheet->getMaxRow();
+        int maxCol = m_spreadsheet->getMaxColumn();
+        if (maxRow < 1 && maxCol < 1) return;
+        if (maxRow < 1) maxRow = 1;
+        range = CellRange(CellAddress(0, 0), CellAddress(maxRow, qMax(maxCol, col)));
+    }
+
     m_spreadsheet->sortRange(range, col, false);
+
+    // Save selection bounds before reset clears them
+    int selMinR = range.getStart().row, selMaxR = range.getEnd().row;
+    int selMinC = range.getStart().col, selMaxC = range.getEnd().col;
 
     if (m_model) {
         m_model->resetModel();
     }
+
+    // Restore the selection range — set current index first, then select,
+    // so setCurrentIndex doesn't clear the restored selection.
+    QModelIndex topLeft = m_model->index(selMinR, selMinC);
+    QModelIndex bottomRight = m_model->index(selMaxR, selMaxC);
+    selectionModel()->setCurrentIndex(topLeft, QItemSelectionModel::NoUpdate);
+    selectionModel()->select(QItemSelection(topLeft, bottomRight), QItemSelectionModel::ClearAndSelect);
 }
 
 // ============== Table Style ==============

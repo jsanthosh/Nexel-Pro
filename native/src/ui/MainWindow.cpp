@@ -1150,6 +1150,10 @@ void MainWindow::onNewDocument() {
         }
     }
 
+    // Release old sheet data early — avoids holding large datasets in memory
+    // while building the new document
+    m_sheets.clear();
+
     auto sheet = std::make_shared<Spreadsheet>();
     sheet->setSheetName("Sheet1");
     std::vector<std::shared_ptr<Spreadsheet>> sheets = { sheet };
