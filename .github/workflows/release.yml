@@ -322,14 +322,15 @@ jobs:
             | Windows (64-bit) | `Nexel-${{ github.ref_name }}-Windows-x64.zip` |
             | Linux (64-bit) | `Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage` |
 
-            ### What's New in v5.3.0
-            - **Interactive Pivot Report Filters**: Excel-style dropdown filters on pivot tables — select/deselect values and the pivot recomputes live
-            - **XLSX Export Fix**: Fixed NaN/Infinity values causing Excel "repair content" error on open
-            - **Chart Label Centering**: X-axis category labels now centered under each bar group
-            - **Auto-Filter State Fix**: Filter dropdown icons no longer persist when switching sheets
-            - **XLSX Compatibility**: Added dimension element, moved custom metadata to docMetadata/ folder, fixed shared string count
-            - **Pivot Chart Fix**: Grand Total columns excluded from chart data range
-            - **Pivot Filter Dialog**: Enhanced with field reordering, drag-and-drop support
+            ### What's New in v5.4.0
+            - **Multi-Window Support**: File > New opens a separate window; closing one window no longer quits the app
+            - **XLSX Text Import Fix**: Fixed shared string values (names, text) incorrectly rendered as numeric indices
+            - **Cross-Sheet Picklist**: Picklist and data validation can now source options from cell ranges in other sheets
+            - **Sheet Tab Drag Reorder**: Dragging tabs now correctly reorders sheet data without swapping
+            - **Sort Range Fix**: Sort now respects the selected range and preserves selection after sorting
+            - **Chart Selection Handles**: Metal overlay charts now show resize handles when selected
+            - **Focus Border Fix**: Cell A1 green focus border renders correctly on startup and in new windows
+            - **Fill Handle Cleanup**: Stale fill handle dots no longer persist when clicking inside a selected range
           files: |
             artifacts/**/*
           draft: false
