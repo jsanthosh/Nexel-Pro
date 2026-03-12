@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(NativeSpreadsheet
-    VERSION 5.5.0
+    VERSION 6.1.0
     LANGUAGES CXX
     HOMEPAGE_URL "https://spreadsheet.local"
     DESCRIPTION "High-performance native spreadsheet application")
@@ -253,8 +253,8 @@ if(APPLE)
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.nexel.app"
         MACOSX_BUNDLE_BUNDLE_NAME "Nexel 6"
-        MACOSX_BUNDLE_BUNDLE_VERSION "5.5.0"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "5.5"
+        MACOSX_BUNDLE_BUNDLE_VERSION "6.1.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "6.1"
         MACOSX_BUNDLE_ICON_FILE AppIcon.icns
         INSTALL_RPATH "@executable_path/../Frameworks"
         BUILD_RPATH_USE_ORIGIN ON
