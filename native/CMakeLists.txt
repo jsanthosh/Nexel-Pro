@@ -15,8 +15,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Platform-specific compiler flags
 if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3 /O2")
+    # MSVC link-time optimization
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GL")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG /OPT:REF /OPT:ICF")
 else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -Wall -Wextra -O3")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -Wall -Wextra -O3 -fvisibility=hidden -fvisibility-inlines-hidden")
+    # LTO + dead-code elimination for Release builds
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -flto=thin")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -flto=thin")
+    if(APPLE)
+        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -Wl,-dead_strip")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
+        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -Wl,--gc-sections")
+    endif()
 endif()
 
 # Force native architecture (avoid universal binary issues with Homebrew Qt)
@@ -40,7 +52,6 @@ find_package(Qt6 COMPONENTS
     Network
     Concurrent
     Qml
-    Svg
     REQUIRED
 )
 find_package(Qt6CorePrivate QUIET)
@@ -217,7 +228,6 @@ target_link_libraries(NativeSpreadsheet
     Qt6::Network
     Qt6::Concurrent
     Qt6::Qml
-    Qt6::Svg
     SQLite::SQLite3
     Threads::Threads
 )
@@ -300,6 +310,19 @@ if(WIN32)
     set_target_properties(NativeSpreadsheet PROPERTIES
         WIN32_EXECUTABLE TRUE
     )
+endif()
+
+# Strip debug symbols in Release builds (saves ~3MB per platform)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    if(APPLE)
+        add_custom_command(TARGET NativeSpreadsheet POST_BUILD
+            COMMAND ${CMAKE_STRIP} -x "$<TARGET_FILE:NativeSpreadsheet>"
+            COMMENT "Stripping debug symbols from binary")
+    elseif(UNIX)
+        add_custom_command(TARGET NativeSpreadsheet POST_BUILD
+            COMMAND ${CMAKE_STRIP} --strip-unneeded "$<TARGET_FILE:NativeSpreadsheet>"
+            COMMENT "Stripping debug symbols from binary")
+    endif()
 endif()
 
 # Install
