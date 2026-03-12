@@ -1427,10 +1427,17 @@ void MainWindow::onExportCsv() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    // Count actual MainWindow instances (not menus, tooltips, dock widgets, etc.)
+    auto isLastMainWindow = [&]() {
+        int count = 0;
+        for (auto* w : QApplication::topLevelWidgets())
+            if (qobject_cast<MainWindow*>(w) && w != this) count++;
+        return count == 0;
+    };
+
     if (!m_dirty) {
         event->accept();
-        // Only fast-exit if this is the last window
-        if (QApplication::topLevelWidgets().count() <= 1)
+        if (isLastMainWindow())
             _exit(0);
         return;
     }
@@ -1442,11 +1449,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (result == QMessageBox::Save) {
         onSaveDocument();
         event->accept();
-        if (QApplication::topLevelWidgets().count() <= 1)
+        if (isLastMainWindow())
             _exit(0);
     } else if (result == QMessageBox::Discard) {
         event->accept();
-        if (QApplication::topLevelWidgets().count() <= 1)
+        if (isLastMainWindow())
             _exit(0);
     } else {
         event->ignore();
