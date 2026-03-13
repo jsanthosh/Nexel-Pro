@@ -322,14 +322,14 @@ jobs:
             | Windows (64-bit) | `Nexel-${{ github.ref_name }}-Windows-x64.zip` |
             | Linux (64-bit) | `Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage` |
 
-            ### What's New in v6.1.0
-            - **Rebranded to Nexel 6**: App title, bundle name, and window titles updated
-            - **Excel-like Cell Anchoring**: Charts, shapes, and images are now anchored to grid cells — they scroll perfectly with the spreadsheet, matching Excel behavior
-            - **Chart/Shape Auto-Scroll on Drag**: Dragging charts or shapes to viewport edges now auto-scrolls the grid
-            - **Metal Chart Redraw Fix**: Data2App chart bars no longer disappear after scrolling away and back
-            - **Legend Click Fix**: Legend item clicks now work correctly on Metal-rendered (Data2App) charts
-            - **Fast App Close**: Fixed process hanging on close with large datasets (9M+ records)
-            - **Smaller Binaries**: LTO, symbol stripping, dead-code elimination — smaller packages across all platforms
+            ### What's New in v6.2.0
+            - **Excel-style Formatting Toggle**: Bold/Italic/Underline/Strikethrough now toggle like Excel — if any cell is unset, all become set; only if all set, all unset
+            - **Fix Underline & Strikethrough**: These styles now persist correctly (was silently discarded)
+            - **Column/Row Width Shift on Delete**: Deleting columns/rows now preserves neighboring widths/heights exactly like Excel
+            - **Table Style Undo/Redo**: Applying or changing table styles is now fully undoable
+            - **Picklist Selection Tint**: Picklist/Checkbox cells now show selection highlight in multi-cell selections
+            - **Picklist Range Picker**: Sheet switching no longer closes the range picker bar
+            - **Undo/Redo Improvements**: Structural operations (insert/delete row/col) properly restore dimensions on undo
           files: |
             artifacts/**/*
           draft: false
