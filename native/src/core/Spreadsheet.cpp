@@ -1,6 +1,7 @@
 #include "Spreadsheet.h"
 #include "PivotEngine.h"
 #include <algorithm>
+#include <mutex>
 #include <QRegularExpression>
 
 // Helper: adjust formula cell references for row/column insert/delete
