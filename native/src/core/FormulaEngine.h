@@ -17,6 +17,7 @@ public:
 
     QVariant evaluate(const QString& formula);
     void setSpreadsheet(Spreadsheet* spreadsheet);
+    void setAllSheets(const std::vector<std::shared_ptr<Spreadsheet>>* sheets) { m_allSheets = sheets; }
 
     void clearCache();
     void invalidateCell(const CellAddress& addr);
@@ -28,9 +29,15 @@ public:
     const std::vector<CellAddress>& getLastDependencies() const { return m_lastDependencies; }
     // Get column-level dependencies (from column references like D:D)
     const std::vector<int>& getLastColumnDeps() const { return m_lastColumnDeps; }
+    // Get range arguments from last evaluation (for range-level dependency tracking)
+    const std::vector<CellRange>& getLastRangeArgs() const { return m_lastRangeArgs; }
+
+    // Public access to 2D range values (used by dynamic array helpers)
+    std::vector<std::vector<QVariant>> getRangeValues2D(const CellRange& range);
 
 private:
     Spreadsheet* m_spreadsheet;
+    const std::vector<std::shared_ptr<Spreadsheet>>* m_allSheets = nullptr;
     QString m_lastError;
     std::unordered_map<std::string, QVariant> m_cache;
     std::vector<CellAddress> m_lastDependencies;
@@ -89,6 +96,11 @@ private:
     QVariant funcCOUNTIF(const std::vector<QVariant>& args);
     QVariant funcSUMIF(const std::vector<QVariant>& args);
     QVariant funcAVERAGEIF(const std::vector<QVariant>& args);
+    QVariant funcSUMIFS(const std::vector<QVariant>& args);
+    QVariant funcCOUNTIFS(const std::vector<QVariant>& args);
+    QVariant funcAVERAGEIFS(const std::vector<QVariant>& args);
+    QVariant funcMINIFS(const std::vector<QVariant>& args);
+    QVariant funcMAXIFS(const std::vector<QVariant>& args);
     QVariant funcCOUNTBLANK(const std::vector<QVariant>& args);
     QVariant funcSUMPRODUCT(const std::vector<QVariant>& args);
     QVariant funcMEDIAN(const std::vector<QVariant>& args);
@@ -147,6 +159,19 @@ private:
     QVariant funcISTEXT(const std::vector<QVariant>& args);
     QVariant funcCHOOSE(const std::vector<QVariant>& args);
     QVariant funcSWITCH(const std::vector<QVariant>& args);
+    QVariant funcIFS(const std::vector<QVariant>& args);
+
+    // Text join and regex functions
+    QVariant funcTEXTJOIN(const std::vector<QVariant>& args);
+    QVariant funcREGEXMATCH(const std::vector<QVariant>& args);
+    QVariant funcREGEXEXTRACT(const std::vector<QVariant>& args);
+    QVariant funcREGEXREPLACE(const std::vector<QVariant>& args);
+
+    // Dynamic array functions
+    QVariant funcFILTER(const std::vector<QVariant>& args);
+    QVariant funcSORT(const std::vector<QVariant>& args);
+    QVariant funcUNIQUE(const std::vector<QVariant>& args);
+    QVariant funcSEQUENCE(const std::vector<QVariant>& args);
 
     // Helpers
     double toNumber(const QVariant& value);
@@ -154,7 +179,6 @@ private:
     bool toBoolean(const QVariant& value);
     QVariant getCellValue(const CellAddress& addr);
     std::vector<QVariant> getRangeValues(const CellRange& range);
-    std::vector<std::vector<QVariant>> getRangeValues2D(const CellRange& range);
     std::vector<QVariant> flattenArgs(const std::vector<QVariant>& args);
     void skipWhitespace(const QString& expr, int& pos);
     bool matchesCriteria(const QVariant& value, const QString& criteria);

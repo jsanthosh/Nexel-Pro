@@ -357,6 +357,30 @@ inline const QMap<QString, FormulaFuncInfo>& formulaRegistry() {
              {"value1", false, "The first value to compare against the expression"},
              {"result1", false, "The result to return if expression matches value1"},
              {"default", true, "The default result if no values match"}}}},
+
+        // === Dynamic Array ===
+        {"FILTER", {"FILTER", "Filters an array based on a Boolean array",
+            "FILTER(array, include, [if_empty])",
+            {{"array", false, "The range or array to filter"},
+             {"include", false, "A Boolean array whose height or width is the same as the array"},
+             {"if_empty", true, "The value to return if all values in the include array are FALSE"}}}},
+        {"SORT", {"SORT", "Sorts the contents of a range or array",
+            "SORT(array, [sort_index], [sort_order], [by_col])",
+            {{"array", false, "The range or array to sort"},
+             {"sort_index", true, "A number indicating the row or column to sort by (default 1)"},
+             {"sort_order", true, "1 for ascending (default), -1 for descending"},
+             {"by_col", true, "FALSE to sort by row (default), TRUE to sort by column"}}}},
+        {"UNIQUE", {"UNIQUE", "Returns a list of unique values from a range or array",
+            "UNIQUE(array, [by_col], [exactly_once])",
+            {{"array", false, "The range or array from which to return unique values"},
+             {"by_col", true, "FALSE for unique rows (default), TRUE for unique columns"},
+             {"exactly_once", true, "FALSE for distinct (default), TRUE for values appearing exactly once"}}}},
+        {"SEQUENCE", {"SEQUENCE", "Generates an array of sequential numbers",
+            "SEQUENCE(rows, [columns], [start], [step])",
+            {{"rows", false, "The number of rows to return"},
+             {"columns", true, "The number of columns to return (default 1)"},
+             {"start", true, "The first number in the sequence (default 1)"},
+             {"step", true, "The amount to increment each subsequent value (default 1)"}}}},
     };
     return reg;
 }

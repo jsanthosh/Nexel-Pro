@@ -78,6 +78,61 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
 
         parseSheet(sheetData, sharedStrings, styles, spreadsheet.get());
 
+        // Parse sheet rels (needed for hyperlinks and charts)
+        QString fullSheetPath = "xl/" + info.filePath;
+        int lastSlash = fullSheetPath.lastIndexOf('/');
+        QString sheetDirPath = fullSheetPath.left(lastSlash);
+        QString sheetFileName = fullSheetPath.mid(lastSlash + 1);
+        QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
+        QByteArray sheetRelsData = zip.fileData(sheetRelsPath);
+        auto sheetRels = parseRels(sheetRelsData);
+
+        // ---- Hyperlink import: parse <hyperlink> elements from sheet XML ----
+        {
+            QXmlStreamReader hxml(sheetData);
+            while (!hxml.atEnd()) {
+                hxml.readNext();
+                if (hxml.isStartElement() && hxml.name() == u"hyperlink") {
+                    QString ref = hxml.attributes().value("ref").toString();
+                    // External hyperlink via relationship
+                    QString rId;
+                    static const QString relNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+                    rId = hxml.attributes().value(relNs, "id").toString();
+                    if (rId.isEmpty()) rId = hxml.attributes().value("r:id").toString();
+                    // Internal hyperlink (location within workbook)
+                    QString location = hxml.attributes().value("location").toString();
+                    QString display = hxml.attributes().value("display").toString();
+
+                    QString url;
+                    if (!rId.isEmpty()) {
+                        auto it = sheetRels.find(rId);
+                        if (it != sheetRels.end()) url = it->second;
+                    } else if (!location.isEmpty()) {
+                        url = location;
+                    }
+
+                    if (!url.isEmpty() && !ref.isEmpty()) {
+                        // Parse cell reference
+                        int row = -1, col = -1;
+                        QString letters;
+                        int numStart = -1;
+                        for (int i = 0; i < ref.length(); ++i) {
+                            if (ref[i].isLetter()) letters += ref[i];
+                            else { numStart = i; break; }
+                        }
+                        if (numStart > 0) {
+                            col = columnLetterToIndex(letters);
+                            row = ref.mid(numStart).toInt() - 1;
+                        }
+                        if (row >= 0 && col >= 0) {
+                            auto cell = spreadsheet->getCell(CellAddress(row, col));
+                            cell->setHyperlink(url);
+                        }
+                    }
+                }
+            }
+        }
+
         // Auto-expand row/col count
         int maxRow = spreadsheet->getMaxRow();
         int maxCol = spreadsheet->getMaxColumn();
@@ -90,15 +145,6 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
         // ---- Chart import: scan for embedded charts ----
         QString drawingRId = findDrawingRId(sheetData);
         if (drawingRId.isEmpty()) continue;
-
-        // Parse sheet rels to find drawing path
-        QString fullSheetPath = "xl/" + info.filePath;
-        int lastSlash = fullSheetPath.lastIndexOf('/');
-        QString sheetDirPath = fullSheetPath.left(lastSlash);
-        QString sheetFileName = fullSheetPath.mid(lastSlash + 1);
-        QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
-        QByteArray sheetRelsData = zip.fileData(sheetRelsPath);
-        auto sheetRels = parseRels(sheetRelsData);
 
         auto drawIt = sheetRels.find(drawingRId);
         if (drawIt == sheetRels.end()) continue;
@@ -238,6 +284,41 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
                         if (styleObj.contains("bgColor"))
                             st.backgroundColor = styleObj["bgColor"].toString();
                         rule->setStyle(st);
+
+                        // Visual formatting configs
+                        if (cfObj.contains("dataBar")) {
+                            QJsonObject db = cfObj["dataBar"].toObject();
+                            DataBarConfig cfg;
+                            cfg.barColor = QColor(db["color"].toString());
+                            cfg.minValue = db["minValue"].toDouble(0);
+                            cfg.maxValue = db["maxValue"].toDouble(100);
+                            cfg.autoRange = db["autoRange"].toBool(true);
+                            cfg.showValue = db["showValue"].toBool(true);
+                            rule->setDataBarConfig(cfg);
+                        }
+                        if (cfObj.contains("colorScale")) {
+                            QJsonObject cs = cfObj["colorScale"].toObject();
+                            ColorScaleConfig cfg;
+                            cfg.minColor = QColor(cs["minColor"].toString());
+                            cfg.midColor = QColor(cs["midColor"].toString());
+                            cfg.maxColor = QColor(cs["maxColor"].toString());
+                            cfg.minValue = cs["minValue"].toDouble(0);
+                            cfg.maxValue = cs["maxValue"].toDouble(100);
+                            cfg.autoRange = cs["autoRange"].toBool(true);
+                            cfg.threeColor = cs["threeColor"].toBool(false);
+                            rule->setColorScaleConfig(cfg);
+                        }
+                        if (cfObj.contains("iconSet")) {
+                            QJsonObject is = cfObj["iconSet"].toObject();
+                            IconSetConfig cfg;
+                            cfg.iconType = static_cast<IconSetConfig::IconType>(is["iconType"].toInt(0));
+                            cfg.threshold1 = is["threshold1"].toDouble(33.33);
+                            cfg.threshold2 = is["threshold2"].toDouble(66.67);
+                            cfg.showValue = is["showValue"].toBool(true);
+                            cfg.reverseOrder = is["reverseOrder"].toBool(false);
+                            rule->setIconSetConfig(cfg);
+                        }
+
                         sheet->getConditionalFormatting().addRule(rule);
                     }
                 }
@@ -830,6 +911,94 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
             continue;
         }
 
+        // Parse XLSX conditional formatting: <conditionalFormatting sqref="A1:A10">
+        if (xml.isStartElement() && xml.name() == u"conditionalFormatting") {
+            QString sqref = xml.attributes().value("sqref").toString();
+            CellRange cfRange(sqref);
+
+            while (!xml.atEnd()) {
+                xml.readNext();
+                if (xml.isEndElement() && xml.name() == u"conditionalFormatting") break;
+                if (!xml.isStartElement() || xml.name() != u"cfRule") continue;
+
+                QString ruleType = xml.attributes().value("type").toString();
+
+                if (ruleType == "dataBar") {
+                    auto rule = std::make_shared<ConditionalFormat>(cfRange, ConditionType::DataBar);
+                    DataBarConfig cfg;
+                    while (!xml.atEnd()) {
+                        xml.readNext();
+                        if (xml.isEndElement() && xml.name() == u"cfRule") break;
+                        if (xml.isStartElement() && xml.name() == u"color") {
+                            QString rgb = xml.attributes().value("rgb").toString();
+                            if (rgb.length() == 8) rgb = "#" + rgb.mid(2);
+                            else if (!rgb.startsWith("#")) rgb = "#" + rgb;
+                            cfg.barColor = QColor(rgb);
+                        }
+                        if (xml.isStartElement() && xml.name() == u"cfvo") {
+                            QString cfvoType = xml.attributes().value("type").toString();
+                            if (cfvoType == "min") cfg.autoRange = true;
+                        }
+                    }
+                    rule->setDataBarConfig(cfg);
+                    sheet->getConditionalFormatting().addRule(rule);
+                } else if (ruleType == "colorScale") {
+                    QVector<QColor> colors;
+                    int cfvoCount = 0;
+                    while (!xml.atEnd()) {
+                        xml.readNext();
+                        if (xml.isEndElement() && xml.name() == u"cfRule") break;
+                        if (xml.isStartElement() && xml.name() == u"cfvo") cfvoCount++;
+                        if (xml.isStartElement() && xml.name() == u"color") {
+                            QString rgb = xml.attributes().value("rgb").toString();
+                            if (rgb.length() == 8) rgb = "#" + rgb.mid(2);
+                            else if (!rgb.startsWith("#")) rgb = "#" + rgb;
+                            colors.append(QColor(rgb));
+                        }
+                    }
+                    bool isThreeColor = (cfvoCount >= 3 && colors.size() >= 3);
+                    auto condType = isThreeColor ? ConditionType::ColorScale3 : ConditionType::ColorScale2;
+                    auto rule = std::make_shared<ConditionalFormat>(cfRange, condType);
+                    ColorScaleConfig cfg;
+                    cfg.autoRange = true;
+                    if (colors.size() >= 2) {
+                        cfg.minColor = colors[0];
+                        cfg.maxColor = colors[colors.size() - 1];
+                    }
+                    if (isThreeColor && colors.size() >= 3) {
+                        cfg.midColor = colors[1];
+                        cfg.threeColor = true;
+                    }
+                    rule->setColorScaleConfig(cfg);
+                    sheet->getConditionalFormatting().addRule(rule);
+                } else if (ruleType == "iconSet") {
+                    auto rule = std::make_shared<ConditionalFormat>(cfRange, ConditionType::IconSet);
+                    IconSetConfig cfg;
+                    while (!xml.atEnd()) {
+                        xml.readNext();
+                        if (xml.isEndElement() && xml.name() == u"cfRule") break;
+                        if (xml.isStartElement() && xml.name() == u"iconSet") {
+                            QString iconSetType = xml.attributes().value("iconSet").toString();
+                            if (iconSetType.contains("3Arrows")) cfg.iconType = IconSetConfig::Arrows3;
+                            else if (iconSetType.contains("3Flags")) cfg.iconType = IconSetConfig::Flags3;
+                            else if (iconSetType.contains("3Stars")) cfg.iconType = IconSetConfig::Stars3;
+                            else if (iconSetType.contains("3Symbols")) cfg.iconType = IconSetConfig::Checkmarks3;
+                            else cfg.iconType = IconSetConfig::TrafficLights;
+                            QString reverse = xml.attributes().value("reverse").toString();
+                            cfg.reverseOrder = (reverse == "1");
+                            QString showVal = xml.attributes().value("showValue").toString();
+                            if (showVal == "0") cfg.showValue = false;
+                        }
+                    }
+                    rule->setIconSetConfig(cfg);
+                    sheet->getConditionalFormatting().addRule(rule);
+                } else {
+                    xml.skipCurrentElement();
+                }
+            }
+            continue;
+        }
+
         if (xml.isStartElement() && xml.name() == u"c") {
             QStringView ref = xml.attributes().value("r");
             QString type = xml.attributes().value("t").toString();  // Must own string — QStringView invalidated by readNext()
@@ -885,25 +1054,25 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
             }
             else if (type == u"inlineStr" && !inlineStr.isEmpty()) {
                 cell = sheet->getOrCreateCellFast(row, col);
-                cell->setValue(inlineStr);
+                cell->setValueDirect(inlineStr); // known string — skip toDouble
                 cellSet = true;
             }
             else if (type == u"s" && !value.isEmpty()) {
                 int ssIdx = value.toInt();
                 if (ssIdx >= 0 && ssIdx < sharedStrings.size()) {
                     cell = sheet->getOrCreateCellFast(row, col);
-                    cell->setValue(sharedStrings[ssIdx]);
+                    cell->setValueDirect(sharedStrings[ssIdx]); // known string — skip toDouble
                     cellSet = true;
                 }
             }
             else if (type == u"b" && !value.isEmpty()) {
                 cell = sheet->getOrCreateCellFast(row, col);
-                cell->setValue(value == u"1" ? QStringLiteral("TRUE") : QStringLiteral("FALSE"));
+                cell->setValueDirect(value == u"1" ? QStringLiteral("TRUE") : QStringLiteral("FALSE"));
                 cellSet = true;
             }
             else if (type == u"str" && !value.isEmpty()) {
                 cell = sheet->getOrCreateCellFast(row, col);
-                cell->setValue(value);
+                cell->setValueDirect(value); // known string — skip toDouble
                 cellSet = true;
             }
             else if (!value.isEmpty()) {
@@ -920,16 +1089,16 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
                         QDate epoch(1899, 12, 30);
                         QDate date = epoch.addDays(static_cast<qint64>(num));
                         if (date.isValid()) {
-                            cell->setValue(date.toString("MM/dd/yyyy"));
+                            cell->setValueDirect(date.toString("MM/dd/yyyy"));
                         } else {
-                            cell->setValue(num);
+                            cell->setValueDirect(num);
                         }
                     } else {
-                        cell->setValue(num);
+                        cell->setValueDirect(num);
                     }
                 } else {
                     cell = sheet->getOrCreateCellFast(row, col);
-                    cell->setValue(value);
+                    cell->setValueDirect(value); // untyped fallback as string
                 }
                 cellSet = true;
             }
@@ -1018,6 +1187,10 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
     QStringList sharedStrings;
     std::map<QString, int> ssMap; // string -> index
     std::vector<QByteArray> sheetXmls;
+
+    // Per-sheet hyperlink data for rels generation
+    struct HyperlinkExport { QString url; int rId; };
+    std::vector<std::vector<HyperlinkExport>> allSheetHyperlinks;
 
     for (const auto& sheet : sheets) {
         sheet->forEachCell([&](int, int, const Cell& cell) {
@@ -1229,6 +1402,119 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             xml.writeEndElement(); // mergeCells
         }
 
+        // Write XLSX conditional formatting for visual types
+        const auto& allCfRules = sheet->getConditionalFormatting().getAllRules();
+        if (!allCfRules.empty()) {
+            for (const auto& cfRule : allCfRules) {
+                if (!cfRule->isVisualType()) continue;
+
+                QString sqref = columnIndexToLetter(cfRule->getRange().getStart().col) +
+                                QString::number(cfRule->getRange().getStart().row + 1) + ":" +
+                                columnIndexToLetter(cfRule->getRange().getEnd().col) +
+                                QString::number(cfRule->getRange().getEnd().row + 1);
+
+                xml.writeStartElement("conditionalFormatting");
+                xml.writeAttribute("sqref", sqref);
+
+                if (cfRule->getType() == ConditionType::DataBar) {
+                    xml.writeStartElement("cfRule");
+                    xml.writeAttribute("type", "dataBar");
+                    xml.writeAttribute("priority", "1");
+                    xml.writeStartElement("dataBar");
+                    xml.writeStartElement("cfvo");
+                    xml.writeAttribute("type", cfRule->getDataBarConfig().autoRange ? "min" : "num");
+                    if (!cfRule->getDataBarConfig().autoRange)
+                        xml.writeAttribute("val", QString::number(cfRule->getDataBarConfig().minValue));
+                    xml.writeEndElement();
+                    xml.writeStartElement("cfvo");
+                    xml.writeAttribute("type", cfRule->getDataBarConfig().autoRange ? "max" : "num");
+                    if (!cfRule->getDataBarConfig().autoRange)
+                        xml.writeAttribute("val", QString::number(cfRule->getDataBarConfig().maxValue));
+                    xml.writeEndElement();
+                    xml.writeStartElement("color");
+                    QString rgb = cfRule->getDataBarConfig().barColor.name().mid(1);
+                    xml.writeAttribute("rgb", "FF" + rgb.toUpper());
+                    xml.writeEndElement();
+                    xml.writeEndElement(); // dataBar
+                    xml.writeEndElement(); // cfRule
+                } else if (cfRule->getType() == ConditionType::ColorScale2 || cfRule->getType() == ConditionType::ColorScale3) {
+                    xml.writeStartElement("cfRule");
+                    xml.writeAttribute("type", "colorScale");
+                    xml.writeAttribute("priority", "1");
+                    xml.writeStartElement("colorScale");
+                    const auto& csCfg = cfRule->getColorScaleConfig();
+                    // cfvo elements
+                    xml.writeStartElement("cfvo"); xml.writeAttribute("type", "min"); xml.writeEndElement();
+                    if (csCfg.threeColor) {
+                        xml.writeStartElement("cfvo"); xml.writeAttribute("type", "percentile"); xml.writeAttribute("val", "50"); xml.writeEndElement();
+                    }
+                    xml.writeStartElement("cfvo"); xml.writeAttribute("type", "max"); xml.writeEndElement();
+                    // color elements
+                    auto writeColor = [&xml](const QColor& c) {
+                        xml.writeStartElement("color");
+                        xml.writeAttribute("rgb", "FF" + c.name().mid(1).toUpper());
+                        xml.writeEndElement();
+                    };
+                    writeColor(csCfg.minColor);
+                    if (csCfg.threeColor) writeColor(csCfg.midColor);
+                    writeColor(csCfg.maxColor);
+                    xml.writeEndElement(); // colorScale
+                    xml.writeEndElement(); // cfRule
+                } else if (cfRule->getType() == ConditionType::IconSet) {
+                    xml.writeStartElement("cfRule");
+                    xml.writeAttribute("type", "iconSet");
+                    xml.writeAttribute("priority", "1");
+                    xml.writeStartElement("iconSet");
+                    const auto& isCfg = cfRule->getIconSetConfig();
+                    QString iconTypeName;
+                    switch (isCfg.iconType) {
+                        case IconSetConfig::TrafficLights: iconTypeName = "3TrafficLights1"; break;
+                        case IconSetConfig::Arrows3: iconTypeName = "3Arrows"; break;
+                        case IconSetConfig::Flags3: iconTypeName = "3Flags"; break;
+                        case IconSetConfig::Stars3: iconTypeName = "3Stars"; break;
+                        case IconSetConfig::Checkmarks3: iconTypeName = "3Symbols"; break;
+                    }
+                    xml.writeAttribute("iconSet", iconTypeName);
+                    if (isCfg.reverseOrder) xml.writeAttribute("reverse", "1");
+                    if (!isCfg.showValue) xml.writeAttribute("showValue", "0");
+                    // cfvo elements
+                    xml.writeStartElement("cfvo"); xml.writeAttribute("type", "percent"); xml.writeAttribute("val", "0"); xml.writeEndElement();
+                    xml.writeStartElement("cfvo"); xml.writeAttribute("type", "percent"); xml.writeAttribute("val", QString::number(isCfg.threshold1)); xml.writeEndElement();
+                    xml.writeStartElement("cfvo"); xml.writeAttribute("type", "percent"); xml.writeAttribute("val", QString::number(isCfg.threshold2)); xml.writeEndElement();
+                    xml.writeEndElement(); // iconSet
+                    xml.writeEndElement(); // cfRule
+                }
+
+                xml.writeEndElement(); // conditionalFormatting
+            }
+        }
+
+        // Collect hyperlinks for this sheet
+        struct HyperlinkEntry { int row; int col; QString url; };
+        std::vector<HyperlinkEntry> sheetHyperlinks;
+        sheet->forEachCell([&](int r, int c, const Cell& cell) {
+            if (cell.hasHyperlink()) {
+                sheetHyperlinks.push_back({r, c, cell.getHyperlink()});
+            }
+        });
+
+        // rId numbering: rId1 may be used by drawing, hyperlinks start after
+        int nextRId = chartsPerSheet.count(sheetIdx) ? 2 : 1;
+
+        // Write hyperlinks element
+        if (!sheetHyperlinks.empty()) {
+            xml.writeStartElement("hyperlinks");
+            for (size_t hi = 0; hi < sheetHyperlinks.size(); ++hi) {
+                const auto& hl = sheetHyperlinks[hi];
+                QString cellRef = columnIndexToLetter(hl.col) + QString::number(hl.row + 1);
+                xml.writeStartElement("hyperlink");
+                xml.writeAttribute("ref", cellRef);
+                xml.writeAttribute("r:id", QString("rId%1").arg(nextRId + static_cast<int>(hi)));
+                xml.writeEndElement();
+            }
+            xml.writeEndElement(); // hyperlinks
+        }
+
         // Drawing reference (for sheets with charts)
         if (chartsPerSheet.count(sheetIdx)) {
             xml.writeStartElement("drawing");
@@ -1240,6 +1526,14 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         xml.writeEndDocument();
         buf.close();
         sheetXmls.push_back(sheetXml);
+
+        // Store hyperlink rels data for this sheet
+        std::vector<HyperlinkExport> hlExports;
+        for (size_t hi = 0; hi < sheetHyperlinks.size(); ++hi) {
+            hlExports.push_back({sheetHyperlinks[hi].url, nextRId + static_cast<int>(hi)});
+        }
+        allSheetHyperlinks.push_back(std::move(hlExports));
+
         sheetIdx++;
     }
 
@@ -1315,9 +1609,43 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         zip.addFile(QString("xl/drawings/_rels/drawing%1.xml.rels").arg(si + 1),
                     generateDrawingRels(chartCountForSheet, startNum));
 
-        // Sheet relationships (maps rId1 -> drawingN.xml)
-        zip.addFile(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(si + 1),
-                    generateSheetRels(si + 1));
+        // Sheet relationships (maps rId1 -> drawingN.xml, plus hyperlink rels)
+        {
+            QString relsXml;
+            relsXml += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+            relsXml += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n";
+            relsXml += QString("<Relationship Id=\"rId1\" "
+                               "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" "
+                               "Target=\"../drawings/drawing%1.xml\"/>\n").arg(si + 1);
+            if (si < static_cast<int>(allSheetHyperlinks.size())) {
+                for (const auto& hl : allSheetHyperlinks[si]) {
+                    relsXml += QString("<Relationship Id=\"rId%1\" "
+                                       "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" "
+                                       "Target=\"%2\" TargetMode=\"External\"/>\n")
+                               .arg(hl.rId).arg(hl.url.toHtmlEscaped());
+                }
+            }
+            relsXml += "</Relationships>\n";
+            zip.addFile(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(si + 1), relsXml.toUtf8());
+        }
+    }
+
+    // Generate sheet rels for sheets with hyperlinks but no charts
+    for (int i = 0; i < sheetCount; ++i) {
+        if (chartsPerSheet.count(i)) continue; // already handled above
+        if (i < static_cast<int>(allSheetHyperlinks.size()) && !allSheetHyperlinks[i].empty()) {
+            QString relsXml;
+            relsXml += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+            relsXml += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n";
+            for (const auto& hl : allSheetHyperlinks[i]) {
+                relsXml += QString("<Relationship Id=\"rId%1\" "
+                                   "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" "
+                                   "Target=\"%2\" TargetMode=\"External\"/>\n")
+                           .arg(hl.rId).arg(hl.url.toHtmlEscaped());
+            }
+            relsXml += "</Relationships>\n";
+            zip.addFile(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(i + 1), relsXml.toUtf8());
+        }
     }
 
     // Save Nexel chart configs as custom JSON part (for Nexel round-trip)
@@ -1444,6 +1772,41 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                     if (st.foregroundColor != "#000000") styleObj["fontColor"] = st.foregroundColor;
                     if (st.backgroundColor != "#FFFFFF") styleObj["bgColor"] = st.backgroundColor;
                     rObj["style"] = styleObj;
+
+                    // Visual formatting configs
+                    if (rule->getType() == ConditionType::DataBar) {
+                        const auto& cfg = rule->getDataBarConfig();
+                        QJsonObject db;
+                        db["color"] = cfg.barColor.name();
+                        db["minValue"] = cfg.minValue;
+                        db["maxValue"] = cfg.maxValue;
+                        db["autoRange"] = cfg.autoRange;
+                        db["showValue"] = cfg.showValue;
+                        rObj["dataBar"] = db;
+                    }
+                    if (rule->getType() == ConditionType::ColorScale2 || rule->getType() == ConditionType::ColorScale3) {
+                        const auto& cfg = rule->getColorScaleConfig();
+                        QJsonObject cs;
+                        cs["minColor"] = cfg.minColor.name();
+                        cs["midColor"] = cfg.midColor.name();
+                        cs["maxColor"] = cfg.maxColor.name();
+                        cs["minValue"] = cfg.minValue;
+                        cs["maxValue"] = cfg.maxValue;
+                        cs["autoRange"] = cfg.autoRange;
+                        cs["threeColor"] = cfg.threeColor;
+                        rObj["colorScale"] = cs;
+                    }
+                    if (rule->getType() == ConditionType::IconSet) {
+                        const auto& cfg = rule->getIconSetConfig();
+                        QJsonObject is;
+                        is["iconType"] = static_cast<int>(cfg.iconType);
+                        is["threshold1"] = cfg.threshold1;
+                        is["threshold2"] = cfg.threshold2;
+                        is["showValue"] = cfg.showValue;
+                        is["reverseOrder"] = cfg.reverseOrder;
+                        rObj["iconSet"] = is;
+                    }
+
                     cfArray.append(rObj);
                 }
                 sheetObj["conditionalFormats"] = cfArray;
@@ -1669,8 +2032,8 @@ QByteArray XlsxService::generateStyles(const std::vector<std::shared_ptr<Spreads
         QString fk = getFontKey(s);
         if (!fontMap.count(fk)) {
             fontMap[fk] = static_cast<int>(fonts.size());
-            fonts.push_back({s.fontName, s.fontSize, s.bold, s.italic,
-                             s.underline, s.strikethrough, resolveColorForExport(s.foregroundColor)});
+            fonts.push_back({s.fontName, s.fontSize, bool(s.bold), bool(s.italic),
+                             bool(s.underline), bool(s.strikethrough), resolveColorForExport(s.foregroundColor)});
         }
     }
 
@@ -1768,10 +2131,10 @@ QByteArray XlsxService::generateStyles(const std::vector<std::shared_ptr<Spreads
         if (!borderMap.count(bk)) {
             borderMap[bk] = static_cast<int>(borderEntries.size());
             BorderEntry be;
-            be.left = {s.borderLeft.enabled, resolveColorForExport(s.borderLeft.color), s.borderLeft.width};
-            be.right = {s.borderRight.enabled, resolveColorForExport(s.borderRight.color), s.borderRight.width};
-            be.top = {s.borderTop.enabled, resolveColorForExport(s.borderTop.color), s.borderTop.width};
-            be.bottom = {s.borderBottom.enabled, resolveColorForExport(s.borderBottom.color), s.borderBottom.width};
+            be.left = {bool(s.borderLeft.enabled), resolveColorForExport(s.borderLeft.color), int(s.borderLeft.width)};
+            be.right = {bool(s.borderRight.enabled), resolveColorForExport(s.borderRight.color), int(s.borderRight.width)};
+            be.top = {bool(s.borderTop.enabled), resolveColorForExport(s.borderTop.color), int(s.borderTop.width)};
+            be.bottom = {bool(s.borderBottom.enabled), resolveColorForExport(s.borderBottom.color), int(s.borderBottom.width)};
             borderEntries.push_back(be);
         }
     }

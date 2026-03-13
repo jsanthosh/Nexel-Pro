@@ -1,6 +1,7 @@
 #include "SpreadsheetView.h"
 #include "SpreadsheetModel.h"
 #include "CellDelegate.h"
+#include "PasteSpecialDialog.h"
 #include "Theme.h"
 #include "../core/Spreadsheet.h"
 #include <algorithm>
@@ -39,7 +40,13 @@
 #include <QShortcut>
 #include <QEventLoop>
 #include <QDir>
+#include <QInputDialog>
+#include <QToolTip>
+#include <QHelpEvent>
+#include <QDesktopServices>
+#include <QUrl>
 #include <algorithm>
+#include <cmath>
 
 // Forward declaration — defined further below
 static QString adjustFormulaReferences(const QString& formula, int rowOffset, int colOffset);
@@ -258,32 +265,11 @@ void SpreadsheetView::setupHeaderContextMenus() {
         QString insertLabel = colCount > 1 ? QString("Insert %1 Columns").arg(colCount) : "Insert Column";
         QString deleteLabel = colCount > 1 ? QString("Delete %1 Columns").arg(colCount) : "Delete Column";
 
-        menu.addAction(insertLabel, [this, minCol, colCount]() {
-            if (m_spreadsheet) {
-                m_spreadsheet->getUndoManager().execute(
-                    std::make_unique<InsertColumnCommand>(minCol, colCount, minCol), m_spreadsheet.get());
-                refreshView();
-            }
+        menu.addAction(insertLabel, [this]() {
+            insertEntireColumn();
         });
-        menu.addAction(deleteLabel, [this, colCount, &selCols]() {
-            if (m_spreadsheet) {
-                // Delete from right to left to preserve indices
-                QList<int> sorted(selCols.begin(), selCols.end());
-                std::sort(sorted.rbegin(), sorted.rend());
-                for (int col : sorted) {
-                    std::vector<CellSnapshot> deleted;
-                    int maxRow = m_spreadsheet->getMaxRow();
-                    for (int r = 0; r <= maxRow; ++r) {
-                        auto cell = m_spreadsheet->getCellIfExists(r, col);
-                        if (cell) {
-                            deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(r, col)));
-                        }
-                    }
-                    m_spreadsheet->getUndoManager().execute(
-                        std::make_unique<DeleteColumnCommand>(col, 1, deleted), m_spreadsheet.get());
-                }
-                refreshView();
-            }
+        menu.addAction(deleteLabel, [this]() {
+            deleteEntireColumn();
         });
         menu.exec(horizontalHeader()->mapToGlobal(pos));
     });
@@ -312,32 +298,11 @@ void SpreadsheetView::setupHeaderContextMenus() {
         QString insertLabel = rowCount > 1 ? QString("Insert %1 Rows").arg(rowCount) : "Insert Row";
         QString deleteLabel = rowCount > 1 ? QString("Delete %1 Rows").arg(rowCount) : "Delete Row";
 
-        menu.addAction(insertLabel, [this, minRow, rowCount]() {
-            if (m_spreadsheet) {
-                m_spreadsheet->getUndoManager().execute(
-                    std::make_unique<InsertRowCommand>(minRow, rowCount), m_spreadsheet.get());
-                refreshView();
-            }
+        menu.addAction(insertLabel, [this]() {
+            insertEntireRow();
         });
-        menu.addAction(deleteLabel, [this, rowCount, &selRows]() {
-            if (m_spreadsheet) {
-                // Delete from bottom to top to preserve indices
-                QList<int> sorted(selRows.begin(), selRows.end());
-                std::sort(sorted.rbegin(), sorted.rend());
-                for (int row : sorted) {
-                    std::vector<CellSnapshot> deleted;
-                    int maxCol = m_spreadsheet->getMaxColumn();
-                    for (int c = 0; c <= maxCol; ++c) {
-                        auto cell = m_spreadsheet->getCellIfExists(row, c);
-                        if (cell) {
-                            deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(row, c)));
-                        }
-                    }
-                    m_spreadsheet->getUndoManager().execute(
-                        std::make_unique<DeleteRowCommand>(row, 1, deleted), m_spreadsheet.get());
-                }
-                refreshView();
-            }
+        menu.addAction(deleteLabel, [this]() {
+            deleteEntireRow();
         });
         menu.exec(verticalHeader()->mapToGlobal(pos));
     });
@@ -529,6 +494,188 @@ void SpreadsheetView::paste() {
     }
 }
 
+void SpreadsheetView::pasteSpecial() {
+    QModelIndex current = currentIndex();
+    if (!current.isValid() || !m_spreadsheet) return;
+
+    PasteSpecialDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    PasteSpecialOptions opts = dlg.getOptions();
+
+    QString data = QApplication::clipboard()->text();
+    int startRow = current.row();
+    int startCol = current.column();
+
+    std::vector<CellSnapshot> before, after;
+    m_model->setSuppressUndo(true);
+
+    bool useInternalClipboard = !m_internalClipboard.empty() && data == m_internalClipboardText;
+
+    // Determine clipboard dimensions
+    int clipRows = 0, clipCols = 0;
+    std::vector<QStringList> externalRows;
+    if (useInternalClipboard) {
+        clipRows = static_cast<int>(m_internalClipboard.size());
+        for (const auto& row : m_internalClipboard)
+            clipCols = qMax(clipCols, static_cast<int>(row.size()));
+    } else {
+        QStringList lines = data.split("\n");
+        for (const auto& line : lines) {
+            externalRows.push_back(line.split("\t"));
+            clipCols = qMax(clipCols, externalRows.back().size());
+        }
+        clipRows = static_cast<int>(externalRows.size());
+    }
+
+    // With transpose, swap rows/cols iteration
+    int pasteRows = opts.transpose ? clipCols : clipRows;
+    int pasteCols = opts.transpose ? clipRows : clipCols;
+
+    for (int pr = 0; pr < pasteRows; ++pr) {
+        for (int pc = 0; pc < pasteCols; ++pc) {
+            // Map paste coords back to clipboard coords
+            int cr = opts.transpose ? pc : pr;
+            int cc = opts.transpose ? pr : pc;
+
+            CellAddress addr(startRow + pr, startCol + pc);
+
+            // Get clipboard cell data
+            QVariant clipValue;
+            CellStyle clipStyle;
+            CellType clipType = CellType::Empty;
+            QString clipFormula;
+            CellAddress clipSourceAddr;
+
+            if (useInternalClipboard) {
+                if (cr >= static_cast<int>(m_internalClipboard.size())) continue;
+                if (cc >= static_cast<int>(m_internalClipboard[cr].size())) continue;
+                const auto& clipCell = m_internalClipboard[cr][cc];
+                clipValue = clipCell.value;
+                clipStyle = clipCell.style;
+                clipType = clipCell.type;
+                clipFormula = clipCell.formula;
+                clipSourceAddr = clipCell.sourceAddr;
+            } else {
+                if (cr >= static_cast<int>(externalRows.size())) continue;
+                if (cc >= externalRows[cr].size()) continue;
+                clipValue = externalRows[cr][cc];
+                clipType = CellType::Text;
+            }
+
+            // Skip blanks: if clipboard cell is empty, don't overwrite
+            if (opts.skipBlanks && clipType == CellType::Empty &&
+                (!clipValue.isValid() || clipValue.toString().isEmpty())) {
+                continue;
+            }
+
+            before.push_back(m_spreadsheet->takeCellSnapshot(addr));
+
+            if (opts.pasteType == PasteSpecialOptions::ColumnWidths) {
+                // Apply column width from clipboard style
+                if (useInternalClipboard) {
+                    setColumnWidth(startCol + pc, clipStyle.columnWidth);
+                }
+            } else if (opts.pasteType == PasteSpecialOptions::Formats) {
+                // Only paste styles, not values
+                if (useInternalClipboard) {
+                    auto cell = m_spreadsheet->getCell(addr);
+                    cell->setStyle(clipStyle);
+                }
+            } else if (opts.pasteType == PasteSpecialOptions::Values) {
+                // Paste values only (resolve formulas to their computed values)
+                QVariant valToPaste = clipValue;
+                if (useInternalClipboard && clipType == CellType::Formula) {
+                    // For formula cells, use the computed value from the clipboard source
+                    auto srcCell = m_spreadsheet->getCellIfExists(clipSourceAddr);
+                    if (srcCell) valToPaste = srcCell->getComputedValue();
+                }
+                if (opts.operation != PasteSpecialOptions::OpNone) {
+                    auto existingCell = m_spreadsheet->getCellIfExists(addr);
+                    double existing = existingCell ? existingCell->getValue().toDouble() : 0.0;
+                    double clipVal = valToPaste.toDouble();
+                    switch (opts.operation) {
+                        case PasteSpecialOptions::Add: valToPaste = existing + clipVal; break;
+                        case PasteSpecialOptions::Subtract: valToPaste = existing - clipVal; break;
+                        case PasteSpecialOptions::Multiply: valToPaste = existing * clipVal; break;
+                        case PasteSpecialOptions::Divide:
+                            valToPaste = (clipVal != 0.0) ? existing / clipVal : QVariant("#DIV/0!");
+                            break;
+                        default: break;
+                    }
+                }
+                m_spreadsheet->setCellValue(addr, valToPaste);
+            } else if (opts.pasteType == PasteSpecialOptions::Formulas) {
+                // Paste formulas (with reference adjustment) but not styles
+                if (useInternalClipboard && clipType == CellType::Formula && !clipFormula.isEmpty()) {
+                    int rowOff = addr.row - clipSourceAddr.row;
+                    int colOff = addr.col - clipSourceAddr.col;
+                    QString adjusted = adjustFormulaReferences(clipFormula, rowOff, colOff);
+                    m_spreadsheet->setCellFormula(addr, adjusted);
+                } else {
+                    QVariant valToPaste = clipValue;
+                    if (opts.operation != PasteSpecialOptions::OpNone) {
+                        auto existingCell = m_spreadsheet->getCellIfExists(addr);
+                        double existing = existingCell ? existingCell->getValue().toDouble() : 0.0;
+                        double clipVal = valToPaste.toDouble();
+                        switch (opts.operation) {
+                            case PasteSpecialOptions::Add: valToPaste = existing + clipVal; break;
+                            case PasteSpecialOptions::Subtract: valToPaste = existing - clipVal; break;
+                            case PasteSpecialOptions::Multiply: valToPaste = existing * clipVal; break;
+                            case PasteSpecialOptions::Divide:
+                                valToPaste = (clipVal != 0.0) ? existing / clipVal : QVariant("#DIV/0!");
+                                break;
+                            default: break;
+                        }
+                    }
+                    if (valToPaste.isValid() && !valToPaste.toString().isEmpty())
+                        m_spreadsheet->setCellValue(addr, valToPaste);
+                }
+            } else {
+                // All: paste everything (same as normal paste)
+                if (useInternalClipboard && clipType == CellType::Formula && !clipFormula.isEmpty()) {
+                    int rowOff = addr.row - clipSourceAddr.row;
+                    int colOff = addr.col - clipSourceAddr.col;
+                    QString adjusted = adjustFormulaReferences(clipFormula, rowOff, colOff);
+                    m_spreadsheet->setCellFormula(addr, adjusted);
+                } else {
+                    QVariant valToPaste = clipValue;
+                    if (opts.operation != PasteSpecialOptions::OpNone) {
+                        auto existingCell = m_spreadsheet->getCellIfExists(addr);
+                        double existing = existingCell ? existingCell->getValue().toDouble() : 0.0;
+                        double clipVal = valToPaste.toDouble();
+                        switch (opts.operation) {
+                            case PasteSpecialOptions::Add: valToPaste = existing + clipVal; break;
+                            case PasteSpecialOptions::Subtract: valToPaste = existing - clipVal; break;
+                            case PasteSpecialOptions::Multiply: valToPaste = existing * clipVal; break;
+                            case PasteSpecialOptions::Divide:
+                                valToPaste = (clipVal != 0.0) ? existing / clipVal : QVariant("#DIV/0!");
+                                break;
+                            default: break;
+                        }
+                    }
+                    if (valToPaste.isValid() && !valToPaste.toString().isEmpty())
+                        m_spreadsheet->setCellValue(addr, valToPaste);
+                }
+                if (useInternalClipboard) {
+                    auto cell = m_spreadsheet->getCell(addr);
+                    cell->setStyle(clipStyle);
+                }
+            }
+
+            after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+        }
+    }
+
+    m_model->setSuppressUndo(false);
+    m_spreadsheet->getUndoManager().pushCommand(
+        std::make_unique<MultiCellEditCommand>(before, after, "Paste Special"));
+
+    if (m_model) {
+        m_model->resetModel();
+    }
+}
+
 void SpreadsheetView::deleteSelection() {
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty() || !m_spreadsheet) return;
@@ -678,26 +825,49 @@ static QString selectionRangeStr(QItemSelectionModel* sel) {
     return range.toString();
 }
 
+// Returns true only if the predicate is true for ALL cells in the selection.
+// Used for Excel-style toggle: if any cell doesn't match → apply to all; if all match → unapply all.
+bool SpreadsheetView::selectionAllMatch(std::function<bool(const CellStyle&)> predicate) const {
+    if (!m_spreadsheet) return false;
+    QModelIndexList selected = selectionModel()->selectedIndexes();
+    if (selected.isEmpty()) return false;
+    for (const auto& idx : selected) {
+        auto cell = m_spreadsheet->getCellIfExists(idx.row(), idx.column());
+        CellStyle style = cell ? cell->getStyle() : CellStyle();
+        if (!predicate(style)) return false;
+    }
+    return true;
+}
+
 void SpreadsheetView::applyBold() {
     if (m_macroEngine && m_macroEngine->isRecording()) {
         m_macroEngine->recordAction(QString("sheet.setBold(\"%1\", true);").arg(selectionRangeStr(selectionModel())));
     }
-    applyStyleChange([](CellStyle& s) { s.bold = !s.bold; }, {Qt::FontRole});
+    // Excel behavior: if ANY cell is not bold → all become bold; only if ALL bold → all unbold
+    bool allBold = selectionAllMatch([](const CellStyle& s) { return s.bold; });
+    bool newVal = !allBold;
+    applyStyleChange([newVal](CellStyle& s) { s.bold = newVal; }, {Qt::FontRole});
 }
 
 void SpreadsheetView::applyItalic() {
     if (m_macroEngine && m_macroEngine->isRecording()) {
         m_macroEngine->recordAction(QString("sheet.setItalic(\"%1\", true);").arg(selectionRangeStr(selectionModel())));
     }
-    applyStyleChange([](CellStyle& s) { s.italic = !s.italic; }, {Qt::FontRole});
+    bool allItalic = selectionAllMatch([](const CellStyle& s) { return s.italic; });
+    bool newVal = !allItalic;
+    applyStyleChange([newVal](CellStyle& s) { s.italic = newVal; }, {Qt::FontRole});
 }
 
 void SpreadsheetView::applyUnderline() {
-    applyStyleChange([](CellStyle& s) { s.underline = !s.underline; }, {Qt::FontRole});
+    bool allUnderline = selectionAllMatch([](const CellStyle& s) { return s.underline; });
+    bool newVal = !allUnderline;
+    applyStyleChange([newVal](CellStyle& s) { s.underline = newVal; }, {Qt::FontRole});
 }
 
 void SpreadsheetView::applyStrikethrough() {
-    applyStyleChange([](CellStyle& s) { s.strikethrough = !s.strikethrough; }, {Qt::FontRole});
+    bool allStrike = selectionAllMatch([](const CellStyle& s) { return s.strikethrough; });
+    bool newVal = !allStrike;
+    applyStyleChange([newVal](CellStyle& s) { s.strikethrough = newVal; }, {Qt::FontRole});
 }
 
 void SpreadsheetView::applyFontFamily(const QString& family) {
@@ -1053,24 +1223,41 @@ void SpreadsheetView::applyTableStyle(int themeIndex) {
         table.columnNames.append(name);
     }
 
-    // Remove any existing table that overlaps this range before adding the new one
+    // Snapshot tables before change
+    std::vector<SpreadsheetTable> tablesBefore = m_spreadsheet->getTables();
+    CellRange affectedRange = table.range;
+
+    // Also capture the old table's range for dataChanged (if replacing)
+    CellRange oldRange = affectedRange;
     const auto& existing = m_spreadsheet->getTables();
     for (const auto& t : existing) {
         if (t.range.intersects(table.range)) {
+            oldRange = t.range;
             m_spreadsheet->removeTable(t.name);
             break;
         }
     }
 
     m_spreadsheet->addTable(table);
-    refreshView();
 
-    // Restore selection after model reset (resetModel clears Qt selection)
-    QModelIndex topLeft = m_model->index(minRow, minCol);
-    QModelIndex bottomRight = m_model->index(maxRow, maxCol);
-    selectionModel()->select(QItemSelection(topLeft, bottomRight),
-                             QItemSelectionModel::ClearAndSelect);
-    setCurrentIndex(topLeft);
+    // Snapshot tables after change
+    std::vector<SpreadsheetTable> tablesAfter = m_spreadsheet->getTables();
+
+    // Push undo command (don't execute — we already made the change)
+    m_spreadsheet->getUndoManager().pushCommand(
+        std::make_unique<TableChangeCommand>(tablesBefore, tablesAfter, affectedRange, "Apply Table Style"));
+
+    // Use targeted dataChanged for both old and new table ranges
+    if (m_model) {
+        // Refresh old range (in case table was replaced and old range was different)
+        int refreshMinRow = qMin(oldRange.getStart().row, minRow);
+        int refreshMaxRow = qMax(oldRange.getEnd().row, maxRow);
+        int refreshMinCol = qMin(oldRange.getStart().col, minCol);
+        int refreshMaxCol = qMax(oldRange.getEnd().col, maxCol);
+        QModelIndex topLeft = m_model->index(refreshMinRow, refreshMinCol);
+        QModelIndex bottomRight = m_model->index(refreshMaxRow, refreshMaxCol);
+        emit m_model->dataChanged(topLeft, bottomRight);
+    }
 }
 
 // ============== Auto Filter ==============
@@ -1551,6 +1738,8 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
     menu.addAction("Cut", this, &SpreadsheetView::cut, QKeySequence::Cut);
     menu.addAction("Copy", this, &SpreadsheetView::copy, QKeySequence::Copy);
     menu.addAction("Paste", this, &SpreadsheetView::paste, QKeySequence::Paste);
+    menu.addAction("Paste Special...", this, &SpreadsheetView::pasteSpecial,
+                   QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V));
 
     menu.addSeparator();
 
@@ -1667,6 +1856,39 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
         }
     }
 
+    // Comment actions
+    if (m_spreadsheet) {
+        QModelIndex cur = currentIndex();
+        if (cur.isValid()) {
+            auto cell = m_spreadsheet->getCellIfExists(cur.row(), cur.column());
+            bool hasComment = cell && cell->hasComment();
+            menu.addAction(hasComment ? "Edit Comment..." : "Insert Comment...",
+                           this, &SpreadsheetView::insertOrEditComment);
+            if (hasComment) {
+                menu.addAction("Delete Comment", this, &SpreadsheetView::deleteComment);
+            }
+            menu.addSeparator();
+        }
+    }
+
+    // Hyperlink actions
+    if (m_spreadsheet) {
+        QModelIndex cur = currentIndex();
+        if (cur.isValid()) {
+            auto cell = m_spreadsheet->getCellIfExists(cur.row(), cur.column());
+            bool hasLink = cell && cell->hasHyperlink();
+            menu.addAction(hasLink ? "Edit Hyperlink..." : "Insert Hyperlink...",
+                           this, &SpreadsheetView::insertOrEditHyperlink);
+            if (hasLink) {
+                menu.addAction("Open Hyperlink", this, [this, cur]() {
+                    openHyperlink(cur.row(), cur.column());
+                });
+                menu.addAction("Remove Hyperlink", this, &SpreadsheetView::removeHyperlink);
+            }
+            menu.addSeparator();
+        }
+    }
+
     menu.addAction("Format Cells...", this, [this]() {
         emit formatCellsRequested();
     }, QKeySequence(Qt::CTRL | Qt::Key_1));
@@ -1734,14 +1956,20 @@ void SpreadsheetView::insertEntireRow() {
         }
     }
 
-    // Insert from bottom to top to preserve row indices
+    // Use beginInsertRows/endInsertRows so Qt automatically shifts header heights.
     QList<int> sortedRows(rows.begin(), rows.end());
     std::sort(sortedRows.rbegin(), sortedRows.rend());
+
+    verticalHeader()->blockSignals(true);
+
     for (int row : sortedRows) {
+        m_model->beginRowInsertion(row, 1);
         m_spreadsheet->getUndoManager().execute(
             std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
+        m_model->endRowInsertion();
     }
-    refreshView();
+
+    verticalHeader()->blockSignals(false);
 }
 
 void SpreadsheetView::insertEntireColumn() {
@@ -1759,13 +1987,20 @@ void SpreadsheetView::insertEntireColumn() {
         }
     }
 
+    // Use beginInsertColumns/endInsertColumns so Qt automatically shifts header widths.
     QList<int> sortedCols(cols.begin(), cols.end());
     std::sort(sortedCols.rbegin(), sortedCols.rend());
+
+    horizontalHeader()->blockSignals(true);
+
     for (int col : sortedCols) {
+        m_model->beginColumnInsertion(col, 1);
         m_spreadsheet->getUndoManager().execute(
             std::make_unique<InsertColumnCommand>(col, 1, col), m_spreadsheet.get());
+        m_model->endColumnInsertion();
     }
-    refreshView();
+
+    horizontalHeader()->blockSignals(false);
 }
 
 void SpreadsheetView::deleteCellsShiftLeft() {
@@ -1821,11 +2056,20 @@ void SpreadsheetView::deleteEntireRow() {
         }
     }
 
-    // Delete from bottom to top to preserve row indices
+    int focusRow = *std::min_element(rows.begin(), rows.end());
+    int focusCol = current.column();
+
+    // Delete rows high-to-low to preserve indices.
+    // Use beginRemoveRows/endRemoveRows so Qt automatically shifts header heights.
     QList<int> sortedRows(rows.begin(), rows.end());
     std::sort(sortedRows.rbegin(), sortedRows.rend());
+
+    // Block header signals so Qt's internal section adjustments don't
+    // trigger onVerticalSectionResized (which would corrupt m_rowHeights).
+    verticalHeader()->blockSignals(true);
+
     for (int row : sortedRows) {
-        // Snapshot cells in this row before deleting
+        // Snapshot deleted cells for undo
         std::vector<CellSnapshot> deleted;
         int maxCol = m_spreadsheet->getMaxColumn();
         for (int c = 0; c <= maxCol; ++c) {
@@ -1834,10 +2078,32 @@ void SpreadsheetView::deleteEntireRow() {
                 deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(row, c)));
             }
         }
+
+        // Save the height of the row being deleted (for undo restore)
+        std::vector<int> savedHeights = { verticalHeader()->sectionSize(row) };
+
+        // Tell Qt model: rows are about to be removed (BEFORE data change)
+        m_model->beginRowRemoval(row, 1);
+
+        // Execute the delete (changes data + shifts m_rowHeights in Spreadsheet)
         m_spreadsheet->getUndoManager().execute(
-            std::make_unique<DeleteRowCommand>(row, 1, deleted), m_spreadsheet.get());
+            std::make_unique<DeleteRowCommand>(row, 1, deleted, savedHeights), m_spreadsheet.get());
+
+        // Tell Qt model: removal complete (AFTER data change)
+        // Qt will now automatically shift header section sizes
+        m_model->endRowRemoval();
     }
-    refreshView();
+
+    verticalHeader()->blockSignals(false);
+
+    // Restore focus
+    if (m_model) {
+        int clampedRow = qMin(focusRow, m_model->rowCount() - 1);
+        QModelIndex focusIdx = m_model->index(clampedRow, focusCol);
+        selectionModel()->setCurrentIndex(focusIdx, QItemSelectionModel::ClearAndSelect);
+        scrollTo(focusIdx);
+        emitCellSelected(focusIdx);
+    }
 }
 
 void SpreadsheetView::deleteEntireColumn() {
@@ -1855,10 +2121,20 @@ void SpreadsheetView::deleteEntireColumn() {
         }
     }
 
+    int focusCol = *std::min_element(cols.begin(), cols.end());
+    int focusRow = current.row();
+
+    // Delete columns high-to-low to preserve indices.
+    // Use beginRemoveColumns/endRemoveColumns so Qt automatically shifts header widths.
     QList<int> sortedCols(cols.begin(), cols.end());
     std::sort(sortedCols.rbegin(), sortedCols.rend());
+
+    // Block header signals so Qt's internal section adjustments don't
+    // trigger onHorizontalSectionResized (which would corrupt m_columnWidths).
+    horizontalHeader()->blockSignals(true);
+
     for (int col : sortedCols) {
-        // Snapshot cells in this column before deleting
+        // Snapshot deleted cells for undo
         std::vector<CellSnapshot> deleted;
         int maxRow = m_spreadsheet->getMaxRow();
         for (int r = 0; r <= maxRow; ++r) {
@@ -1867,10 +2143,32 @@ void SpreadsheetView::deleteEntireColumn() {
                 deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(r, col)));
             }
         }
+
+        // Save the width of the column being deleted (for undo restore)
+        std::vector<int> savedWidths = { horizontalHeader()->sectionSize(col) };
+
+        // Tell Qt model: columns are about to be removed (BEFORE data change)
+        m_model->beginColumnRemoval(col, 1);
+
+        // Execute the delete (changes data + shifts m_columnWidths in Spreadsheet)
         m_spreadsheet->getUndoManager().execute(
-            std::make_unique<DeleteColumnCommand>(col, 1, deleted), m_spreadsheet.get());
+            std::make_unique<DeleteColumnCommand>(col, 1, deleted, savedWidths), m_spreadsheet.get());
+
+        // Tell Qt model: removal complete (AFTER data change)
+        // Qt will now automatically shift header section sizes
+        m_model->endColumnRemoval();
     }
-    refreshView();
+
+    horizontalHeader()->blockSignals(false);
+
+    // Restore focus
+    if (m_model) {
+        int clampedCol = qMin(focusCol, m_model->columnCount() - 1);
+        QModelIndex focusIdx = m_model->index(focusRow, clampedCol);
+        selectionModel()->setCurrentIndex(focusIdx, QItemSelectionModel::ClearAndSelect);
+        scrollTo(focusIdx);
+        emitCellSelected(focusIdx);
+    }
 }
 
 // ============== Autofit ==============
@@ -2001,6 +2299,148 @@ void SpreadsheetView::refreshView() {
         // This is needed when document theme changes so theme-referenced colors resolve correctly.
         m_model->resetModel();
     }
+}
+
+void SpreadsheetView::toggleFormulaView() {
+    m_showFormulas = !m_showFormulas;
+    if (m_model) {
+        m_model->setShowFormulas(m_showFormulas);
+        m_model->resetModel();
+    }
+}
+
+void SpreadsheetView::insertOrEditComment() {
+    QModelIndex cur = currentIndex();
+    if (!cur.isValid() || !m_spreadsheet) return;
+
+    auto cell = m_spreadsheet->getCell(CellAddress(cur.row(), cur.column()));
+    QString existing = cell->getComment();
+
+    bool ok = false;
+    QString comment = QInputDialog::getMultiLineText(
+        this, cell->hasComment() ? "Edit Comment" : "Insert Comment",
+        "Comment:", existing, &ok);
+
+    if (ok) {
+        cell->setComment(comment);
+        viewport()->update();
+    }
+}
+
+void SpreadsheetView::deleteComment() {
+    QModelIndex cur = currentIndex();
+    if (!cur.isValid() || !m_spreadsheet) return;
+
+    auto cell = m_spreadsheet->getCellIfExists(cur.row(), cur.column());
+    if (cell && cell->hasComment()) {
+        cell->setComment(QString());
+        viewport()->update();
+    }
+}
+
+// ============== Hyperlinks ==============
+
+void SpreadsheetView::insertOrEditHyperlink() {
+    QModelIndex cur = currentIndex();
+    if (!cur.isValid() || !m_spreadsheet) return;
+
+    auto cell = m_spreadsheet->getCell(CellAddress(cur.row(), cur.column()));
+    QString existingUrl = cell->getHyperlink();
+    QString existingText = cell->getValue().toString();
+
+    // Create a small dialog for URL and display text
+    QDialog dlg(this);
+    dlg.setWindowTitle(existingUrl.isEmpty() ? "Insert Hyperlink" : "Edit Hyperlink");
+    dlg.setMinimumWidth(400);
+    dlg.setStyleSheet(ThemeManager::instance().dialogStylesheet());
+
+    auto* layout = new QVBoxLayout(&dlg);
+    auto* form = new QFormLayout();
+
+    auto* urlEdit = new QLineEdit(&dlg);
+    urlEdit->setText(existingUrl);
+    urlEdit->setPlaceholderText("https://example.com");
+    form->addRow("URL:", urlEdit);
+
+    auto* textEdit = new QLineEdit(&dlg);
+    textEdit->setText(existingText);
+    textEdit->setPlaceholderText("Display text (optional)");
+    form->addRow("Display text:", textEdit);
+
+    layout->addLayout(form);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    layout->addWidget(buttons);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        QString url = urlEdit->text().trimmed();
+        QString text = textEdit->text().trimmed();
+
+        if (!url.isEmpty()) {
+            cell->setHyperlink(url);
+            if (!text.isEmpty() && text != existingText) {
+                cell->setValue(text);
+            } else if (existingText.isEmpty()) {
+                cell->setValue(url);
+            }
+        }
+        if (m_model) {
+            emit m_model->dataChanged(cur, cur);
+        }
+        viewport()->update();
+    }
+}
+
+void SpreadsheetView::removeHyperlink() {
+    QModelIndex cur = currentIndex();
+    if (!cur.isValid() || !m_spreadsheet) return;
+
+    auto cell = m_spreadsheet->getCellIfExists(cur.row(), cur.column());
+    if (cell && cell->hasHyperlink()) {
+        cell->setHyperlink(QString());
+        if (m_model) {
+            emit m_model->dataChanged(cur, cur);
+        }
+        viewport()->update();
+    }
+}
+
+void SpreadsheetView::openHyperlink(int row, int col) {
+    if (!m_spreadsheet) return;
+    auto cell = m_spreadsheet->getCellIfExists(row, col);
+    if (cell && cell->hasHyperlink()) {
+        QUrl url(cell->getHyperlink());
+        if (url.scheme().isEmpty()) {
+            url = QUrl("https://" + cell->getHyperlink());
+        }
+        QDesktopServices::openUrl(url);
+    }
+}
+
+bool SpreadsheetView::viewportEvent(QEvent* event) {
+    if (event->type() == QEvent::ToolTip) {
+        QHelpEvent* helpEvent = static_cast<QHelpEvent*>(event);
+        QModelIndex index = indexAt(helpEvent->pos());
+        if (index.isValid() && m_spreadsheet) {
+            auto cell = m_spreadsheet->getCellIfExists(index.row(), index.column());
+            if (cell) {
+                QStringList tips;
+                if (cell->hasComment()) tips << cell->getComment();
+                if (cell->hasHyperlink()) tips << "Ctrl+Click to open: " + cell->getHyperlink();
+                if (!tips.isEmpty()) {
+                    QToolTip::showText(helpEvent->globalPos(), tips.join("\n"), this);
+                    return true;
+                }
+            }
+        }
+        QToolTip::hideText();
+        event->ignore();
+        return true;
+    }
+    return QTableView::viewportEvent(event);
 }
 
 void SpreadsheetView::setFrozenRow(int row) {
@@ -2303,6 +2743,13 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         }
     }
 
+    // ===== Ctrl/Cmd+Shift+V: Paste Special =====
+    if (ctrl && shift && event->key() == Qt::Key_V) {
+        pasteSpecial();
+        event->accept();
+        return;
+    }
+
     // ===== Ctrl/Cmd+D: Fill Down (copy value from cell above into selection) =====
     if (ctrl && event->key() == Qt::Key_D) {
         if (!m_spreadsheet) { QTableView::keyPressEvent(event); return; }
@@ -2372,7 +2819,9 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
     // ===== Ctrl/Cmd+Arrow: Jump to edge of data region =====
     // Uses sparse cell map scan + binary search instead of row-by-row iteration.
     // This makes navigation O(total_cells) instead of O(grid_rows), critical for 1M+ row sheets.
-    if (ctrl && !shift && (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
+    // Skip during bulk loading — background thread is mutating m_cells concurrently.
+    if (ctrl && !shift && !m_bulkLoading &&
+        (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
                            event->key() == Qt::Key_Left || event->key() == Qt::Key_Right)) {
         QModelIndex cur = currentIndex();
         if (!cur.isValid() || !m_spreadsheet) { QTableView::keyPressEvent(event); return; }
@@ -2458,8 +2907,41 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
 
         QModelIndex target = model()->index(row, col);
         if (target.isValid()) {
-            setCurrentIndex(target);
+            selectionModel()->setCurrentIndex(target,
+                QItemSelectionModel::ClearAndSelect);
             scrollTo(target);
+        }
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Shift+Home: Extend selection from current cell to A1 =====
+    if (ctrl && shift && event->key() == Qt::Key_Home) {
+        QModelIndex cur = currentIndex();
+        if (cur.isValid()) {
+            QModelIndex topLeft = model()->index(0, 0);
+            QItemSelection sel(topLeft, cur);
+            selectionModel()->select(sel, QItemSelectionModel::ClearAndSelect);
+            selectionModel()->setCurrentIndex(topLeft, QItemSelectionModel::Current);
+            scrollTo(topLeft);
+        }
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Shift+End: Extend selection from current cell to last used cell =====
+    if (ctrl && shift && !m_bulkLoading && event->key() == Qt::Key_End) {
+        QModelIndex cur = currentIndex();
+        if (cur.isValid() && m_spreadsheet) {
+            int maxRow = m_spreadsheet->getMaxRow();
+            int maxCol = m_spreadsheet->getMaxColumn();
+            if (maxRow >= 0 && maxCol >= 0) {
+                QModelIndex bottomRight = model()->index(maxRow, maxCol);
+                QItemSelection sel(cur, bottomRight);
+                selectionModel()->select(sel, QItemSelectionModel::ClearAndSelect);
+                selectionModel()->setCurrentIndex(bottomRight, QItemSelectionModel::Current);
+                scrollTo(bottomRight);
+            }
         }
         event->accept();
         return;
@@ -2475,7 +2957,7 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
     }
 
     // ===== Ctrl/Cmd+End: Go to last used cell =====
-    if (ctrl && event->key() == Qt::Key_End) {
+    if (ctrl && !m_bulkLoading && event->key() == Qt::Key_End) {
         if (m_spreadsheet) {
             int maxRow = m_spreadsheet->getMaxRow();
             int maxCol = m_spreadsheet->getMaxColumn();
@@ -2491,7 +2973,9 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
 
     // ===== Ctrl+Shift+Arrow: Extend selection to data edge =====
     // Same sparse-map navigation as Ctrl+Arrow above, but extends selection.
-    if (ctrl && shift && (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
+    // Skip during bulk loading — background thread is mutating m_cells concurrently.
+    if (ctrl && shift && !m_bulkLoading &&
+        (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
                            event->key() == Qt::Key_Left || event->key() == Qt::Key_Right)) {
         QModelIndex cur = currentIndex();
         if (!cur.isValid() || !m_spreadsheet) { QTableView::keyPressEvent(event); return; }
@@ -2620,6 +3104,143 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         }
         event->accept();
         return;
+    }
+
+    // ===== Ctrl+` (backtick): Toggle formula view =====
+    if (ctrl && event->key() == Qt::Key_QuoteLeft) {
+        toggleFormulaView();
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Plus: Insert cells dialog =====
+    if (ctrl && (event->key() == Qt::Key_Plus || (shift && event->key() == Qt::Key_Equal))) {
+        QDialog dlg(this);
+        dlg.setWindowTitle("Insert");
+        auto* layout = new QVBoxLayout(&dlg);
+        auto* rbRight = new QRadioButton("Shift cells right", &dlg);
+        auto* rbDown = new QRadioButton("Shift cells down", &dlg);
+        auto* rbRow = new QRadioButton("Entire row", &dlg);
+        auto* rbCol = new QRadioButton("Entire column", &dlg);
+        rbDown->setChecked(true);
+        layout->addWidget(rbRight);
+        layout->addWidget(rbDown);
+        layout->addWidget(rbRow);
+        layout->addWidget(rbCol);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        if (dlg.exec() == QDialog::Accepted) {
+            if (rbRight->isChecked()) insertCellsShiftRight();
+            else if (rbDown->isChecked()) insertCellsShiftDown();
+            else if (rbRow->isChecked()) insertEntireRow();
+            else if (rbCol->isChecked()) insertEntireColumn();
+        }
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Minus: Delete cells dialog =====
+    if (ctrl && event->key() == Qt::Key_Minus) {
+        QDialog dlg(this);
+        dlg.setWindowTitle("Delete");
+        auto* layout = new QVBoxLayout(&dlg);
+        auto* rbLeft = new QRadioButton("Shift cells left", &dlg);
+        auto* rbUp = new QRadioButton("Shift cells up", &dlg);
+        auto* rbRow = new QRadioButton("Entire row", &dlg);
+        auto* rbCol = new QRadioButton("Entire column", &dlg);
+        rbUp->setChecked(true);
+        layout->addWidget(rbLeft);
+        layout->addWidget(rbUp);
+        layout->addWidget(rbRow);
+        layout->addWidget(rbCol);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        if (dlg.exec() == QDialog::Accepted) {
+            if (rbLeft->isChecked()) deleteCellsShiftLeft();
+            else if (rbUp->isChecked()) deleteCellsShiftUp();
+            else if (rbRow->isChecked()) deleteEntireRow();
+            else if (rbCol->isChecked()) deleteEntireColumn();
+        }
+        event->accept();
+        return;
+    }
+
+    // ===== F4: Absolute reference toggle (only while editing a formula) =====
+    if (event->key() == Qt::Key_F4 && state() == QAbstractItemView::EditingState) {
+        QWidget* editor = indexWidget(currentIndex());
+        if (!editor) editor = viewport()->findChild<QLineEdit*>();
+        auto* lineEdit = qobject_cast<QLineEdit*>(editor);
+        if (lineEdit) {
+            QString text = lineEdit->text();
+            if (text.startsWith("=")) {
+                int cursor = lineEdit->cursorPosition();
+                // Find cell reference token around cursor
+                static QRegularExpression refRe("\\$?[A-Za-z]{1,3}\\$?[0-9]{1,7}");
+                QRegularExpressionMatchIterator it = refRe.globalMatch(text);
+                while (it.hasNext()) {
+                    QRegularExpressionMatch match = it.next();
+                    int start = match.capturedStart();
+                    int end = match.capturedEnd();
+                    if (cursor >= start && cursor <= end) {
+                        QString token = match.captured();
+                        // Parse current $ state
+                        static QRegularExpression parseRe("^(\\$?)([A-Za-z]{1,3})(\\$?)([0-9]{1,7})$");
+                        auto parsed = parseRe.match(token);
+                        if (parsed.hasMatch()) {
+                            bool colAbs = !parsed.captured(1).isEmpty();
+                            QString col = parsed.captured(2);
+                            bool rowAbs = !parsed.captured(3).isEmpty();
+                            QString row = parsed.captured(4);
+                            // Cycle: A1 -> $A$1 -> A$1 -> $A1 -> A1
+                            QString newToken;
+                            if (!colAbs && !rowAbs) {
+                                newToken = "$" + col + "$" + row;       // A1 -> $A$1
+                            } else if (colAbs && rowAbs) {
+                                newToken = col + "$" + row;             // $A$1 -> A$1
+                            } else if (!colAbs && rowAbs) {
+                                newToken = "$" + col + row;             // A$1 -> $A1
+                            } else {
+                                newToken = col + row;                   // $A1 -> A1
+                            }
+                            QString newText = text.left(start) + newToken + text.mid(end);
+                            lineEdit->setText(newText);
+                            lineEdit->setCursorPosition(start + newToken.length());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        event->accept();
+        return;
+    }
+
+    // ===== Shift+Space: Select entire row =====
+    if (shift && !ctrl && event->key() == Qt::Key_Space) {
+        if (state() != QAbstractItemView::EditingState) {
+            QModelIndex cur = currentIndex();
+            if (cur.isValid()) {
+                selectRow(cur.row());
+            }
+            event->accept();
+            return;
+        }
+    }
+
+    // ===== Ctrl+Space: Select entire column =====
+    if (ctrl && !shift && event->key() == Qt::Key_Space) {
+        if (state() != QAbstractItemView::EditingState) {
+            QModelIndex cur = currentIndex();
+            if (cur.isValid()) {
+                selectColumn(cur.column());
+            }
+            event->accept();
+            return;
+        }
     }
 
     QTableView::keyPressEvent(event);
@@ -2787,6 +3408,19 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
         m_formatPainterActive = false;
         viewport()->setCursor(Qt::ArrowCursor);
         return;
+    }
+
+    // Ctrl+Click on hyperlink: open URL
+    if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier) && m_spreadsheet) {
+        QModelIndex idx = indexAt(event->pos());
+        if (idx.isValid()) {
+            auto cell = m_spreadsheet->getCellIfExists(idx.row(), idx.column());
+            if (cell && cell->hasHyperlink()) {
+                openHyperlink(idx.row(), idx.column());
+                event->accept();
+                return;
+            }
+        }
     }
 
     // Checkbox & Picklist click handling
@@ -3066,6 +3700,12 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
                 painter.drawRect(fillRect);
             }
         }
+    }
+
+    // Draw trace precedent/dependent arrows
+    if ((m_showPrecedents || m_showDependents) && !m_tracedCells.empty() && m_model) {
+        QPainter tracePainter(viewport());
+        drawTraceArrows(tracePainter);
     }
 }
 
@@ -3791,7 +4431,9 @@ void SpreadsheetView::showCreatePicklistDialog() {
 
     // --- Picker mode: dialog closed, show picker bar with its own event loop ---
     if (result == PickerRequested) {
-        QFrame* bar = new QFrame(viewport());
+        // Use the SpreadsheetView as parent (not viewport) so the bar survives
+        // sheet switches which call setModel(nullptr) and repaint the viewport.
+        QFrame* bar = new QFrame(this);
         bar->setObjectName("plRangeBar");
         bar->setStyleSheet(
             "QFrame#plRangeBar { background: #EFF6FF; border: 1px solid #93C5FD; border-radius: 8px; }");
@@ -3829,14 +4471,19 @@ void SpreadsheetView::showCreatePicklistDialog() {
             "QPushButton:hover { background: #F3F4F6; }");
         barLo->addWidget(barCancel);
 
-        bar->setGeometry(8, 8, viewport()->width() - 16, 38);
+        // Position over the viewport area, offset by headers
+        int hdrH = horizontalHeader()->height();
+        int hdrW = verticalHeader()->width();
+        bar->setGeometry(hdrW + 8, hdrH + 8, viewport()->width() - 16, 38);
         bar->show();
         bar->raise();
 
         // Poll selection with a timer — robust across sheet switches
         QTimer* pollTimer = new QTimer(bar);
         pollTimer->setInterval(80);
-        connect(pollTimer, &QTimer::timeout, bar, [barRange, this]() {
+        connect(pollTimer, &QTimer::timeout, bar, [barRange, bar, this]() {
+            // Keep bar raised above the viewport after sheet switches
+            bar->raise();
             if (!selectionModel()) return;
             auto indexes = selectionModel()->selectedIndexes();
             if (indexes.isEmpty()) return;
@@ -4857,4 +5504,94 @@ void SpreadsheetView::openPicklistManagerDialog() {
     mainLo->addLayout(bottomRow);
 
     dlg.exec();
+}
+
+// ============== Trace Precedents/Dependents ==============
+
+void SpreadsheetView::tracePrecedents() {
+    QModelIndex current = currentIndex();
+    if (!current.isValid() || !m_spreadsheet) return;
+
+    m_traceCell = CellAddress(current.row(), current.column());
+    const auto& depGraph = m_spreadsheet->getDependencyGraph();
+    m_tracedCells = depGraph.getDependencies(m_traceCell);
+    m_showPrecedents = true;
+    m_showDependents = false;
+    viewport()->update();
+}
+
+void SpreadsheetView::traceDependents() {
+    QModelIndex current = currentIndex();
+    if (!current.isValid() || !m_spreadsheet) return;
+
+    m_traceCell = CellAddress(current.row(), current.column());
+    const auto& depGraph = m_spreadsheet->getDependencyGraph();
+    m_tracedCells = depGraph.getDependents(m_traceCell);
+    m_showDependents = true;
+    m_showPrecedents = false;
+    viewport()->update();
+}
+
+void SpreadsheetView::clearTraceArrows() {
+    m_showPrecedents = false;
+    m_showDependents = false;
+    m_tracedCells.clear();
+    viewport()->update();
+}
+
+void SpreadsheetView::drawTraceArrows(QPainter& painter) {
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    // Blue for precedents (arrows point FROM precedent TO traced cell)
+    // Red for dependents (arrows point FROM traced cell TO dependent)
+    QColor arrowColor = m_showPrecedents ? QColor(50, 100, 220, 180) : QColor(220, 50, 50, 180);
+
+    QModelIndex traceCellIdx = m_model->index(m_traceCell.row, m_traceCell.col);
+    QRect traceCellRect = visualRect(traceCellIdx);
+    if (traceCellRect.isNull()) return;
+
+    QPointF traceCellCenter = traceCellRect.center();
+
+    for (const auto& addr : m_tracedCells) {
+        QModelIndex idx = m_model->index(addr.row, addr.col);
+        QRect cellRect = visualRect(idx);
+        if (cellRect.isNull()) continue;
+
+        QPointF cellCenter = cellRect.center();
+
+        QPointF from, to;
+        if (m_showPrecedents) {
+            from = cellCenter;
+            to = traceCellCenter;
+        } else {
+            from = traceCellCenter;
+            to = cellCenter;
+        }
+
+        // Draw the line
+        QPen linePen(arrowColor, 2.0);
+        painter.setPen(linePen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawLine(from, to);
+
+        // Draw arrowhead at destination
+        double angle = std::atan2(to.y() - from.y(), to.x() - from.x());
+        double arrowLen = 10.0;
+        double arrowAngle = 0.45; // ~25 degrees
+
+        QPointF p1(to.x() - arrowLen * std::cos(angle - arrowAngle),
+                   to.y() - arrowLen * std::sin(angle - arrowAngle));
+        QPointF p2(to.x() - arrowLen * std::cos(angle + arrowAngle),
+                   to.y() - arrowLen * std::sin(angle + arrowAngle));
+
+        painter.setBrush(arrowColor);
+        painter.setPen(Qt::NoPen);
+        QPolygonF arrowHead;
+        arrowHead << to << p1 << p2;
+        painter.drawPolygon(arrowHead);
+
+        // Draw a small dot at the source cell center
+        painter.setBrush(arrowColor);
+        painter.drawEllipse(from, 3.0, 3.0);
+    }
 }

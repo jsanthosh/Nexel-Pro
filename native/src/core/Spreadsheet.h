@@ -9,6 +9,7 @@
 #include <memory>
 #include <vector>
 #include <functional>
+#include <shared_mutex>
 #include "Cell.h"
 #include "CellRange.h"
 #include "TableStyle.h"
@@ -18,6 +19,7 @@
 #include "ConditionalFormatting.h"
 #include "SparklineConfig.h"
 #include "DocumentTheme.h"
+#include "NamedRange.h"
 
 struct PivotConfig; // forward declaration
 
@@ -71,6 +73,9 @@ public:
 
     // Formula engine access
     FormulaEngine& getFormulaEngine();
+
+    // Dependency graph access (for trace precedents/dependents)
+    const DependencyGraph& getDependencyGraph() const { return m_depGraph; }
 
     // Cell iteration (for serialization)
     void forEachCell(std::function<void(int row, int col, const Cell&)> callback) const;
@@ -145,6 +150,8 @@ public:
     int getColumnWidth(int col) const;      // returns 0 if not set (use default)
     const std::map<int, int>& getRowHeights() const { return m_rowHeights; }
     const std::map<int, int>& getColumnWidths() const { return m_columnWidths; }
+    std::map<int, int>& getRowHeights() { return m_rowHeights; }
+    std::map<int, int>& getColumnWidths() { return m_columnWidths; }
 
     // Sheet-level default style (applied to empty cells, e.g. after Select All + format)
     void setDefaultCellStyle(const CellStyle& style) { m_defaultCellStyle = style; m_hasDefaultStyle = true; }
@@ -161,10 +168,16 @@ public:
     bool getAutoRecalculate() const;
     void reserveCells(size_t count) { m_cells.reserve(count); }
 
+    // Batch update: suppress recalculation during bulk operations (paste, import, etc.)
+    // All dirty cells are recalculated in optimal order when endBatchUpdate() is called.
+    void beginBatchUpdate();
+    void endBatchUpdate();
+
     // Fast bulk import — bypasses dependency tracking, recalculation, and dirty flags.
     // Caller MUST call setAutoRecalculate(false) before and finishBulkImport() after.
     Cell* getOrCreateCellFast(int row, int col);
     void finishBulkImport();
+    void finishBulkImportWithMaxRowCol(int maxRow, int maxCol); // skip O(n) scan
     void rebuildDependencyGraph();
 
     // Fast cell navigation — uses lazy cached index, O(1) after first build.
@@ -190,6 +203,12 @@ public:
     // Document theme
     const DocumentTheme& getDocumentTheme() const { return m_documentTheme; }
     void setDocumentTheme(const DocumentTheme& theme);
+
+    // Named ranges
+    void addNamedRange(const QString& name, const CellRange& range, int sheetIndex = -1);
+    void removeNamedRange(const QString& name);
+    const NamedRange* getNamedRange(const QString& name) const;
+    const std::map<QString, NamedRange>& getNamedRanges() const;
 
     // Mutable table access (for re-theming)
     std::vector<SpreadsheetTable>& getTablesRef() { return m_tables; }
@@ -221,7 +240,17 @@ public:
     // Recalculate all formula cells (used after undo/redo)
     void recalculateAll();
 
+    // Dynamic array spill support
+    void applySpillResult(const CellAddress& formulaCell, const std::vector<std::vector<QVariant>>& result);
+    void clearSpillRange(const CellAddress& formulaCell);
+    const std::unordered_map<CellKey, CellRange, CellKeyHash>& getSpillRanges() const { return m_spillRanges; }
+    bool hasSpillRange(const CellAddress& addr) const { return m_spillRanges.count(CellKey{addr.row, addr.col}) > 0; }
+
 private:
+    // Thread safety: protects m_cells, nav index, and formula tracker
+    // Use std::shared_lock for read operations, std::unique_lock for writes
+    mutable std::shared_mutex m_cellMutex;
+
     CellMap m_cells;
     std::unique_ptr<FormulaEngine> m_formulaEngine;
     DependencyGraph m_depGraph;
@@ -231,6 +260,8 @@ private:
     int m_columnCount;
     bool m_autoRecalculate;
     bool m_inTransaction;
+    bool m_inBatchUpdate = false;
+    std::unordered_set<CellKey, CellKeyHash> m_batchDirtyCells; // cells changed during batch
     // Cached max row/col (avoids O(n) scan every call)
     mutable int m_cachedMaxRow = -1;
     mutable int m_cachedMaxCol = -1;
@@ -247,7 +278,9 @@ private:
     DocumentTheme m_documentTheme = defaultDocumentTheme();
     CellStyle m_defaultCellStyle;
     bool m_hasDefaultStyle = false;
+    std::map<QString, NamedRange> m_namedRanges;
     std::unordered_map<CellKey, SparklineConfig, CellKeyHash> m_sparklines;
+    std::unordered_map<CellKey, CellRange, CellKeyHash> m_spillRanges; // formula cell -> spill output range
 
     // Lazy navigation index — built on first query, invalidated on modification
     mutable std::unordered_map<int, std::vector<int>> m_colIndexCache; // col → sorted rows

@@ -204,6 +204,10 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
 
     switch (role) {
         case Qt::DisplayRole: {
+            // Formula view mode: show raw formula text for formula cells
+            if (m_showFormulas && cell->getType() == CellType::Formula) {
+                return cell->getFormula();
+            }
             auto value = m_spreadsheet->getCellValue(CellAddress(index.row(), index.column()));
             if (baseStyle.numberFormat != "General" && !value.toString().isEmpty()) {
                 NumberFormatOptions opts;
@@ -452,6 +456,13 @@ QVariant SpreadsheetModel::headerData(int section, Qt::Orientation orientation, 
 Qt::ItemFlags SpreadsheetModel::flags(const QModelIndex& index) const {
     if (!index.isValid()) {
         return Qt::NoItemFlags;
+    }
+    // Spill cells are non-editable (controlled by parent formula)
+    if (m_spreadsheet) {
+        auto cell = m_spreadsheet->getCellIfExists(index.row(), index.column());
+        if (cell && cell->isSpillCell()) {
+            return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+        }
     }
     return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
 }

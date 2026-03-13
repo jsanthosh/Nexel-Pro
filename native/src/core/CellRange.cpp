@@ -15,6 +15,8 @@ QString CellAddress::toString() const {
 
 CellAddress CellAddress::fromString(const QString& str) {
     // Parse "A1", "$A$1", "$A1", "A$1" formats
+    static constexpr int MAX_COL = 16384;  // XFD (Excel max)
+    static constexpr int MAX_ROW = 100000000; // 100M rows
     int col = 0;
     int row = 0;
     int i = 0;
@@ -22,9 +24,12 @@ CellAddress CellAddress::fromString(const QString& str) {
     // Skip optional $ before column
     while (i < str.length() && str[i] == '$') i++;
 
-    // Parse column letters
+    // Parse column letters with overflow protection
     while (i < str.length() && str[i].isLetter()) {
         col = col * 26 + (str[i].toUpper().toLatin1() - 'A' + 1);
+        if (col > MAX_COL + 1) {
+            return CellAddress(-1, -1); // Invalid: column overflow
+        }
         i++;
     }
     col--; // Convert to 0-based
@@ -32,9 +37,12 @@ CellAddress CellAddress::fromString(const QString& str) {
     // Skip optional $ before row
     while (i < str.length() && str[i] == '$') i++;
 
-    // Parse row number
+    // Parse row number with overflow protection
     while (i < str.length() && str[i].isDigit()) {
         row = row * 10 + str[i].toLatin1() - '0';
+        if (row > MAX_ROW) {
+            return CellAddress(-1, -1); // Invalid: row overflow
+        }
         i++;
     }
     row--; // Convert to 0-based

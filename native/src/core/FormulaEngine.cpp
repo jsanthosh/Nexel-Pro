@@ -6,6 +6,8 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <set>
+#include <map>
 #include <QDateTime>
 #include <QRegularExpression>
 
@@ -116,7 +118,7 @@ QVariant FormulaEngine::evaluateMultiplicative(const QString& expr, int& pos) {
         if (expr[pos] == '*') { pos++; result = toNumber(result) * toNumber(evaluateUnary(expr, pos)); }
         else if (expr[pos] == '/') {
             pos++; double d = toNumber(evaluateUnary(expr, pos));
-            if (d == 0.0) { m_lastError = "Division by zero"; return QVariant("#DIV/0!"); }
+            if (d == 0.0) { m_lastError = "#DIV/0!"; return QVariant("#DIV/0!"); }
             result = toNumber(result) / d;
         } else break;
         skipWhitespace(expr, pos);
@@ -159,12 +161,79 @@ QVariant FormulaEngine::evaluateFactor(const QString& expr, int& pos) {
         return result;
     }
 
-    // Letter tokens: functions, cell refs, ranges
+    // Cross-sheet reference with quoted sheet name: 'Sheet Name'!A1 or 'Sheet Name'!A1:B10
+    if (pos < expr.length() && expr[pos] == '\'') {
+        int savedPos = pos;
+        pos++; // skip opening quote
+        int nameStart = pos;
+        while (pos < expr.length() && expr[pos] != '\'') pos++;
+        QString sheetName = expr.mid(nameStart, pos - nameStart);
+        if (pos < expr.length()) pos++; // skip closing quote
+        if (pos < expr.length() && expr[pos] == '!') {
+            pos++; // skip '!'
+            int refStart = pos;
+            while (pos < expr.length() && (expr[pos].isLetterOrNumber() || expr[pos] == ':' || expr[pos] == '$')) pos++;
+            QString refToken = expr.mid(refStart, pos - refStart);
+
+            if (m_allSheets) {
+                for (const auto& sheet : *m_allSheets) {
+                    if (sheet->getSheetName().compare(sheetName, Qt::CaseInsensitive) == 0) {
+                        if (refToken.contains(':')) {
+                            CellRange range(refToken);
+                            m_lastRangeArgs.push_back(range);
+                            std::vector<QVariant> values;
+                            auto cells = range.getCells();
+                            for (const auto& c : cells) values.push_back(sheet->getCellValue(c));
+                            return QVariant::fromValue(values);
+                        } else {
+                            CellAddress addr = CellAddress::fromString(refToken);
+                            return sheet->getCellValue(addr);
+                        }
+                    }
+                }
+            }
+            m_lastError = "#REF!";
+            return QVariant("#REF!");
+        }
+        // Not a valid cross-sheet ref, reset position
+        pos = savedPos;
+    }
+
+    // Letter tokens: functions, cell refs, ranges, cross-sheet refs, named ranges
     if (pos < expr.length() && (expr[pos].isLetter() || expr[pos] == '$')) {
         int start = pos;
         while (pos < expr.length() && (expr[pos].isLetterOrNumber() || expr[pos] == ':' || expr[pos] == '$' || expr[pos] == '_')) pos++;
         QString token = expr.mid(start, pos - start);
         skipWhitespace(expr, pos);
+
+        // Cross-sheet reference: SheetName!CellRef or SheetName!A1:B10
+        if (pos < expr.length() && expr[pos] == '!') {
+            pos++; // skip '!'
+            QString sheetName = token;
+            int refStart = pos;
+            while (pos < expr.length() && (expr[pos].isLetterOrNumber() || expr[pos] == ':' || expr[pos] == '$')) pos++;
+            QString refToken = expr.mid(refStart, pos - refStart);
+
+            if (m_allSheets) {
+                for (const auto& sheet : *m_allSheets) {
+                    if (sheet->getSheetName().compare(sheetName, Qt::CaseInsensitive) == 0) {
+                        if (refToken.contains(':')) {
+                            CellRange range(refToken);
+                            m_lastRangeArgs.push_back(range);
+                            std::vector<QVariant> values;
+                            auto cells = range.getCells();
+                            for (const auto& c : cells) values.push_back(sheet->getCellValue(c));
+                            return QVariant::fromValue(values);
+                        } else {
+                            CellAddress addr = CellAddress::fromString(refToken);
+                            return sheet->getCellValue(addr);
+                        }
+                    }
+                }
+            }
+            m_lastError = "#REF!";
+            return QVariant("#REF!");
+        }
 
         // Function call
         if (pos < expr.length() && expr[pos] == '(') {
@@ -226,6 +295,34 @@ QVariant FormulaEngine::evaluateFactor(const QString& expr, int& pos) {
 
             std::vector<QVariant> values = getRangeValues(range);
             return QVariant::fromValue(values);
+        }
+
+        // Named range lookup (case-insensitive) — check before treating as cell ref
+        if (m_spreadsheet) {
+            const auto* namedRange = m_spreadsheet->getNamedRange(token);
+            if (namedRange) {
+                CellRange range = namedRange->range;
+                m_lastRangeArgs.push_back(range);
+
+                long long cellCount = static_cast<long long>(range.getRowCount()) * range.getColumnCount();
+                if (cellCount < 10000) {
+                    auto cells = range.getCells();
+                    for (const auto& c : cells) m_lastDependencies.push_back(c);
+                }
+
+                if (range.isSingleCell()) {
+                    CellAddress addr = range.getStart();
+                    m_lastDependencies.push_back(addr);
+                    return getCellValue(addr);
+                }
+
+                if (cellCount > 100000) {
+                    return QVariant::fromValue(range);
+                }
+
+                std::vector<QVariant> values = getRangeValues(range);
+                return QVariant::fromValue(values);
+            }
         }
 
         // Cell ref
@@ -339,6 +436,24 @@ QVariant FormulaEngine::evaluateFunction(const QString& fn, const std::vector<QV
     if (fn == "ISTEXT") return funcISTEXT(args);
     if (fn == "CHOOSE") return funcCHOOSE(args);
     if (fn == "SWITCH") return funcSWITCH(args);
+    if (fn == "IFS") return funcIFS(args);
+
+    if (fn == "SUMIFS") return funcSUMIFS(args);
+    if (fn == "COUNTIFS") return funcCOUNTIFS(args);
+    if (fn == "AVERAGEIFS") return funcAVERAGEIFS(args);
+    if (fn == "MINIFS") return funcMINIFS(args);
+    if (fn == "MAXIFS") return funcMAXIFS(args);
+
+    if (fn == "TEXTJOIN") return funcTEXTJOIN(args);
+    if (fn == "REGEXMATCH") return funcREGEXMATCH(args);
+    if (fn == "REGEXEXTRACT") return funcREGEXEXTRACT(args);
+    if (fn == "REGEXREPLACE") return funcREGEXREPLACE(args);
+
+    // Dynamic array functions
+    if (fn == "FILTER") return funcFILTER(args);
+    if (fn == "SORT") return funcSORT(args);
+    if (fn == "UNIQUE") return funcUNIQUE(args);
+    if (fn == "SEQUENCE") return funcSEQUENCE(args);
 
     m_lastError = "Unknown function: " + fn;
     return QVariant("#NAME?");
@@ -1394,4 +1509,469 @@ QVariant FormulaEngine::funcDATEVALUE(const std::vector<QVariant>& args) {
     QDate date = parseDate(args[0]);
     if (!date.isValid()) return QVariant("#VALUE!");
     return date.toString("yyyy-MM-dd");
+}
+
+// ---- Multi-criteria functions ----
+
+QVariant FormulaEngine::funcSUMIFS(const std::vector<QVariant>& args) {
+    // SUMIFS(sum_range, criteria_range1, criteria1, criteria_range2, criteria2, ...)
+    if (args.size() < 3 || (args.size() - 1) % 2 != 0) return QVariant("#VALUE!");
+    auto sumRange = flattenArgs({args[0]});
+    size_t numCriteria = (args.size() - 1) / 2;
+    std::vector<std::vector<QVariant>> criteriaRanges;
+    std::vector<QString> criteriaValues;
+    for (size_t i = 0; i < numCriteria; ++i) {
+        criteriaRanges.push_back(flattenArgs({args[1 + i * 2]}));
+        criteriaValues.push_back(toString(args[2 + i * 2]));
+    }
+    double sum = 0;
+    for (size_t i = 0; i < sumRange.size(); ++i) {
+        bool allMatch = true;
+        for (size_t c = 0; c < numCriteria; ++c) {
+            if (i >= criteriaRanges[c].size() || !matchesCriteria(criteriaRanges[c][i], criteriaValues[c])) {
+                allMatch = false;
+                break;
+            }
+        }
+        if (allMatch) sum += toNumber(sumRange[i]);
+    }
+    return sum;
+}
+
+QVariant FormulaEngine::funcCOUNTIFS(const std::vector<QVariant>& args) {
+    // COUNTIFS(criteria_range1, criteria1, criteria_range2, criteria2, ...)
+    if (args.size() < 2 || args.size() % 2 != 0) return QVariant("#VALUE!");
+    size_t numCriteria = args.size() / 2;
+    std::vector<std::vector<QVariant>> criteriaRanges;
+    std::vector<QString> criteriaValues;
+    for (size_t i = 0; i < numCriteria; ++i) {
+        criteriaRanges.push_back(flattenArgs({args[i * 2]}));
+        criteriaValues.push_back(toString(args[1 + i * 2]));
+    }
+    if (criteriaRanges.empty()) return 0;
+    int count = 0;
+    size_t len = criteriaRanges[0].size();
+    for (size_t i = 0; i < len; ++i) {
+        bool allMatch = true;
+        for (size_t c = 0; c < numCriteria; ++c) {
+            if (i >= criteriaRanges[c].size() || !matchesCriteria(criteriaRanges[c][i], criteriaValues[c])) {
+                allMatch = false;
+                break;
+            }
+        }
+        if (allMatch) count++;
+    }
+    return count;
+}
+
+QVariant FormulaEngine::funcAVERAGEIFS(const std::vector<QVariant>& args) {
+    // AVERAGEIFS(avg_range, criteria_range1, criteria1, ...)
+    if (args.size() < 3 || (args.size() - 1) % 2 != 0) return QVariant("#VALUE!");
+    auto avgRange = flattenArgs({args[0]});
+    size_t numCriteria = (args.size() - 1) / 2;
+    std::vector<std::vector<QVariant>> criteriaRanges;
+    std::vector<QString> criteriaValues;
+    for (size_t i = 0; i < numCriteria; ++i) {
+        criteriaRanges.push_back(flattenArgs({args[1 + i * 2]}));
+        criteriaValues.push_back(toString(args[2 + i * 2]));
+    }
+    double sum = 0; int count = 0;
+    for (size_t i = 0; i < avgRange.size(); ++i) {
+        bool allMatch = true;
+        for (size_t c = 0; c < numCriteria; ++c) {
+            if (i >= criteriaRanges[c].size() || !matchesCriteria(criteriaRanges[c][i], criteriaValues[c])) {
+                allMatch = false;
+                break;
+            }
+        }
+        if (allMatch) { sum += toNumber(avgRange[i]); count++; }
+    }
+    return count == 0 ? QVariant("#DIV/0!") : QVariant(sum / count);
+}
+
+QVariant FormulaEngine::funcMINIFS(const std::vector<QVariant>& args) {
+    // MINIFS(min_range, criteria_range1, criteria1, ...)
+    if (args.size() < 3 || (args.size() - 1) % 2 != 0) return QVariant("#VALUE!");
+    auto minRange = flattenArgs({args[0]});
+    size_t numCriteria = (args.size() - 1) / 2;
+    std::vector<std::vector<QVariant>> criteriaRanges;
+    std::vector<QString> criteriaValues;
+    for (size_t i = 0; i < numCriteria; ++i) {
+        criteriaRanges.push_back(flattenArgs({args[1 + i * 2]}));
+        criteriaValues.push_back(toString(args[2 + i * 2]));
+    }
+    double result = std::numeric_limits<double>::max();
+    bool found = false;
+    for (size_t i = 0; i < minRange.size(); ++i) {
+        bool allMatch = true;
+        for (size_t c = 0; c < numCriteria; ++c) {
+            if (i >= criteriaRanges[c].size() || !matchesCriteria(criteriaRanges[c][i], criteriaValues[c])) {
+                allMatch = false;
+                break;
+            }
+        }
+        if (allMatch) {
+            double val = toNumber(minRange[i]);
+            if (!found || val < result) result = val;
+            found = true;
+        }
+    }
+    return found ? QVariant(result) : QVariant(0.0);
+}
+
+QVariant FormulaEngine::funcMAXIFS(const std::vector<QVariant>& args) {
+    // MAXIFS(max_range, criteria_range1, criteria1, ...)
+    if (args.size() < 3 || (args.size() - 1) % 2 != 0) return QVariant("#VALUE!");
+    auto maxRange = flattenArgs({args[0]});
+    size_t numCriteria = (args.size() - 1) / 2;
+    std::vector<std::vector<QVariant>> criteriaRanges;
+    std::vector<QString> criteriaValues;
+    for (size_t i = 0; i < numCriteria; ++i) {
+        criteriaRanges.push_back(flattenArgs({args[1 + i * 2]}));
+        criteriaValues.push_back(toString(args[2 + i * 2]));
+    }
+    double result = std::numeric_limits<double>::lowest();
+    bool found = false;
+    for (size_t i = 0; i < maxRange.size(); ++i) {
+        bool allMatch = true;
+        for (size_t c = 0; c < numCriteria; ++c) {
+            if (i >= criteriaRanges[c].size() || !matchesCriteria(criteriaRanges[c][i], criteriaValues[c])) {
+                allMatch = false;
+                break;
+            }
+        }
+        if (allMatch) {
+            double val = toNumber(maxRange[i]);
+            if (!found || val > result) result = val;
+            found = true;
+        }
+    }
+    return found ? QVariant(result) : QVariant(0.0);
+}
+
+// ---- IFS function ----
+
+QVariant FormulaEngine::funcIFS(const std::vector<QVariant>& args) {
+    // IFS(condition1, value1, condition2, value2, ...)
+    if (args.size() < 2 || args.size() % 2 != 0) return QVariant("#VALUE!");
+    for (size_t i = 0; i < args.size(); i += 2) {
+        if (toBoolean(args[i])) return args[i + 1];
+    }
+    return QVariant("#N/A");
+}
+
+// ---- TEXTJOIN function ----
+
+QVariant FormulaEngine::funcTEXTJOIN(const std::vector<QVariant>& args) {
+    // TEXTJOIN(delimiter, ignore_empty, text1, ...)
+    if (args.size() < 3) return QVariant("#VALUE!");
+    QString delimiter = toString(args[0]);
+    bool ignoreEmpty = toBoolean(args[1]);
+    std::vector<QVariant> remaining(args.begin() + 2, args.end());
+    auto flat = flattenArgs(remaining);
+    QStringList parts;
+    for (const auto& v : flat) {
+        QString s = toString(v);
+        if (ignoreEmpty && (s.isEmpty() || v.isNull() || !v.isValid())) continue;
+        parts.append(s);
+    }
+    return parts.join(delimiter);
+}
+
+// ---- Regex functions ----
+
+QVariant FormulaEngine::funcREGEXMATCH(const std::vector<QVariant>& args) {
+    // REGEXMATCH(text, regex)
+    if (args.size() < 2) return QVariant("#VALUE!");
+    QString text = toString(args[0]);
+    QRegularExpression re(toString(args[1]));
+    if (!re.isValid()) return QVariant("#VALUE!");
+    return QVariant(re.match(text).hasMatch());
+}
+
+QVariant FormulaEngine::funcREGEXEXTRACT(const std::vector<QVariant>& args) {
+    // REGEXEXTRACT(text, regex)
+    if (args.size() < 2) return QVariant("#VALUE!");
+    QString text = toString(args[0]);
+    QRegularExpression re(toString(args[1]));
+    if (!re.isValid()) return QVariant("#VALUE!");
+    QRegularExpressionMatch match = re.match(text);
+    if (!match.hasMatch()) return QVariant("#N/A");
+    return match.captured(0);
+}
+
+QVariant FormulaEngine::funcREGEXREPLACE(const std::vector<QVariant>& args) {
+    // REGEXREPLACE(text, regex, replacement)
+    if (args.size() < 3) return QVariant("#VALUE!");
+    QString text = toString(args[0]);
+    QRegularExpression re(toString(args[1]));
+    if (!re.isValid()) return QVariant("#VALUE!");
+    return text.replace(re, toString(args[2]));
+}
+
+// ---- Dynamic Array Functions ----
+
+// Helper: convert a 2D vector result to QVariantList of QVariantList
+static QVariant make2DResult(const std::vector<std::vector<QVariant>>& data) {
+    QVariantList outer;
+    for (const auto& row : data) {
+        QVariantList innerRow;
+        for (const auto& val : row) {
+            innerRow.append(val);
+        }
+        outer.append(QVariant(innerRow));
+    }
+    return QVariant(outer);
+}
+
+// Helper: get 2D data from an argument (CellRange or already-evaluated array)
+static std::vector<std::vector<QVariant>> arg2D(FormulaEngine* engine,
+                                                 const QVariant& arg,
+                                                 const std::vector<CellRange>& rangeArgs,
+                                                 int rangeIndex) {
+    if (rangeIndex < static_cast<int>(rangeArgs.size())) {
+        return engine->getRangeValues2D(rangeArgs[rangeIndex]);
+    }
+    // Fallback: try to interpret as a single value
+    return {{arg}};
+}
+
+QVariant FormulaEngine::funcFILTER(const std::vector<QVariant>& args) {
+    // FILTER(array, include, [if_empty])
+    if (args.size() < 2) return QVariant("#VALUE!");
+
+    auto array = arg2D(this, args[0], m_lastRangeArgs, 0);
+    auto include = arg2D(this, args[1], m_lastRangeArgs, 1);
+
+    if (array.empty()) return QVariant("#VALUE!");
+
+    // Build list of row indices where include is TRUE
+    std::vector<std::vector<QVariant>> filtered;
+    int numRows = static_cast<int>(array.size());
+    for (int r = 0; r < numRows; ++r) {
+        bool shouldInclude = false;
+        if (r < static_cast<int>(include.size()) && !include[r].empty()) {
+            QVariant val = include[r][0];
+            if (val.typeId() == QMetaType::Bool) {
+                shouldInclude = val.toBool();
+            } else {
+                shouldInclude = toBoolean(val);
+            }
+        }
+        if (shouldInclude) {
+            filtered.push_back(array[r]);
+        }
+    }
+
+    if (filtered.empty()) {
+        if (args.size() >= 3) {
+            return args[2]; // if_empty value
+        }
+        return QVariant("#CALC!");
+    }
+
+    return make2DResult(filtered);
+}
+
+QVariant FormulaEngine::funcSORT(const std::vector<QVariant>& args) {
+    // SORT(array, [sort_index], [sort_order], [by_col])
+    if (args.empty()) return QVariant("#VALUE!");
+
+    auto array = arg2D(this, args[0], m_lastRangeArgs, 0);
+    if (array.empty()) return QVariant("#VALUE!");
+
+    int sortIndex = args.size() >= 2 ? static_cast<int>(toNumber(args[1])) : 1;
+    int sortOrder = args.size() >= 3 ? static_cast<int>(toNumber(args[2])) : 1;
+    bool byCol = args.size() >= 4 ? toBoolean(args[3]) : false;
+
+    if (sortIndex < 1) sortIndex = 1;
+
+    if (!byCol) {
+        // Sort rows by column sortIndex (1-based)
+        int colIdx = sortIndex - 1;
+        std::stable_sort(array.begin(), array.end(),
+            [colIdx, sortOrder, this](const std::vector<QVariant>& a, const std::vector<QVariant>& b) {
+                QVariant va = (colIdx < static_cast<int>(a.size())) ? a[colIdx] : QVariant();
+                QVariant vb = (colIdx < static_cast<int>(b.size())) ? b[colIdx] : QVariant();
+
+                bool aEmpty = !va.isValid() || va.toString().isEmpty();
+                bool bEmpty = !vb.isValid() || vb.toString().isEmpty();
+                if (aEmpty && bEmpty) return false;
+                if (aEmpty) return false; // empties sort last
+                if (bEmpty) return true;
+
+                bool aOk, bOk;
+                double aNum = va.toString().toDouble(&aOk);
+                double bNum = vb.toString().toDouble(&bOk);
+                if (aOk && bOk) {
+                    return sortOrder >= 0 ? (aNum < bNum) : (aNum > bNum);
+                }
+                int cmp = va.toString().compare(vb.toString(), Qt::CaseInsensitive);
+                return sortOrder >= 0 ? (cmp < 0) : (cmp > 0);
+            });
+    } else {
+        // Sort columns by row sortIndex (1-based)
+        int rowIdx = sortIndex - 1;
+        if (rowIdx >= static_cast<int>(array.size())) rowIdx = 0;
+
+        int numCols = 0;
+        for (const auto& row : array) {
+            numCols = std::max(numCols, static_cast<int>(row.size()));
+        }
+
+        // Create column indices and sort them
+        std::vector<int> colOrder(numCols);
+        std::iota(colOrder.begin(), colOrder.end(), 0);
+        std::stable_sort(colOrder.begin(), colOrder.end(),
+            [&array, rowIdx, sortOrder, this](int a, int b) {
+                QVariant va = (a < static_cast<int>(array[rowIdx].size())) ? array[rowIdx][a] : QVariant();
+                QVariant vb = (b < static_cast<int>(array[rowIdx].size())) ? array[rowIdx][b] : QVariant();
+                bool aOk, bOk;
+                double aNum = va.toString().toDouble(&aOk);
+                double bNum = vb.toString().toDouble(&bOk);
+                if (aOk && bOk) return sortOrder >= 0 ? (aNum < bNum) : (aNum > bNum);
+                int cmp = va.toString().compare(vb.toString(), Qt::CaseInsensitive);
+                return sortOrder >= 0 ? (cmp < 0) : (cmp > 0);
+            });
+
+        // Rearrange columns
+        std::vector<std::vector<QVariant>> result;
+        for (const auto& row : array) {
+            std::vector<QVariant> newRow;
+            for (int ci : colOrder) {
+                newRow.push_back(ci < static_cast<int>(row.size()) ? row[ci] : QVariant());
+            }
+            result.push_back(std::move(newRow));
+        }
+        array = std::move(result);
+    }
+
+    return make2DResult(array);
+}
+
+QVariant FormulaEngine::funcUNIQUE(const std::vector<QVariant>& args) {
+    // UNIQUE(array, [by_col], [exactly_once])
+    if (args.empty()) return QVariant("#VALUE!");
+
+    auto array = arg2D(this, args[0], m_lastRangeArgs, 0);
+    if (array.empty()) return QVariant("#VALUE!");
+
+    bool byCol = args.size() >= 2 ? toBoolean(args[1]) : false;
+    bool exactlyOnce = args.size() >= 3 ? toBoolean(args[2]) : false;
+
+    if (!byCol) {
+        // Unique rows: build a string key for each row
+        auto rowKey = [](const std::vector<QVariant>& row) -> QString {
+            QStringList parts;
+            for (const auto& v : row) parts.append(v.toString());
+            return parts.join(QChar(0x1F)); // unit separator
+        };
+
+        // Count occurrences
+        std::map<QString, int> counts;
+        std::vector<QString> keys;
+        for (const auto& row : array) {
+            QString key = rowKey(row);
+            counts[key]++;
+            keys.push_back(key);
+        }
+
+        std::vector<std::vector<QVariant>> result;
+        std::set<QString> seen;
+        for (size_t i = 0; i < array.size(); ++i) {
+            const QString& key = keys[i];
+            if (exactlyOnce) {
+                if (counts[key] == 1) {
+                    result.push_back(array[i]);
+                }
+            } else {
+                if (seen.find(key) == seen.end()) {
+                    seen.insert(key);
+                    result.push_back(array[i]);
+                }
+            }
+        }
+
+        if (result.empty()) return QVariant("#CALC!");
+        return make2DResult(result);
+    } else {
+        // Unique columns
+        int numRows = static_cast<int>(array.size());
+        int numCols = 0;
+        for (const auto& row : array) numCols = std::max(numCols, static_cast<int>(row.size()));
+
+        auto colKey = [&](int c) -> QString {
+            QStringList parts;
+            for (int r = 0; r < numRows; ++r) {
+                parts.append(c < static_cast<int>(array[r].size()) ? array[r][c].toString() : "");
+            }
+            return parts.join(QChar(0x1F));
+        };
+
+        std::map<QString, int> counts;
+        std::vector<QString> keys;
+        for (int c = 0; c < numCols; ++c) {
+            QString key = colKey(c);
+            counts[key]++;
+            keys.push_back(key);
+        }
+
+        std::vector<int> keepCols;
+        std::set<QString> seen;
+        for (int c = 0; c < numCols; ++c) {
+            const QString& key = keys[c];
+            if (exactlyOnce) {
+                if (counts[key] == 1) keepCols.push_back(c);
+            } else {
+                if (seen.find(key) == seen.end()) {
+                    seen.insert(key);
+                    keepCols.push_back(c);
+                }
+            }
+        }
+
+        std::vector<std::vector<QVariant>> result;
+        for (int r = 0; r < numRows; ++r) {
+            std::vector<QVariant> newRow;
+            for (int c : keepCols) {
+                newRow.push_back(c < static_cast<int>(array[r].size()) ? array[r][c] : QVariant());
+            }
+            result.push_back(std::move(newRow));
+        }
+
+        if (result.empty()) return QVariant("#CALC!");
+        return make2DResult(result);
+    }
+}
+
+QVariant FormulaEngine::funcSEQUENCE(const std::vector<QVariant>& args) {
+    // SEQUENCE(rows, [columns], [start], [step])
+    if (args.empty()) return QVariant("#VALUE!");
+
+    int rows = static_cast<int>(toNumber(args[0]));
+    int cols = args.size() >= 2 ? static_cast<int>(toNumber(args[1])) : 1;
+    double start = args.size() >= 3 ? toNumber(args[2]) : 1.0;
+    double step = args.size() >= 4 ? toNumber(args[3]) : 1.0;
+
+    if (rows < 1) rows = 1;
+    if (cols < 1) cols = 1;
+
+    // Safety limit
+    if (rows * cols > 1000000) return QVariant("#VALUE!");
+
+    std::vector<std::vector<QVariant>> result;
+    double current = start;
+    for (int r = 0; r < rows; ++r) {
+        std::vector<QVariant> row;
+        for (int c = 0; c < cols; ++c) {
+            row.push_back(QVariant(current));
+            current += step;
+        }
+        result.push_back(std::move(row));
+    }
+
+    // Single cell: return scalar
+    if (rows == 1 && cols == 1) return result[0][0];
+
+    return make2DResult(result);
 }

@@ -31,114 +31,27 @@ char detectDelimiter(const char* data, qint64 size) {
     for (int i = 1; i < 4; i++) {
         if (counts[i] > counts[maxIdx]) maxIdx = i;
     }
-    // If no delimiters found at all, default to comma
     return (counts[maxIdx] > 0) ? delimiters[maxIdx] : ',';
 }
 
-} // anonymous namespace
-
-std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath) {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return nullptr;
-    }
-
-    qint64 fileSize = file.size();
-    if (fileSize == 0) {
-        return std::make_shared<Spreadsheet>();
-    }
-
-    // Memory-map for zero-copy access; fallback to readAll
-    QByteArray rawData;
-    const char* data;
-    qint64 dataSize;
-
-    uchar* mapped = file.map(0, fileSize);
-    if (mapped) {
-        data = reinterpret_cast<const char*>(mapped);
-        dataSize = fileSize;
-    } else {
-        rawData = file.readAll();
-        data = rawData.constData();
-        dataSize = rawData.size();
-    }
-
-    // Handle BOM and encoding detection
-    qint64 offset = 0;
-    QByteArray transcoded;
-
-    if (dataSize >= 2) {
-        auto u = reinterpret_cast<const unsigned char*>(data);
-        if (dataSize >= 3 && u[0] == 0xEF && u[1] == 0xBB && u[2] == 0xBF) {
-            // UTF-8 BOM — skip it
-            offset = 3;
-        } else if (u[0] == 0xFF && u[1] == 0xFE) {
-            // UTF-16 LE — transcode to UTF-8
-            transcoded = QString::fromUtf16(
-                reinterpret_cast<const char16_t*>(data + 2),
-                static_cast<qsizetype>((dataSize - 2) / 2)).toUtf8();
-            data = transcoded.constData();
-            dataSize = transcoded.size();
-            offset = 0;
-        } else if (u[0] == 0xFE && u[1] == 0xFF) {
-            // UTF-16 BE — byte-swap then decode
-            QByteArray swapped(static_cast<qsizetype>(dataSize - 2), Qt::Uninitialized);
-            const char* src = data + 2;
-            char* dst = swapped.data();
-            for (qint64 i = 0; i + 1 < dataSize - 2; i += 2) {
-                dst[i] = src[i + 1];
-                dst[i + 1] = src[i];
-            }
-            transcoded = QString::fromUtf16(
-                reinterpret_cast<const char16_t*>(swapped.constData()),
-                static_cast<qsizetype>(swapped.size() / 2)).toUtf8();
-            data = transcoded.constData();
-            dataSize = transcoded.size();
-            offset = 0;
-        }
-    }
-
-    // Auto-detect delimiter from first 8KB
-    char delim = detectDelimiter(data + offset, dataSize - offset);
-
-    // Count actual columns from first line for accurate reservation
-    int estimatedCols = 1;
-    {
-        bool inQ = false;
-        for (qint64 p = offset; p < dataSize; p++) {
-            if (data[p] == '"') { inQ = !inQ; continue; }
-            if (inQ) continue;
-            if (data[p] == delim) estimatedCols++;
-            else if (data[p] == '\n' || data[p] == '\r') break;
-        }
-    }
-
-    auto spreadsheet = std::make_shared<Spreadsheet>();
-    spreadsheet->setAutoRecalculate(false);
-
-    // Pre-estimate row count from file size (avg ~50 bytes/row)
-    int estimatedRows = static_cast<int>(fileSize / 50) + 100;
-    spreadsheet->setRowCount(std::max(1000, estimatedRows));
-    // Reserve based on actual column count, capped at 50M to avoid excessive upfront allocation
-    size_t estimatedCells = std::min(
-        static_cast<size_t>(estimatedRows) * estimatedCols, size_t(50'000'000));
-    spreadsheet->reserveCells(estimatedCells);
-
-    int row = 0;
-    int maxCol = 0;
-    qint64 pos = offset;
+// Parse rows from memory-mapped data into spreadsheet.
+// Returns the number of rows parsed. Updates `pos` to resume position.
+int parseRows(const char* data, qint64 dataSize, qint64& pos, char delim,
+              Spreadsheet* spreadsheet, int startRow, int maxRows,
+              int& maxCol) {
     QByteArray fieldBuf;
     fieldBuf.reserve(256);
+    int row = startRow;
+    int rowsParsed = 0;
 
-    while (pos < dataSize) {
+    while (pos < dataSize && rowsParsed < maxRows) {
         int col = 0;
 
-        // Parse one row (fields separated by delim, terminated by EOL/EOF)
+        // Parse one row
         while (pos < dataSize) {
             fieldBuf.clear();
 
             if (pos < dataSize && data[pos] == '"') {
-                // === Quoted field — bulk copy between quotes ===
                 pos++;
                 while (pos < dataSize) {
                     if (data[pos] == '"') {
@@ -150,7 +63,6 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
                             break;
                         }
                     } else {
-                        // Scan to next quote with memchr for bulk copy
                         const char* qSearch = static_cast<const char*>(
                             memchr(data + pos, '"', dataSize - pos));
                         if (qSearch) {
@@ -166,7 +78,6 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
                     pos++;
                 }
             } else {
-                // === Unquoted field — fast memcpy scan ===
                 qint64 start = pos;
                 while (pos < dataSize && data[pos] != delim && data[pos] != '\n' && data[pos] != '\r') {
                     pos++;
@@ -176,7 +87,6 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
                 }
             }
 
-            // Set cell value if field is non-empty (inline trim)
             if (!fieldBuf.isEmpty()) {
                 const char* fStart = fieldBuf.constData();
                 const char* fEnd = fStart + fieldBuf.size();
@@ -187,9 +97,8 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
                 if (fLen > 0) {
                     Cell* cell = spreadsheet->getOrCreateCellFast(row, col);
 
-                    // Fast numeric detection using strtod
-                    bool isNum = false;
                     char firstCh = *fStart;
+                    bool isNum = false;
                     if ((firstCh >= '0' && firstCh <= '9') || firstCh == '-' || firstCh == '+' || firstCh == '.') {
                         if (fLen < 63) {
                             char numBuf[64];
@@ -198,7 +107,7 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
                             char* endPtr = nullptr;
                             double numValue = strtod(numBuf, &endPtr);
                             if (endPtr == numBuf + fLen) {
-                                cell->setValue(numValue);
+                                cell->setValueDirect(numValue);
                                 isNum = true;
                             }
                         }
@@ -209,15 +118,13 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
                         if (firstCh == '=') {
                             cell->setFormula(strValue);
                         } else {
-                            cell->setValue(strValue);
+                            cell->setValueDirect(strValue);
                         }
                     }
                 }
             }
 
             col++;
-
-            // Advance past delimiter, or stop at EOL/EOF
             if (pos < dataSize && data[pos] == delim) {
                 pos++;
             } else {
@@ -227,8 +134,9 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
 
         if (col > maxCol) maxCol = col;
         row++;
+        rowsParsed++;
 
-        // Skip line endings: \r\n, \r, or \n
+        // Skip line endings
         if (pos < dataSize && data[pos] == '\r') {
             pos++;
             if (pos < dataSize && data[pos] == '\n') pos++;
@@ -237,15 +145,153 @@ std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath)
         }
     }
 
-    spreadsheet->finishBulkImport();
+    return rowsParsed;
+}
 
-    // Set final dimensions
-    spreadsheet->setRowCount(std::max(1000, row + 100));
-    spreadsheet->setColumnCount(std::max(26, maxCol + 10));
+} // anonymous namespace
 
-    spreadsheet->setAutoRecalculate(true);
-    file.close();
-    return spreadsheet;
+// CsvFileHandle implementation
+bool CsvFileHandle::open(const QString& filePath) {
+    file.setFileName(filePath);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+
+    qint64 fileSize = file.size();
+    if (fileSize == 0) return false;
+
+    uchar* mapped = file.map(0, fileSize);
+    if (mapped) {
+        data = reinterpret_cast<const char*>(mapped);
+        dataSize = fileSize;
+    } else {
+        rawData = file.readAll();
+        data = rawData.constData();
+        dataSize = rawData.size();
+    }
+
+    // Handle BOM
+    startOffset = 0;
+    if (dataSize >= 2) {
+        auto u = reinterpret_cast<const unsigned char*>(data);
+        if (dataSize >= 3 && u[0] == 0xEF && u[1] == 0xBB && u[2] == 0xBF) {
+            startOffset = 3;
+        } else if (u[0] == 0xFF && u[1] == 0xFE) {
+            transcoded = QString::fromUtf16(
+                reinterpret_cast<const char16_t*>(data + 2),
+                static_cast<qsizetype>((dataSize - 2) / 2)).toUtf8();
+            data = transcoded.constData();
+            dataSize = transcoded.size();
+            startOffset = 0;
+        } else if (u[0] == 0xFE && u[1] == 0xFF) {
+            QByteArray swapped(static_cast<qsizetype>(dataSize - 2), Qt::Uninitialized);
+            const char* src = data + 2;
+            char* dst = swapped.data();
+            for (qint64 i = 0; i + 1 < dataSize - 2; i += 2) {
+                dst[i] = src[i + 1];
+                dst[i + 1] = src[i];
+            }
+            transcoded = QString::fromUtf16(
+                reinterpret_cast<const char16_t*>(swapped.constData()),
+                static_cast<qsizetype>(swapped.size() / 2)).toUtf8();
+            data = transcoded.constData();
+            dataSize = transcoded.size();
+            startOffset = 0;
+        }
+    }
+
+    delimiter = detectDelimiter(data + startOffset, dataSize - startOffset);
+
+    // Count columns from first line
+    estimatedCols = 1;
+    bool inQ = false;
+    for (qint64 p = startOffset; p < dataSize; p++) {
+        if (data[p] == '"') { inQ = !inQ; continue; }
+        if (inQ) continue;
+        if (data[p] == delimiter) estimatedCols++;
+        else if (data[p] == '\n' || data[p] == '\r') break;
+    }
+
+    return true;
+}
+
+std::shared_ptr<Spreadsheet> CsvService::importFromFile(const QString& filePath) {
+    auto result = importProgressive(filePath, INT_MAX);
+    return result.spreadsheet;
+}
+
+CsvProgressiveResult CsvService::importProgressive(const QString& filePath, int initialRows) {
+    CsvProgressiveResult result;
+    result.filePath = filePath;
+
+    auto fh = std::make_shared<CsvFileHandle>();
+    if (!fh->open(filePath)) {
+        return result;
+    }
+
+    auto spreadsheet = std::make_shared<Spreadsheet>();
+    spreadsheet->setAutoRecalculate(false);
+
+    int estimatedRows = static_cast<int>(fh->dataSize / 50) + 100;
+    spreadsheet->setRowCount(std::max(1000, estimatedRows));
+    size_t estimatedCells = std::min(
+        static_cast<size_t>(estimatedRows) * fh->estimatedCols, size_t(50'000'000));
+    spreadsheet->reserveCells(estimatedCells);
+
+    result.delimiter = fh->delimiter;
+    result.maxCol = 0;
+
+    qint64 pos = fh->startOffset;
+    int rowsParsed = parseRows(fh->data, fh->dataSize, pos, fh->delimiter,
+                               spreadsheet.get(), 0, initialRows, result.maxCol);
+
+    result.currentRow = rowsParsed;
+    result.spreadsheet = spreadsheet;
+
+    if (pos >= fh->dataSize || initialRows == INT_MAX) {
+        // All data loaded — use fast finish, skip O(n) scan
+        result.resumeOffset = -1;
+        spreadsheet->finishBulkImportWithMaxRowCol(
+            rowsParsed - 1, result.maxCol - 1);
+        spreadsheet->setRowCount(std::max(1000, rowsParsed + 100));
+        spreadsheet->setColumnCount(std::max(26, result.maxCol + 10));
+        spreadsheet->setAutoRecalculate(true);
+        // fileHandle not needed — let it drop
+    } else {
+        // More data to load — keep file handle alive for continuation
+        result.resumeOffset = pos;
+        result.fileHandle = fh;
+        spreadsheet->setRowCount(std::max(1000, estimatedRows));
+        spreadsheet->setColumnCount(std::max(26, result.maxCol + 10));
+    }
+
+    return result;
+}
+
+int CsvService::continueImport(CsvProgressiveResult& result, int chunkRows) {
+    if (result.resumeOffset < 0 || !result.spreadsheet || !result.fileHandle) return 0;
+
+    auto& fh = *result.fileHandle;
+
+    qint64 pos = result.resumeOffset;
+    int rowsParsed = parseRows(fh.data, fh.dataSize, pos, result.delimiter,
+                               result.spreadsheet.get(), result.currentRow,
+                               chunkRows, result.maxCol);
+
+    result.currentRow += rowsParsed;
+
+    if (pos >= fh.dataSize) {
+        // Done — use fast finish that skips O(n) cell scan
+        result.resumeOffset = -1;
+        result.fileHandle.reset();
+        result.spreadsheet->finishBulkImportWithMaxRowCol(
+            result.currentRow - 1, result.maxCol - 1);
+        result.spreadsheet->setRowCount(std::max(1000, result.currentRow + 100));
+        result.spreadsheet->setColumnCount(std::max(26, result.maxCol + 10));
+        result.spreadsheet->setAutoRecalculate(true);
+    } else {
+        result.resumeOffset = pos;
+    }
+
+    return rowsParsed;
 }
 
 bool CsvService::exportToFile(const Spreadsheet& spreadsheet, const QString& filePath) {
@@ -257,13 +303,11 @@ bool CsvService::exportToFile(const Spreadsheet& spreadsheet, const QString& fil
     int maxRow = spreadsheet.getMaxRow();
     int maxCol = spreadsheet.getMaxColumn();
 
-    // Pre-allocate a buffer for the entire output
     QByteArray output;
     output.reserve(static_cast<qsizetype>((maxRow + 1) * (maxCol + 1) * 10));
 
     for (int r = 0; r <= maxRow; ++r) {
         int lastNonEmpty = -1;
-        // Find last non-empty column to avoid trailing commas
         for (int c = maxCol; c >= 0; --c) {
             auto cell = spreadsheet.getCellIfExists(r, c);
             if (cell && cell->getType() != CellType::Empty) {
@@ -281,12 +325,10 @@ bool CsvService::exportToFile(const Spreadsheet& spreadsheet, const QString& fil
                 if (cell->getType() == CellType::Formula) {
                     value = cell->getComputedValue();
                 }
-                // Picklist: export pipe-separated as comma-separated
                 const auto& style = cell->getStyle();
                 if (style.numberFormat == "Picklist") {
                     value = value.toString().replace('|', ", ");
                 }
-                // Checkbox: export as TRUE/FALSE
                 if (style.numberFormat == "Checkbox") {
                     bool checked = value.toBool() || value.toString().toLower() == "true" || value.toString() == "1";
                     value = checked ? "TRUE" : "FALSE";
@@ -310,7 +352,6 @@ bool CsvService::exportToFile(const Spreadsheet& spreadsheet, const QString& fil
     return true;
 }
 
-// RFC 4180 compliant CSV line parser (kept for compatibility)
 QStringList CsvService::parseCsvLine(const QString& line) {
     QStringList fields;
     QString field;
@@ -323,7 +364,7 @@ QStringList CsvService::parseCsvLine(const QString& line) {
             if (ch == '"') {
                 if (i + 1 < line.length() && line[i + 1] == '"') {
                     field += '"';
-                    i++; // Skip escaped quote
+                    i++;
                 } else {
                     inQuotes = false;
                 }

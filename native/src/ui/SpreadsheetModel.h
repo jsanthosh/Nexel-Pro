@@ -30,6 +30,28 @@ public:
         endResetModel();
     }
 
+    // Structural column/row changes — Qt auto-shifts header section sizes
+    // Must call begin BEFORE data changes, end AFTER.
+    void beginColumnRemoval(int first, int count) {
+        beginRemoveColumns(QModelIndex(), first, first + count - 1);
+    }
+    void endColumnRemoval() { endRemoveColumns(); }
+
+    void beginColumnInsertion(int first, int count) {
+        beginInsertColumns(QModelIndex(), first, first + count - 1);
+    }
+    void endColumnInsertion() { endInsertColumns(); }
+
+    void beginRowRemoval(int first, int count) {
+        beginRemoveRows(QModelIndex(), first, first + count - 1);
+    }
+    void endRowRemoval() { endRemoveRows(); }
+
+    void beginRowInsertion(int first, int count) {
+        beginInsertRows(QModelIndex(), first, first + count - 1);
+    }
+    void endRowInsertion() { endInsertRows(); }
+
     // Suppress undo tracking (used during bulk operations like paste/delete)
     void setSuppressUndo(bool suppress) { m_suppressUndo = suppress; }
 
@@ -37,11 +59,16 @@ public:
     void setHighlightInvalidCells(bool enabled) { m_highlightInvalid = enabled; }
     bool highlightInvalidCells() const { return m_highlightInvalid; }
 
+    // Formula view mode: show raw formulas instead of computed values
+    void setShowFormulas(bool show) { m_showFormulas = show; }
+    bool showFormulas() const { return m_showFormulas; }
+
 private:
     std::shared_ptr<Spreadsheet> m_spreadsheet;
     MacroEngine* m_macroEngine = nullptr;
     bool m_suppressUndo = false;
     bool m_highlightInvalid = false;
+    bool m_showFormulas = false;
 
     QString columnIndexToLetter(int column) const;
 };

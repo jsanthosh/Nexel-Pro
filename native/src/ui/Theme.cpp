@@ -2,6 +2,8 @@
 #include <QSettings>
 #include <QMainWindow>
 #include <QApplication>
+#include <QStyleHints>
+#include <QPalette>
 
 // ── Theme Factory Functions ──
 
@@ -319,6 +321,115 @@ static NexelTheme createSunsetGlow() {
     return t;
 }
 
+static NexelTheme createDarkMode() {
+    NexelTheme t;
+    t.id = "dark_mode";
+    t.displayName = "Dark Mode";
+
+    // Window & Chrome
+    t.windowBackground      = QColor("#1e1e1e");
+    t.menuBarBackground      = QColor("#1e1e1e");
+    t.menuBarText            = QColor("#d4d4d4");
+    t.menuBarHover           = QColor("#333333");
+    t.menuBackground         = QColor("#252526");
+    t.menuBorder             = QColor("#404040");
+    t.menuItemHover          = QColor("#094771");
+    t.menuSeparator          = QColor("#404040");
+    t.statusBarBackground    = QColor("#0078d4");
+    t.statusBarText          = QColor("#FFFFFF");
+
+    // Toolbar
+    t.toolbarAccentStripe       = QColor("#0078d4");
+    t.toolbarBackground         = QColor("#252526");
+    t.toolbarBorder             = QColor("#404040");
+    t.toolbarButtonText         = QColor("#d4d4d4");
+    t.toolbarButtonHover        = QColor("#333333");
+    t.toolbarButtonPressed      = QColor("#3d3d3d");
+    t.toolbarButtonChecked      = QColor("#094771");
+    t.toolbarButtonCheckedBorder = QColor("#0078d4");
+    t.toolbarInputBorder        = QColor("#404040");
+    t.toolbarInputFocus         = QColor("#0078d4");
+    t.toolbarSeparator          = QColor("#404040");
+
+    // Grid
+    t.gridBackground     = QColor("#2d2d2d");
+    t.gridLineColor      = QColor("#404040");
+    t.headerBackground   = QColor("#333333");
+    t.headerBorder       = QColor("#404040");
+    t.headerText         = QColor("#d4d4d4");
+    t.selectionTint      = QColor(38, 79, 120, 80); // #264f78 with alpha
+    t.focusBorderColor   = QColor("#0078d4");
+    t.editorBorderColor  = QColor("#0078d4");
+
+    // Tab Bar
+    t.bottomBarBackground   = QColor("#252526");
+    t.bottomBarBorder       = QColor("#404040");
+    t.tabBackground         = QColor("#2d2d2d");
+    t.tabBorder             = QColor("#404040");
+    t.tabActiveBackground   = QColor("#1e1e1e");
+    t.tabActiveIndicator    = QColor("#0078d4");
+    t.tabHover              = QColor("#333333");
+    t.addSheetButtonText    = QColor("#808080");
+    t.addSheetButtonHover   = QColor("#333333");
+
+    // Formula Bar
+    t.formulaBarBackground  = QColor("#252526");
+    t.formulaBarBorder      = QColor("#404040");
+    t.formulaInputBorder    = QColor("#404040");
+
+    // Popups
+    t.popupBackground       = QColor("#252526");
+    t.popupBorder           = QColor("#404040");
+    t.popupItemSelected     = QColor("#094771");
+    t.paramHintBackground   = QColor("#333333");
+    t.paramHintBorder       = QColor("#404040");
+
+    // Chat Panel
+    t.chatHeaderGradientStart = QColor("#0078d4");
+    t.chatHeaderGradientEnd   = QColor("#106ebe");
+    t.chatBackground          = QColor("#1e1e1e");
+    t.chatUserBubble          = QColor("#094771");
+    t.chatInputBackground     = QColor("#2d2d2d");
+    t.chatInputBorder         = QColor("#404040");
+    t.chatSendButton          = QColor("#0078d4");
+    t.chatSendButtonHover     = QColor("#106ebe");
+
+    // Dock Widget
+    t.dockTitleBackground   = QColor("#252526");
+    t.dockTitleText         = QColor("#d4d4d4");
+
+    // Dialogs
+    t.dialogBackground        = QColor("#252526");
+    t.dialogInputBorder       = QColor("#404040");
+    t.dialogButtonPrimary     = QColor("#0078d4");
+    t.dialogButtonPrimaryHover = QColor("#106ebe");
+    t.dialogButtonPrimaryText = QColor("#FFFFFF");
+    t.dialogGroupBoxBorder    = QColor("#404040");
+
+    // Accents
+    t.accentPrimary  = QColor("#0078d4");
+    t.accentDark     = QColor("#106ebe");
+    t.accentDarker   = QColor("#005a9e");
+    t.accentLight    = QColor("#094771");
+
+    // Checkbox
+    t.checkboxChecked        = QColor("#0078d4");
+    t.checkboxUncheckedBorder = QColor("#808080");
+
+    // Freeze
+    t.freezeLineColor = QColor("#606060");
+
+    // Text
+    t.textPrimary   = QColor("#d4d4d4");
+    t.textSecondary = QColor("#808080");
+    t.textMuted     = QColor("#606060");
+
+    // Selection Handle
+    t.selectionHandleColor = QColor("#0078d4");
+
+    return t;
+}
+
 // ── ThemeManager Implementation ──
 
 ThemeManager& ThemeManager::instance() {
@@ -337,7 +448,8 @@ void ThemeManager::registerThemes() {
         createRoseQuartz(),
         createLavenderMist(),
         createArcticFrost(),
-        createSunsetGlow()
+        createSunsetGlow(),
+        createDarkMode()
     };
 }
 
@@ -347,6 +459,32 @@ QVector<NexelTheme> ThemeManager::availableThemes() const {
 
 const NexelTheme& ThemeManager::currentTheme() const {
     return m_themes[m_currentIndex];
+}
+
+bool ThemeManager::isDarkTheme() const {
+    return m_themes[m_currentIndex].id == "dark_mode";
+}
+
+void ThemeManager::detectAndApplySystemTheme() {
+    QSettings settings("Nexel", "Nexel");
+    // Only auto-detect if user hasn't explicitly saved a preference
+    if (settings.contains("theme")) return;
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    auto colorScheme = QApplication::styleHints()->colorScheme();
+    if (colorScheme == Qt::ColorScheme::Dark) {
+        setTheme("dark_mode");
+        return;
+    }
+#else
+    // Fallback: check palette brightness
+    QPalette pal = QApplication::palette();
+    QColor windowColor = pal.color(QPalette::Window);
+    if (windowColor.lightness() < 128) {
+        setTheme("dark_mode");
+        return;
+    }
+#endif
 }
 
 void ThemeManager::loadSavedTheme() {
@@ -453,36 +591,50 @@ QString ThemeManager::buildAddSheetBtnStylesheet() const {
 
 QString ThemeManager::dialogStylesheet() {
     const auto& t = instance().currentTheme();
+    bool dark = instance().isDarkTheme();
+    QString inputBg = dark ? "#2d2d2d" : "white";
+    QString inputText = dark ? "#d4d4d4" : "#1D2939";
+    QString labelColor = dark ? "#b0b0b0" : "#475467";
+    QString checkboxColor = dark ? "#d4d4d4" : "#344054";
+    QString placeholderColor = dark ? "#606060" : "#98A2B3";
+    QString arrowColor = dark ? "#b0b0b0" : "#667085";
     return QString(
         "QDialog { background: %1; }"
         "QGroupBox { font-weight: 600; font-size: 12px; border: 1px solid %2; "
-        "border-radius: 10px; margin-top: 10px; padding: 20px 14px 14px 14px; background: white; }"
+        "border-radius: 10px; margin-top: 10px; padding: 20px 14px 14px 14px; background: %6; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 8px; "
         "color: %3; font-size: 12px; }"
         "QLineEdit { border: 1px solid %2; border-radius: 6px; padding: 6px 10px; "
-        "background: white; font-size: 12px; color: #1D2939; }"
+        "background: %6; font-size: 12px; color: %7; }"
         "QLineEdit:focus { border-color: %4; }"
-        "QLineEdit::placeholder { color: #98A2B3; }"
+        "QLineEdit::placeholder { color: %9; }"
         "QComboBox { border: 1px solid %2; border-radius: 6px; padding: 6px 10px; "
-        "background: white; font-size: 12px; color: #1D2939; min-height: 22px; }"
+        "background: %6; font-size: 12px; color: %7; min-height: 22px; }"
         "QComboBox:focus { border: 1px solid %4; }"
         "QComboBox::drop-down { border: none; width: 22px; }"
         "QComboBox::down-arrow { image: none; border-left: 4px solid transparent; "
-        "border-right: 4px solid transparent; border-top: 5px solid #667085; margin-right: 6px; }"
+        "border-right: 4px solid transparent; border-top: 5px solid %10; margin-right: 6px; }"
         "QComboBox QAbstractItemView { border: 1px solid %2; border-radius: 6px; "
-        "background: white; selection-background-color: %5; padding: 4px; outline: none; }"
-        "QCheckBox { spacing: 8px; font-size: 12px; color: #344054; }"
-        "QListWidget { border: 1px solid %2; border-radius: 8px; background: white; color: #1D2939; outline: none; }"
-        "QListWidget::item { padding: 8px 10px; border-radius: 6px; font-size: 12px; color: #1D2939; }"
-        "QListWidget::item:selected { background-color: %5; color: #1D2939; "
+        "background: %6; selection-background-color: %5; padding: 4px; outline: none; }"
+        "QCheckBox { spacing: 8px; font-size: 12px; color: %8; }"
+        "QListWidget { border: 1px solid %2; border-radius: 8px; background: %6; color: %7; outline: none; }"
+        "QListWidget::item { padding: 8px 10px; border-radius: 6px; font-size: 12px; color: %7; }"
+        "QListWidget::item:selected { background-color: %5; color: %7; "
         "border-left: 3px solid %3; }"
         "QListWidget::item:hover:!selected { background-color: %1; }"
-        "QLabel { color: #475467; font-size: 12px; }"
+        "QLabel { color: %11; font-size: 12px; }"
     ).arg(
-        t.dialogBackground.name(),
-        t.dialogGroupBoxBorder.name(),
-        t.accentDark.name(),
-        t.accentPrimary.name(),
-        t.accentLight.name()
+        t.dialogBackground.name(),    // %1
+        t.dialogGroupBoxBorder.name(), // %2
+        t.accentDark.name(),           // %3
+        t.accentPrimary.name(),        // %4
+        t.accentLight.name(),          // %5
+        inputBg,                       // %6
+        inputText,                     // %7
+        checkboxColor,                 // %8
+        placeholderColor               // %9
+    ).arg(
+        arrowColor,                    // %10
+        labelColor                     // %11
     );
 }

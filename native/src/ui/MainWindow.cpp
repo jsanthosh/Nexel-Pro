@@ -29,6 +29,7 @@
 #include "../services/DocumentService.h"
 #include "../services/CsvService.h"
 #include "../services/XlsxService.h"
+#include "../services/AutoSaveService.h"
 #include "../core/PivotEngine.h"
 #include "PivotTableDialog.h"
 #include "TemplateGallery.h"
@@ -36,7 +37,9 @@
 #include "SparklineDialog.h"
 #include "../core/MacroEngine.h"
 #include "MacroEditorDialog.h"
+#include "GoalSeekDialog.h"
 #include "Theme.h"
+#include <cmath>
 #include "../core/SparklineConfig.h"
 #include "../core/DocumentTheme.h"
 #include <QVBoxLayout>
@@ -178,12 +181,20 @@ MainWindow::MainWindow(QWidget* parent)
     // Apply theme to sub-widgets
     onThemeChanged();
 
+    // Auto-save with crash recovery
+    m_autoSave = new AutoSaveService(this);
+    m_autoSave->setMainWindow(this);
+    m_autoSave->setInterval(60);
+    m_autoSave->setEnabled(true);
+
     // Ensure cell A1 is focused on startup (deferred so widget has keyboard focus)
     QTimer::singleShot(0, this, [this]() {
         if (m_spreadsheetView && m_spreadsheetView->model()) {
             m_spreadsheetView->setCurrentIndex(m_spreadsheetView->model()->index(0, 0));
             m_spreadsheetView->setFocus();
         }
+        // Check for crash recovery after UI is ready
+        checkAutoSaveRecovery();
     });
 }
 
@@ -287,6 +298,7 @@ void MainWindow::switchToSheet(int index) {
     m_spreadsheetView->clearChartRangeHighlight();
     m_spreadsheetView->setAllSheets(m_sheets);
     m_spreadsheetView->setSpreadsheet(m_sheets[index]);
+    m_sheets[index]->getFormulaEngine().setAllSheets(&m_sheets);
     m_toolbar->setDocumentTheme(&m_sheets[index]->getDocumentTheme());
     m_spreadsheetView->refreshView();
     m_spreadsheetView->applyStoredDimensions();
@@ -353,6 +365,7 @@ void MainWindow::onAddSheet() {
     auto sheet = std::make_shared<Spreadsheet>();
     sheet->setSheetName(name);
     m_sheets.push_back(sheet);
+    sheet->getFormulaEngine().setAllSheets(&m_sheets);
     m_sheetTabBar->addTab(name);
     m_sheetTabBar->setCurrentIndex(m_sheetTabBar->count() - 1);
     setDirty();
@@ -452,6 +465,7 @@ void MainWindow::onDuplicateSheet() {
     copy->setAutoRecalculate(true);
 
     m_sheets.insert(m_sheets.begin() + idx + 1, copy);
+    copy->getFormulaEngine().setAllSheets(&m_sheets);
     m_sheetTabBar->insertTab(idx + 1, copy->getSheetName());
     m_sheetTabBar->setCurrentIndex(idx + 1);
     setDirty();
@@ -497,8 +511,21 @@ void MainWindow::setSheets(const std::vector<std::shared_ptr<Spreadsheet>>& shee
     m_overlayZOrder.clear();
     m_overlayGroups.clear();
 
+    // Move old sheets to background thread for deferred destruction
+    // (destroying 9M+ Cell objects synchronously would freeze the UI)
+    if (!m_sheets.empty()) {
+        auto oldSheets = std::make_shared<std::vector<std::shared_ptr<Spreadsheet>>>(
+            std::move(m_sheets));
+        QtConcurrent::run([oldSheets]() { /* destructor runs here */ });
+    }
+
     m_sheets = sheets;
     m_activeSheetIndex = 0;
+
+    // Wire up cross-sheet reference support for all sheets
+    for (auto& sheet : m_sheets) {
+        sheet->getFormulaEngine().setAllSheets(&m_sheets);
+    }
 
     // Rebuild tab bar
     m_sheetTabBar->blockSignals(true);
@@ -556,6 +583,9 @@ void MainWindow::createMenuBar() {
     editMenu->addAction("Cu&t", this, &MainWindow::onCut, QKeySequence::Cut);
     editMenu->addAction("&Copy", this, &MainWindow::onCopy, QKeySequence::Copy);
     editMenu->addAction("&Paste", this, &MainWindow::onPaste, QKeySequence::Paste);
+    editMenu->addAction("Paste &Special...", this, [this]() {
+        if (m_spreadsheetView) m_spreadsheetView->pasteSpecial();
+    }, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V));
     editMenu->addAction("&Delete", this, &MainWindow::onDelete, QKeySequence::Delete);
     editMenu->addSeparator();
     editMenu->addAction("Select &All", this, &MainWindow::onSelectAll, QKeySequence::SelectAll);
@@ -567,6 +597,13 @@ void MainWindow::createMenuBar() {
     QMenu* formatMenu = menuBar->addMenu("F&ormat");
     formatMenu->addAction("Format &Cells...", this, &MainWindow::onFormatCells,
                           QKeySequence(Qt::CTRL | Qt::Key_1));
+    formatMenu->addSeparator();
+    formatMenu->addAction("&Bold", m_spreadsheetView, &SpreadsheetView::applyBold,
+                          QKeySequence(Qt::CTRL | Qt::Key_B));
+    formatMenu->addAction("&Italic", m_spreadsheetView, &SpreadsheetView::applyItalic,
+                          QKeySequence(Qt::CTRL | Qt::Key_I));
+    formatMenu->addAction("&Underline", m_spreadsheetView, &SpreadsheetView::applyUnderline,
+                          QKeySequence(Qt::CTRL | Qt::Key_U));
     formatMenu->addSeparator();
     formatMenu->addAction("&Conditional Formatting...", this, &MainWindow::onConditionalFormat);
     formatMenu->addSeparator();
@@ -582,6 +619,9 @@ void MainWindow::createMenuBar() {
     insertMenu->addAction("&Shape...", this, &MainWindow::onInsertShape);
     insertMenu->addAction("&Image...", this, &MainWindow::onInsertImage);
     insertMenu->addAction("Spark&line...", this, &MainWindow::onInsertSparkline);
+    insertMenu->addSeparator();
+    insertMenu->addAction("&Hyperlink...", m_spreadsheetView, &SpreadsheetView::insertOrEditHyperlink,
+                          QKeySequence(Qt::CTRL | Qt::Key_K));
     insertMenu->addSeparator();
     insertMenu->addAction("&Row Above", m_spreadsheetView, &SpreadsheetView::insertEntireRow);
     insertMenu->addAction("&Column Left", m_spreadsheetView, &SpreadsheetView::insertEntireColumn);
@@ -625,8 +665,116 @@ void MainWindow::createMenuBar() {
     dataMenu->addAction("&Refresh Pivot Table", this, &MainWindow::onRefreshPivotTable,
                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
     dataMenu->addSeparator();
+    dataMenu->addAction("&Recalculate All", this, [this]() {
+        if (!m_sheets.empty() && m_activeSheetIndex < (int)m_sheets.size()) {
+            m_sheets[m_activeSheetIndex]->recalculateAll();
+            m_spreadsheetView->refreshView();
+            statusBar()->showMessage("Recalculated all formulas");
+        }
+    }, QKeySequence(Qt::Key_F9));
+    dataMenu->addSeparator();
     QAction* highlightAction = dataMenu->addAction("&Circle Invalid Data", this, &MainWindow::onHighlightInvalidCells);
     highlightAction->setCheckable(true);
+    dataMenu->addSeparator();
+    dataMenu->addAction("&Goal Seek...", this, [this]() {
+        GoalSeekDialog dialog(this);
+        if (dialog.exec() != QDialog::Accepted) return;
+
+        CellAddress setCell = CellAddress::fromString(dialog.getSetCell());
+        CellAddress byChangingCell = CellAddress::fromString(dialog.getByChangingCell());
+        double targetValue = dialog.getToValue();
+
+        if (setCell.row < 0 || setCell.col < 0 || byChangingCell.row < 0 || byChangingCell.col < 0) {
+            QMessageBox::warning(this, "Goal Seek", "Invalid cell reference.");
+            return;
+        }
+
+        auto& sheet = m_sheets[m_activeSheetIndex];
+
+        // Save original value for undo
+        QVariant originalValue = sheet->getCellValue(byChangingCell);
+
+        // Secant method with bisection fallback
+        auto evaluate = [&](double x) -> double {
+            sheet->setCellValue(byChangingCell, x);
+            return sheet->getCellValue(setCell).toDouble() - targetValue;
+        };
+
+        double x0 = originalValue.toDouble();
+        double x1 = (x0 == 0.0) ? 1.0 : x0 * 1.1;
+        double f0 = evaluate(x0);
+        double f1 = evaluate(x1);
+
+        bool converged = false;
+        const int maxIter = 100;
+        const double tol = 1e-7;
+
+        // Secant method
+        for (int i = 0; i < maxIter && !converged; ++i) {
+            if (std::abs(f1) < tol) {
+                converged = true;
+                break;
+            }
+            if (std::abs(f1 - f0) < 1e-15) break; // avoid division by zero
+
+            double x2 = x1 - f1 * (x1 - x0) / (f1 - f0);
+            x0 = x1;
+            f0 = f1;
+            x1 = x2;
+            f1 = evaluate(x1);
+        }
+
+        // Bisection fallback if secant didn't converge
+        if (!converged && std::abs(f1) >= tol) {
+            // Try to find a bracket
+            double lo = x0 - 1000, hi = x0 + 1000;
+            double flo = evaluate(lo), fhi = evaluate(hi);
+            if (flo * fhi < 0) {
+                for (int i = 0; i < maxIter && !converged; ++i) {
+                    double mid = (lo + hi) / 2.0;
+                    double fmid = evaluate(mid);
+                    if (std::abs(fmid) < tol) {
+                        x1 = mid;
+                        converged = true;
+                    } else if (flo * fmid < 0) {
+                        hi = mid;
+                        fhi = fmid;
+                    } else {
+                        lo = mid;
+                        flo = fmid;
+                    }
+                }
+                if (!converged) x1 = (lo + hi) / 2.0;
+            }
+        }
+
+        if (converged || std::abs(evaluate(x1)) < tol * 100) {
+            sheet->setCellValue(byChangingCell, x1);
+            m_spreadsheetView->refreshView();
+            QMessageBox::information(this, "Goal Seek",
+                QString("Goal Seek found a solution.\n%1 = %2")
+                    .arg(dialog.getByChangingCell())
+                    .arg(x1, 0, 'g', 10));
+        } else {
+            // Restore original value
+            sheet->setCellValue(byChangingCell, originalValue);
+            m_spreadsheetView->refreshView();
+            QMessageBox::warning(this, "Goal Seek",
+                "Goal Seek could not find a solution.");
+        }
+    });
+
+    // ===== Formulas Menu =====
+    QMenu* formulasMenu = menuBar->addMenu("&Formulas");
+    formulasMenu->addAction("Trace &Precedents", m_spreadsheetView,
+                            &SpreadsheetView::tracePrecedents,
+                            QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_BracketLeft));
+    formulasMenu->addAction("Trace &Dependents", m_spreadsheetView,
+                            &SpreadsheetView::traceDependents,
+                            QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_BracketRight));
+    formulasMenu->addAction("&Remove Arrows", m_spreadsheetView,
+                            &SpreadsheetView::clearTraceArrows,
+                            QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_Backslash));
 
     // === Page Layout menu (document themes) ===
     QMenu* layoutMenu = menuBar->addMenu("Page &Layout");
@@ -688,12 +836,32 @@ void MainWindow::createMenuBar() {
         action->setChecked(theme.id == ThemeManager::instance().currentTheme().id);
         action->setData(theme.id);
         themeGroup->addAction(action);
-        connect(action, &QAction::triggered, this, [this, id = theme.id]() {
+        connect(action, &QAction::triggered, this, [this, id = theme.id, themeGroup]() {
             ThemeManager::instance().setTheme(id);
             ThemeManager::instance().applyTheme(this);
             onThemeChanged();
         });
     }
+
+    // Dark Mode quick toggle
+    QAction* darkModeAction = viewMenu->addAction("&Dark Mode");
+    darkModeAction->setCheckable(true);
+    darkModeAction->setChecked(ThemeManager::instance().isDarkTheme());
+    connect(darkModeAction, &QAction::toggled, this, [this, themeGroup, darkModeAction](bool checked) {
+        QString targetId = checked ? "dark_mode" : "nexel_green";
+        ThemeManager::instance().setTheme(targetId);
+        ThemeManager::instance().applyTheme(this);
+        onThemeChanged();
+        // Update theme submenu checkmarks
+        for (auto* action : themeGroup->actions()) {
+            action->setChecked(action->data().toString() == targetId);
+        }
+    });
+    // Keep dark mode toggle in sync when theme submenu changes
+    connect(&ThemeManager::instance(), &ThemeManager::themeChanged, darkModeAction,
+            [darkModeAction](const NexelTheme& t) {
+        darkModeAction->setChecked(t.id == "dark_mode");
+    });
 
     // ===== Tools Menu =====
     QMenu* toolsMenu = menuBar->addMenu("&Tools");
@@ -1035,21 +1203,40 @@ void MainWindow::onFormatCells() {
 void MainWindow::openFile(const QString& fileName) {
     if (fileName.isEmpty()) return;
 
+    // Cancel any in-progress progressive loading
+    if (m_isProgressiveLoading) {
+        m_isProgressiveLoading = false;
+        if (m_loadingOverlay) {
+            m_loadingOverlay->hide();
+            m_loadingOverlay->deleteLater();
+            m_loadingOverlay = nullptr;
+            m_loadingLabel = nullptr;
+        }
+        if (m_spreadsheetView) {
+            m_spreadsheetView->setEditTriggers(
+                QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+                QAbstractItemView::AnyKeyPressed);
+            m_spreadsheetView->setBulkLoading(false);
+        }
+        if (m_formulaBar) m_formulaBar->setEnabled(true);
+        m_csvLoadState.reset();
+    }
+
     m_currentFilePath = fileName;
     QString ext = QFileInfo(fileName).suffix().toLower();
 
-    // Progress dialog for large files — indeterminate progress bar
-    auto* progress = new QProgressDialog(
-        "Opening " + QFileInfo(fileName).fileName() + "...",
-        QString(), 0, 0, this);
-    progress->setWindowModality(Qt::WindowModal);
-    progress->setMinimumDuration(400); // Only show for files that take >400ms
-    progress->setCancelButton(nullptr);
-
-    QElapsedTimer timer;
-    timer.start();
-
     if (ext == "xlsx" || ext == "xls") {
+        // XLSX: background thread with progress dialog (no progressive loading yet)
+        auto* progress = new QProgressDialog(
+            "Opening " + QFileInfo(fileName).fileName() + "...",
+            QString(), 0, 0, this);
+        progress->setWindowModality(Qt::WindowModal);
+        progress->setMinimumDuration(400);
+        progress->setCancelButton(nullptr);
+
+        QElapsedTimer timer;
+        timer.start();
+
         auto* watcher = new QFutureWatcher<XlsxImportResult>(this);
         connect(watcher, &QFutureWatcher<XlsxImportResult>::finished, this,
             [this, watcher, progress, fileName, timer]() {
@@ -1061,17 +1248,160 @@ void MainWindow::openFile(const QString& fileName) {
             });
         watcher->setFuture(QtConcurrent::run(&XlsxService::importFromFile, fileName));
     } else {
-        auto* watcher = new QFutureWatcher<std::shared_ptr<Spreadsheet>>(this);
-        connect(watcher, &QFutureWatcher<std::shared_ptr<Spreadsheet>>::finished, this,
-            [this, watcher, progress, fileName, timer]() {
-                progress->close();
-                progress->deleteLater();
-                auto spreadsheet = watcher->result();
-                watcher->deleteLater();
-                finishCsvOpen(spreadsheet, fileName, timer.elapsed());
-            });
-        watcher->setFuture(QtConcurrent::run(&CsvService::importFromFile, fileName));
+        // CSV/TXT: progressive loading — show first 100K rows instantly, load rest in background
+        startProgressiveCsvLoad(fileName);
     }
+}
+
+// Internal state for progressive CSV loading
+struct MainWindow::CsvLoadState {
+    CsvProgressiveResult progress;
+    QElapsedTimer timer;
+};
+
+MainWindow::~MainWindow() = default;
+
+void MainWindow::startProgressiveCsvLoad(const QString& fileName) {
+    m_csvLoadState = std::make_unique<CsvLoadState>();
+    m_csvLoadState->timer.start();
+
+    // Load first 100K rows on background thread, then show immediately
+    auto* watcher = new QFutureWatcher<CsvProgressiveResult>(this);
+    connect(watcher, &QFutureWatcher<CsvProgressiveResult>::finished, this,
+        [this, watcher, fileName]() {
+            m_csvLoadState->progress = watcher->result();
+            watcher->deleteLater();
+
+            auto& prog = m_csvLoadState->progress;
+            if (!prog.spreadsheet) {
+                QMessageBox::warning(this, "Open Failed", "Could not open file: " + fileName);
+                m_csvLoadState.reset();
+                return;
+            }
+
+            prog.spreadsheet->setSheetName(QFileInfo(fileName).baseName());
+            std::vector<std::shared_ptr<Spreadsheet>> sheets = { prog.spreadsheet };
+            setSheets(sheets);
+            m_currentFilePath = fileName;
+            updateWindowTitle();
+
+            if (prog.resumeOffset >= 0) {
+                // More data to load — show loading indicator and continue in background
+                m_isProgressiveLoading = true;
+
+                // Read-only mode during loading: disable editing and cell-scanning nav
+                m_spreadsheetView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+                m_spreadsheetView->setBulkLoading(true);
+                m_formulaBar->setEnabled(false);
+
+                // Create loading badge in top-right corner
+                if (!m_loadingOverlay) {
+                    m_loadingOverlay = new QWidget(m_spreadsheetView->viewport());
+                    m_loadingOverlay->setStyleSheet("background: transparent;");
+                    m_loadingLabel = new QLabel(m_loadingOverlay);
+                    m_loadingLabel->setStyleSheet(
+                        "QLabel { background: rgba(0,120,212,200); color: white; "
+                        "padding: 6px 16px; border-radius: 4px; font-size: 12px; font-weight: bold; }");
+                    m_loadingLabel->setAlignment(Qt::AlignCenter);
+                }
+                m_loadingLabel->setText(QString("Loading... %1 rows").arg(prog.currentRow));
+                m_loadingLabel->adjustSize();
+                auto* vp = m_spreadsheetView->viewport();
+                m_loadingOverlay->setGeometry(0, 0, vp->width(), 40);
+                m_loadingLabel->move(vp->width() - m_loadingLabel->width() - 10, 8);
+                m_loadingOverlay->show();
+                m_loadingOverlay->raise();
+
+                statusBar()->showMessage(QString("Loading %1 — %2 rows loaded, continuing...")
+                    .arg(QFileInfo(fileName).fileName()).arg(prog.currentRow));
+
+                QTimer::singleShot(0, this, &MainWindow::continueCsvLoadChunk);
+            } else {
+                // Small file — fully loaded
+                m_isProgressiveLoading = false;
+                m_dirty = false;
+                m_toolbar->setSaveEnabled(false);
+                double secs = m_csvLoadState->timer.elapsed() / 1000.0;
+                statusBar()->showMessage(QString("Opened: %1 (%2 rows in %3s)")
+                    .arg(QFileInfo(fileName).fileName())
+                    .arg(prog.currentRow)
+                    .arg(QString::number(secs, 'f', 1)));
+                m_csvLoadState.reset();
+            }
+        });
+
+    statusBar()->showMessage("Opening " + QFileInfo(fileName).fileName() + "...");
+    watcher->setFuture(QtConcurrent::run(&CsvService::importProgressive, fileName, 100000));
+}
+
+void MainWindow::continueCsvLoadChunk() {
+    if (!m_isProgressiveLoading || !m_csvLoadState || m_csvLoadState->progress.resumeOffset < 0) {
+        finishProgressiveCsvLoad();
+        return;
+    }
+
+    // Time-budgeted parsing: parse micro-chunks of 2K rows, yield after ~12ms
+    // so scrolling/clicks stay fluid at 60fps
+    QElapsedTimer timer;
+    timer.start();
+    auto& prog = m_csvLoadState->progress;
+
+    while (prog.resumeOffset >= 0 && timer.elapsed() < 12) {
+        CsvService::continueImport(prog, 2000);
+    }
+
+    if (prog.resumeOffset < 0) {
+        finishProgressiveCsvLoad();
+    } else {
+        if (m_loadingLabel) {
+            m_loadingLabel->setText(QString("Loading... %1 rows").arg(prog.currentRow));
+            m_loadingLabel->adjustSize();
+            auto* vp = m_spreadsheetView->viewport();
+            m_loadingLabel->move(vp->width() - m_loadingLabel->width() - 10, 8);
+        }
+        statusBar()->showMessage(QString("Loading — %1 rows...").arg(prog.currentRow));
+        // Yield to event loop for UI responsiveness
+        QTimer::singleShot(0, this, &MainWindow::continueCsvLoadChunk);
+    }
+}
+
+void MainWindow::finishProgressiveCsvLoad() {
+    m_isProgressiveLoading = false;
+
+    int totalRows = m_csvLoadState ? m_csvLoadState->progress.currentRow : 0;
+    qint64 elapsedMs = m_csvLoadState ? m_csvLoadState->timer.elapsed() : 0;
+
+    if (m_loadingOverlay) {
+        m_loadingOverlay->hide();
+        m_loadingOverlay->deleteLater();
+        m_loadingOverlay = nullptr;
+        m_loadingLabel = nullptr;
+    }
+
+    // Re-enable editing and navigation now that loading is complete
+    if (m_spreadsheetView) {
+        m_spreadsheetView->setEditTriggers(
+            QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+            QAbstractItemView::AnyKeyPressed);
+        m_spreadsheetView->setBulkLoading(false);
+    }
+    if (m_formulaBar) {
+        m_formulaBar->setEnabled(true);
+    }
+
+    // Final model refresh
+    if (m_spreadsheetView && m_spreadsheetView->model()) {
+        QMetaObject::invokeMethod(m_spreadsheetView, "reset", Qt::QueuedConnection);
+    }
+
+    m_csvLoadState.reset();
+    m_dirty = false;
+    m_toolbar->setSaveEnabled(false);
+    double secs = elapsedMs / 1000.0;
+    statusBar()->showMessage(QString("Opened: %1 (%2 rows in %3s)")
+        .arg(QFileInfo(m_currentFilePath).fileName())
+        .arg(totalRows)
+        .arg(QString::number(secs, 'f', 1)));
 }
 
 void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& fileName, qint64 elapsedMs) {
@@ -1287,6 +1617,7 @@ void MainWindow::onSaveDocument() {
         updateWindowTitle();
         m_toolbar->setSaveEnabled(false);
         statusBar()->showMessage("Saved: " + m_currentFilePath);
+        if (m_autoSave) m_autoSave->onManualSave();
     } else {
         QMessageBox::warning(this, "Save Failed", "Could not save file.");
     }
@@ -1328,27 +1659,40 @@ void MainWindow::onSaveAs() {
     }
 
     if (success) {
+        if (m_autoSave) m_autoSave->setCurrentFilePath(fileName);
         m_currentFilePath = fileName;
         m_dirty = false;
         updateWindowTitle();
         m_toolbar->setSaveEnabled(false);
         statusBar()->showMessage("Saved: " + fileName);
+        if (m_autoSave) m_autoSave->onManualSave();
     } else {
         QMessageBox::warning(this, "Save Failed", "Could not save file.");
     }
 }
 
 void MainWindow::onUndo() {
-    if (!m_spreadsheetView) return;
+    if (!m_spreadsheetView || m_isProgressiveLoading) return;
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (sheet && sheet->getUndoManager().canUndo()) {
         sheet->getUndoManager().undo(sheet.get());
+        bool structural = sheet->getUndoManager().lastUndoIsStructural();
         CellAddress target = sheet->getUndoManager().lastUndoTarget();
         auto model = m_spreadsheetView->getModel();
         if (model) {
-            model->resetModel();
             QModelIndex idx = model->index(target.row, target.col);
-            m_spreadsheetView->setCurrentIndex(idx);
+            if (structural) {
+                model->resetModel();
+                QTimer::singleShot(0, m_spreadsheetView, [this]() {
+                    m_spreadsheetView->applyStoredDimensions();
+                });
+            } else {
+                emit model->dataChanged(idx, idx);
+            }
+            // Force full repaint for table style undo/redo
+            m_spreadsheetView->viewport()->update();
+            m_spreadsheetView->selectionModel()->setCurrentIndex(
+                idx, QItemSelectionModel::ClearAndSelect);
             m_spreadsheetView->scrollTo(idx);
         }
         refreshActiveCharts();
@@ -1358,16 +1702,27 @@ void MainWindow::onUndo() {
 }
 
 void MainWindow::onRedo() {
-    if (!m_spreadsheetView) return;
+    if (!m_spreadsheetView || m_isProgressiveLoading) return;
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (sheet && sheet->getUndoManager().canRedo()) {
         sheet->getUndoManager().redo(sheet.get());
+        bool structural = sheet->getUndoManager().lastRedoIsStructural();
         CellAddress target = sheet->getUndoManager().lastRedoTarget();
         auto model = m_spreadsheetView->getModel();
         if (model) {
-            model->resetModel();
             QModelIndex idx = model->index(target.row, target.col);
-            m_spreadsheetView->setCurrentIndex(idx);
+            if (structural) {
+                model->resetModel();
+                QTimer::singleShot(0, m_spreadsheetView, [this]() {
+                    m_spreadsheetView->applyStoredDimensions();
+                });
+            } else {
+                emit model->dataChanged(idx, idx);
+            }
+            // Force full repaint for table style undo/redo
+            m_spreadsheetView->viewport()->update();
+            m_spreadsheetView->selectionModel()->setCurrentIndex(
+                idx, QItemSelectionModel::ClearAndSelect);
             m_spreadsheetView->scrollTo(idx);
         }
         refreshActiveCharts();
@@ -1376,10 +1731,10 @@ void MainWindow::onRedo() {
     }
 }
 
-void MainWindow::onCut() { if (m_spreadsheetView) m_spreadsheetView->cut(); }
+void MainWindow::onCut() { if (m_spreadsheetView && !m_isProgressiveLoading) m_spreadsheetView->cut(); }
 void MainWindow::onCopy() { if (m_spreadsheetView) m_spreadsheetView->copy(); }
-void MainWindow::onPaste() { if (m_spreadsheetView) m_spreadsheetView->paste(); }
-void MainWindow::onDelete() { if (m_spreadsheetView) m_spreadsheetView->deleteSelection(); }
+void MainWindow::onPaste() { if (m_spreadsheetView && !m_isProgressiveLoading) m_spreadsheetView->paste(); }
+void MainWindow::onDelete() { if (m_spreadsheetView && !m_isProgressiveLoading) m_spreadsheetView->deleteSelection(); }
 void MainWindow::onSelectAll() { if (m_spreadsheetView) m_spreadsheetView->selectAll(); }
 
 void MainWindow::onImportCsv() {
@@ -1411,6 +1766,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     };
 
     if (!m_dirty) {
+        // Clean exit — remove auto-save files
+        if (m_autoSave) AutoSaveService::cleanupAutoSave(m_currentFilePath);
         event->accept();
         if (isLastMainWindow())
             _exit(0);
@@ -1423,16 +1780,48 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
     if (result == QMessageBox::Save) {
         onSaveDocument();
+        if (m_autoSave) AutoSaveService::cleanupAutoSave(m_currentFilePath);
         event->accept();
         if (isLastMainWindow())
             _exit(0);
     } else if (result == QMessageBox::Discard) {
+        if (m_autoSave) AutoSaveService::cleanupAutoSave(m_currentFilePath);
         event->accept();
         if (isLastMainWindow())
             _exit(0);
     } else {
         event->ignore();
     }
+}
+
+void MainWindow::checkAutoSaveRecovery() {
+    // Check for unsaved document recovery first
+    QString recoveryPath = AutoSaveService::checkForRecovery(m_currentFilePath);
+
+    // If no recovery for current path, also check for unsaved document recovery
+    if (recoveryPath.isEmpty() && m_currentFilePath.isEmpty()) {
+        recoveryPath = AutoSaveService::checkForRecovery(QString());
+    }
+
+    if (recoveryPath.isEmpty()) return;
+
+    auto result = QMessageBox::question(this, "Recover Auto-Saved Document",
+        "An auto-saved version of your document was found.\n"
+        "This may be from a previous session that ended unexpectedly.\n\n"
+        "Would you like to recover it?",
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (result == QMessageBox::Yes) {
+        openFile(recoveryPath);
+        // Mark as dirty since this is a recovery — user should save explicitly
+        setDirty(true);
+        statusBar()->showMessage("Recovered auto-saved document", 5000);
+    }
+
+    // Clean up the auto-save file regardless of choice
+    AutoSaveService::cleanupAutoSave(m_currentFilePath);
+    // Also clean up unsaved recovery
+    AutoSaveService::cleanupAutoSave(QString());
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
@@ -1804,10 +2193,14 @@ void MainWindow::updateStatusBarSummary() {
     }
 
     // Quick check: if only a single cell selected, show "Ready"
-    bool singleCell = (selection.size() == 1 &&
-                       selection.first().top() == selection.first().bottom() &&
-                       selection.first().left() == selection.first().right());
-    if (singleCell) {
+    // Count total cells across all selection ranges to handle fragmented ranges
+    int totalSelectedCells = 0;
+    for (const auto& range : selection) {
+        totalSelectedCells += (range.bottom() - range.top() + 1) *
+                              (range.right() - range.left() + 1);
+        if (totalSelectedCells > 1) break; // early exit
+    }
+    if (totalSelectedCells <= 1) {
         statusBar()->showMessage("Ready");
         return;
     }
@@ -2251,6 +2644,9 @@ void MainWindow::setDirty(bool dirty) {
     m_dirty = dirty;
     m_toolbar->setSaveEnabled(dirty);
     updateWindowTitle();
+    if (dirty && m_autoSave) {
+        m_autoSave->markDirty();
+    }
 }
 
 void MainWindow::updateWindowTitle() {
@@ -2969,6 +3365,31 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
     // Escape deselects all overlays
     if (event->key() == Qt::Key_Escape) {
         deselectAllOverlays();
+    }
+
+    // Ctrl+PageUp: Switch to previous sheet tab
+    bool ctrl = event->modifiers() & Qt::ControlModifier;
+    if (ctrl && event->key() == Qt::Key_PageUp) {
+        int count = m_sheetTabBar->count();
+        if (count > 1) {
+            int newIndex = m_activeSheetIndex - 1;
+            if (newIndex < 0) newIndex = count - 1;
+            m_sheetTabBar->setCurrentIndex(newIndex);
+        }
+        event->accept();
+        return;
+    }
+
+    // Ctrl+PageDown: Switch to next sheet tab
+    if (ctrl && event->key() == Qt::Key_PageDown) {
+        int count = m_sheetTabBar->count();
+        if (count > 1) {
+            int newIndex = m_activeSheetIndex + 1;
+            if (newIndex >= count) newIndex = 0;
+            m_sheetTabBar->setCurrentIndex(newIndex);
+        }
+        event->accept();
+        return;
     }
 
     QMainWindow::keyPressEvent(event);

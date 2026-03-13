@@ -18,6 +18,7 @@
 #include <QFrame>
 #include <QScrollBar>
 #include <QScreen>
+#include <cmath>
 #include "../core/Spreadsheet.h"
 
 // ===== Picklist tag color palettes (12 pastel bg + dark text pairs) =====
@@ -85,6 +86,19 @@ static void insertFunctionFromPopup(QListWidget* popup, QLineEdit* editor) {
 }
 
 bool CellDelegate::eventFilter(QObject* object, QEvent* event) {
+    // When popup auto-closes (clicked outside), also hide tooltip panels
+    if (auto* popupWidget = qobject_cast<QListWidget*>(object)) {
+        if (event->type() == QEvent::Hide) {
+            auto* ed = qobject_cast<QLineEdit*>(
+                popupWidget->property("_editor").value<QObject*>());
+            if (ed) {
+                auto* h = qobject_cast<QLabel*>(ed->property("_paramHint").value<QObject*>());
+                auto* d = qobject_cast<QLabel*>(ed->property("_detailPanel").value<QObject*>());
+                if (h) h->hide();
+                if (d) d->hide();
+            }
+        }
+    }
     // Handle key events from the popup (Qt::Popup grabs keyboard)
     if (auto* popupWidget = qobject_cast<QListWidget*>(object)) {
         if (event->type() == QEvent::KeyPress) {
@@ -197,12 +211,19 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
         }
     }
 
+    const auto& edTheme = ThemeManager::instance().currentTheme();
+    bool dark = ThemeManager::instance().isDarkTheme();
+    QString edBg = dark ? "#2d2d2d" : "white";
+    QString edText = dark ? "#d4d4d4" : "black";
+    QString popBg = dark ? "#252526" : "white";
+    QString popBorder = dark ? "#404040" : "#C0C0C0";
+
     QLineEdit* editor = new QLineEdit(parent);
     editor->setFrame(false);
     editor->setStyleSheet(QString(
-        "QLineEdit { background: white; padding: 1px 2px; "
-        "border: 2px solid %1; selection-background-color: #0078D4; }")
-        .arg(ThemeManager::instance().currentTheme().editorBorderColor.name()));
+        "QLineEdit { background: %1; color: %2; padding: 1px 2px; "
+        "border: 2px solid %3; selection-background-color: #0078D4; }")
+        .arg(edBg, edText, edTheme.editorBorderColor.name()));
 
     // --- Custom formula autocomplete popup ---
     auto* popup = new QListWidget(parent->window());
@@ -211,23 +232,27 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
     popup->setFocusPolicy(Qt::NoFocus);
     popup->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     popup->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    popup->setStyleSheet(
-        "QListWidget { background: white; border: 1px solid #C0C0C0; outline: none; "
+    popup->setStyleSheet(QString(
+        "QListWidget { background: %1; border: 1px solid %2; outline: none; "
         "border-radius: 6px; }"
         "QListWidget::item { padding: 0px; border: none; }"
         "QListWidget::item:selected { background: transparent; }"
-        "QListWidget::item:hover { background: transparent; }"
-    );
+        "QListWidget::item:hover { background: transparent; }")
+        .arg(popBg, popBorder));
     popup->setItemDelegate(new FormulaPopupDelegate(popup));
     popup->hide();
 
     // --- Parameter hint tooltip ---
+    QString hintBg = dark ? "#333333" : "#FFF8DC";
+    QString hintBorder = dark ? "#404040" : "#E0D8B0";
+    QString hintText = dark ? "#d4d4d4" : "#333";
+
     auto* paramHint = new QLabel(parent->window());
     paramHint->setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint);
     paramHint->setAttribute(Qt::WA_ShowWithoutActivating);
-    paramHint->setStyleSheet(
-        "QLabel { background: #FFF8DC; border: 1px solid #E0D8B0; padding: 4px 8px; "
-        "font-size: 12px; color: #333; border-radius: 3px; }");
+    paramHint->setStyleSheet(QString(
+        "QLabel { background: %1; border: 1px solid %2; padding: 4px 8px; "
+        "font-size: 12px; color: %3; border-radius: 3px; }").arg(hintBg, hintBorder, hintText));
     paramHint->setTextFormat(Qt::RichText);
     paramHint->hide();
 
@@ -235,9 +260,9 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
     auto* detailPanel = new QLabel(parent->window());
     detailPanel->setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint);
     detailPanel->setAttribute(Qt::WA_ShowWithoutActivating);
-    detailPanel->setStyleSheet(
-        "QLabel { background: white; border: 1px solid #D0D0D0; padding: 12px; "
-        "border-radius: 6px; }");
+    detailPanel->setStyleSheet(QString(
+        "QLabel { background: %1; border: 1px solid %2; padding: 12px; "
+        "border-radius: 6px; color: %3; }").arg(popBg, popBorder, hintText));
     detailPanel->setTextFormat(Qt::RichText);
     detailPanel->setWordWrap(true);
     detailPanel->setFixedWidth(340);
@@ -265,9 +290,15 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
             if (reg.contains(funcName)) {
                 detailPanel->setText(buildDetailHtml(reg[funcName]));
                 detailPanel->adjustSize();
-                // Position to the right of popup
-                QPoint pos = popup->mapToGlobal(QPoint(popup->width() + 4, 0));
-                detailPanel->move(pos);
+                // Try right side first; if clipped, move to left side
+                QPoint rightPos = popup->mapToGlobal(QPoint(popup->width() + 4, 0));
+                QScreen* screen = popup->screen();
+                if (screen && rightPos.x() + detailPanel->width() > screen->availableGeometry().right()) {
+                    QPoint leftPos = popup->mapToGlobal(QPoint(-detailPanel->width() - 4, 0));
+                    detailPanel->move(leftPos);
+                } else {
+                    detailPanel->move(rightPos);
+                }
                 detailPanel->show();
             }
         });
@@ -308,11 +339,19 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
                         QPoint below = editor->mapToGlobal(QPoint(0, edH + 2));
                         QPoint above = editor->mapToGlobal(QPoint(0, -popupH - 2));
                         QScreen* screen = editor->screen();
-                        if (screen && below.y() + popupH > screen->availableGeometry().bottom()) {
-                            popup->move(above);
-                        } else {
-                            popup->move(below);
+                        QPoint pos = below;
+                        if (screen) {
+                            QRect sr = screen->availableGeometry();
+                            if (pos.y() + popupH > sr.bottom())
+                                pos = above;
+                            // Clamp horizontal: don't go off right edge
+                            if (pos.x() + popupW > sr.right())
+                                pos.setX(sr.right() - popupW);
+                            // Don't go off left edge
+                            if (pos.x() < sr.left())
+                                pos.setX(sr.left());
                         }
+                        popup->move(pos);
                         popup->show();
                     });
                 } else {
@@ -339,6 +378,15 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
                     } else {
                         int edH = qMax(editor->height(), 25);
                         hintPos = editor->mapToGlobal(QPoint(0, edH + 2));
+                    }
+                    // Clamp to screen bounds
+                    QScreen* screen = editor->screen();
+                    if (screen) {
+                        QRect sr = screen->availableGeometry();
+                        if (hintPos.x() + paramHint->width() > sr.right())
+                            hintPos.setX(sr.right() - paramHint->width());
+                        if (hintPos.x() < sr.left())
+                            hintPos.setX(sr.left());
                     }
                     paramHint->move(hintPos);
                     paramHint->show();
@@ -369,6 +417,15 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
             } else {
                 int edH = qMax(editor->height(), 25);
                 hintPos = editor->mapToGlobal(QPoint(0, edH + 2));
+            }
+            // Clamp to screen bounds
+            QScreen* screen = editor->screen();
+            if (screen) {
+                QRect sr = screen->availableGeometry();
+                if (hintPos.x() + paramHint->width() > sr.right())
+                    hintPos.setX(sr.right() - paramHint->width());
+                if (hintPos.x() < sr.left())
+                    hintPos.setX(sr.left());
             }
             paramHint->move(hintPos);
             paramHint->show();
@@ -444,7 +501,9 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
     }
 
     // --- Background ---
-    QColor bgColor(Qt::white);
+    const auto& theme = ThemeManager::instance().currentTheme();
+    QColor defaultBg = theme.gridBackground;
+    QColor bgColor = defaultBg;
     QVariant bgData = index.data(Qt::BackgroundRole);
     if (bgData.isValid()) {
         QColor cellBg = bgData.value<QColor>();
@@ -453,15 +512,52 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         }
     }
 
-    if (isPicklistOrCheckbox) {
-        // Picklist/Checkbox cells: always white bg, no selection tint
-        painter->fillRect(rect, Qt::white);
+    if (isPicklistOrCheckbox && !(isSelected && !hasFocus)) {
+        // Picklist/Checkbox cells: use theme bg when not part of a multi-select
+        painter->fillRect(rect, defaultBg);
     } else if (isSelected && !hasFocus) {
         // Multi-select: light blue tint over cell background
         painter->fillRect(rect, bgColor);
         painter->fillRect(rect, ThemeManager::instance().currentTheme().selectionTint);
     } else {
         painter->fillRect(rect, bgColor);
+    }
+
+    // --- Visual conditional formatting (data bar, color scale, icon set) ---
+    std::optional<VisualFormatResult> visualFormat;
+    int iconTextShift = 0; // pixels to shift text right for icon set
+    if (m_spreadsheetView) {
+        auto sp = m_spreadsheetView->getSpreadsheet();
+        if (sp && !sp->getConditionalFormatting().getAllRules().empty()) {
+            CellAddress addr(index.row(), index.column());
+            QVariant cellValue = sp->getCellValue(addr);
+            // Provide value lookup for auto-range computation
+            ConditionalFormatting::ValueLookup lookup = [&sp](int r, int c) -> QVariant {
+                return sp->getCellValue(CellAddress(r, c));
+            };
+            visualFormat = sp->getConditionalFormatting().getVisualFormat(addr, cellValue, lookup);
+        }
+    }
+
+    // Color scale: override background color
+    if (visualFormat && (visualFormat->type == ConditionType::ColorScale2 ||
+                         visualFormat->type == ConditionType::ColorScale3)) {
+        drawColorScaleBackground(painter, rect, *visualFormat);
+    }
+
+    // Data bar: draw bar after background
+    if (visualFormat && visualFormat->type == ConditionType::DataBar) {
+        QString cellText = index.data(Qt::DisplayRole).toString();
+        int alignment = Qt::AlignVCenter | Qt::AlignLeft;
+        QVariant alignData = index.data(Qt::TextAlignmentRole);
+        if (alignData.isValid()) alignment = alignData.toInt();
+        drawDataBar(painter, rect, *visualFormat, cellText, alignment);
+    }
+
+    // Icon set: draw icon, compute text shift
+    if (visualFormat && visualFormat->type == ConditionType::IconSet) {
+        drawIconSet(painter, rect, *visualFormat);
+        iconTextShift = ICON_SIZE + ICON_MARGIN * 2;
     }
 
     // --- Formula recalc flash overlay (bright yellow, fade-in then hold then fade-out) ---
@@ -508,6 +604,26 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         }
     }
 
+    // --- Check for hyperlink ---
+    bool hasHyperlink = false;
+    if (m_spreadsheetView) {
+        auto sp = m_spreadsheetView->getSpreadsheet();
+        if (sp) {
+            auto cell = sp->getCellIfExists(index.row(), index.column());
+            if (cell && cell->hasHyperlink()) {
+                hasHyperlink = true;
+            }
+        }
+    }
+
+    // --- Skip text for visual formats that hide values ---
+    if (visualFormat && visualFormat->type == ConditionType::DataBar && !visualFormat->barShowValue) {
+        skipText = true;
+    }
+    if (visualFormat && visualFormat->type == ConditionType::IconSet && !visualFormat->iconShowValue) {
+        skipText = true;
+    }
+
     // --- Text ---
     QString text = index.data(Qt::DisplayRole).toString();
     if (!skipText && !text.isEmpty()) {
@@ -516,13 +632,21 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         if (fontData.isValid()) {
             font = fontData.value<QFont>();
         }
+
+        // Hyperlink styling: blue underline
+        if (hasHyperlink) {
+            font.setUnderline(true);
+        }
         painter->setFont(font);
 
-        QColor fgColor(Qt::black);
+        QColor fgColor = theme.textPrimary;
+        if (hasHyperlink) {
+            fgColor = QColor("#0563C1"); // Excel-style hyperlink blue
+        }
         QVariant fgData = index.data(Qt::ForegroundRole);
-        if (fgData.isValid()) {
+        if (!hasHyperlink && fgData.isValid()) {
             QColor c = fgData.value<QColor>();
-            if (c.isValid()) fgColor = c;
+            if (c.isValid() && c.rgb() != QColor(Qt::black).rgb()) fgColor = c;
         }
         painter->setPen(fgColor);
 
@@ -546,7 +670,7 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
             rotation = rotData.toInt();
         }
 
-        QRect textRect = rect.adjusted(4 + indentPx, 1, -4, -1);
+        QRect textRect = rect.adjusted(4 + indentPx + iconTextShift, 1, -4, -1);
 
         if (rotation == 0) {
             painter->drawText(textRect, alignment, text);
@@ -588,6 +712,70 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
             QRect sparkRect = rect.adjusted(3, 3, -3, -3);
             drawSparkline(painter, sparkRect, rd);
         }
+    }
+
+    // --- Spill indicator: blue dotted border for spill child cells, blue arrow for spill parent ---
+    if (m_spreadsheetView) {
+        auto sp = m_spreadsheetView->getSpreadsheet();
+        if (sp) {
+            auto cell = sp->getCellIfExists(index.row(), index.column());
+            if (cell && cell->isSpillCell()) {
+                // Spill child: subtle blue dotted border
+                painter->setPen(QPen(QColor(70, 130, 230, 120), 1, Qt::DotLine));
+                painter->drawRect(rect.adjusted(0, 0, -1, -1));
+            }
+            // Spill parent: small blue spill indicator arrow in bottom-right
+            CellAddress addr(index.row(), index.column());
+            if (sp->hasSpillRange(addr)) {
+                painter->setRenderHint(QPainter::Antialiasing, true);
+                QPainterPath arrow;
+                int ax = rect.right() - 8;
+                int ay = rect.bottom() - 8;
+                arrow.moveTo(ax, ay + 6);
+                arrow.lineTo(ax + 6, ay + 6);
+                arrow.lineTo(ax + 6, ay);
+                arrow.lineTo(ax + 4, ay + 2);
+                arrow.lineTo(ax + 6, ay + 6);
+                painter->setPen(QPen(QColor(70, 130, 230), 1.2));
+                painter->setBrush(Qt::NoBrush);
+                painter->drawPath(arrow);
+                painter->setRenderHint(QPainter::Antialiasing, false);
+            }
+        }
+    }
+
+    // --- Comment indicator: small red triangle in top-right corner ---
+    if (m_spreadsheetView) {
+        auto sp = m_spreadsheetView->getSpreadsheet();
+        if (sp) {
+            auto cell = sp->getCellIfExists(index.row(), index.column());
+            if (cell && cell->hasComment()) {
+                painter->setRenderHint(QPainter::Antialiasing, true);
+                QPainterPath triangle;
+                triangle.moveTo(rect.right() - 7, rect.top());
+                triangle.lineTo(rect.right(), rect.top());
+                triangle.lineTo(rect.right(), rect.top() + 7);
+                triangle.closeSubpath();
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(QColor("#FF0000"));
+                painter->drawPath(triangle);
+                painter->setRenderHint(QPainter::Antialiasing, false);
+            }
+        }
+    }
+
+    // --- Hyperlink indicator: small blue triangle in bottom-left corner ---
+    if (hasHyperlink) {
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        QPainterPath linkTriangle;
+        linkTriangle.moveTo(rect.left(), rect.bottom() - 5);
+        linkTriangle.lineTo(rect.left(), rect.bottom());
+        linkTriangle.lineTo(rect.left() + 5, rect.bottom());
+        linkTriangle.closeSubpath();
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor("#0563C1"));
+        painter->drawPath(linkTriangle);
+        painter->setRenderHint(QPainter::Antialiasing, false);
     }
 
     // --- Gridlines: single thin line on right and bottom edges ---
@@ -854,6 +1042,152 @@ void CellDelegate::drawPicklistTags(QPainter* painter, const QRect& rect,
 
         x += drawW + gap;
         tagIndex++;
+    }
+
+    painter->setRenderHint(QPainter::Antialiasing, false);
+}
+
+// --- Visual conditional formatting rendering ---
+
+void CellDelegate::drawDataBar(QPainter* painter, const QRect& rect, const VisualFormatResult& vf,
+                                const QString& /*text*/, int /*alignment*/) const {
+    if (vf.barFraction <= 0.0) return;
+
+    int barWidth = static_cast<int>(vf.barFraction * (rect.width() - 4));
+    if (barWidth < 1) return;
+
+    QColor barColor = vf.barColor;
+    barColor.setAlpha(90); // semi-transparent so text remains readable
+
+    QRect barRect(rect.left() + 2, rect.top() + 2, barWidth, rect.height() - 4);
+    painter->fillRect(barRect, barColor);
+
+    // Draw a thin solid border on the bar
+    QColor borderColor = vf.barColor;
+    borderColor.setAlpha(180);
+    painter->setPen(QPen(borderColor, 1));
+    painter->drawRect(barRect);
+}
+
+void CellDelegate::drawColorScaleBackground(QPainter* painter, const QRect& rect, const VisualFormatResult& vf) const {
+    if (vf.scaleColor.isValid()) {
+        painter->fillRect(rect, vf.scaleColor);
+    }
+}
+
+void CellDelegate::drawIconSet(QPainter* painter, const QRect& rect, const VisualFormatResult& vf) const {
+    if (vf.iconIndex < 0 || vf.iconIndex > 2) return;
+
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    int iconX = rect.left() + ICON_MARGIN;
+    int iconY = rect.top() + (rect.height() - ICON_SIZE) / 2;
+    QRect iconRect(iconX, iconY, ICON_SIZE, ICON_SIZE);
+
+    switch (vf.iconType) {
+    case IconSetConfig::TrafficLights: {
+        // Filled circles: red, yellow, green
+        static const QColor colors[] = {QColor(220, 50, 50), QColor(240, 200, 40), QColor(60, 180, 75)};
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(colors[vf.iconIndex]);
+        painter->drawEllipse(iconRect.adjusted(1, 1, -1, -1));
+        break;
+    }
+    case IconSetConfig::Arrows3: {
+        // Triangles: down (red), right (yellow), up (green)
+        static const QColor colors[] = {QColor(220, 50, 50), QColor(240, 180, 40), QColor(60, 180, 75)};
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(colors[vf.iconIndex]);
+        QPainterPath arrow;
+        double cx = iconRect.center().x();
+        double cy = iconRect.center().y();
+        double s = ICON_SIZE * 0.35;
+        if (vf.iconIndex == 0) {
+            // Down arrow
+            arrow.moveTo(cx, cy + s);
+            arrow.lineTo(cx - s, cy - s * 0.5);
+            arrow.lineTo(cx + s, cy - s * 0.5);
+        } else if (vf.iconIndex == 1) {
+            // Right arrow
+            arrow.moveTo(cx + s, cy);
+            arrow.lineTo(cx - s * 0.5, cy - s);
+            arrow.lineTo(cx - s * 0.5, cy + s);
+        } else {
+            // Up arrow
+            arrow.moveTo(cx, cy - s);
+            arrow.lineTo(cx - s, cy + s * 0.5);
+            arrow.lineTo(cx + s, cy + s * 0.5);
+        }
+        arrow.closeSubpath();
+        painter->drawPath(arrow);
+        break;
+    }
+    case IconSetConfig::Flags3: {
+        // Simple flag shapes with colors
+        static const QColor colors[] = {QColor(220, 50, 50), QColor(240, 200, 40), QColor(60, 180, 75)};
+        // Flag pole
+        painter->setPen(QPen(QColor(80, 80, 80), 1.5));
+        int poleX = iconRect.left() + 3;
+        painter->drawLine(poleX, iconRect.top() + 2, poleX, iconRect.bottom() - 2);
+        // Flag triangle
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(colors[vf.iconIndex]);
+        QPainterPath flag;
+        flag.moveTo(poleX + 1, iconRect.top() + 2);
+        flag.lineTo(iconRect.right() - 2, iconRect.top() + 5);
+        flag.lineTo(poleX + 1, iconRect.top() + 8);
+        flag.closeSubpath();
+        painter->drawPath(flag);
+        break;
+    }
+    case IconSetConfig::Stars3: {
+        // Stars: empty, half, full
+        static const QColor starColor(255, 185, 15);
+        painter->setPen(QPen(starColor, 1));
+        if (vf.iconIndex == 0) {
+            painter->setBrush(Qt::NoBrush);
+        } else if (vf.iconIndex == 1) {
+            painter->setBrush(QColor(255, 230, 150));
+        } else {
+            painter->setBrush(starColor);
+        }
+        // Draw simple star shape
+        QPainterPath star;
+        double cx = iconRect.center().x();
+        double cy = iconRect.center().y();
+        double outerR = ICON_SIZE * 0.38;
+        double innerR = outerR * 0.38;
+        for (int i = 0; i < 5; ++i) {
+            double angle = -M_PI / 2.0 + i * 2.0 * M_PI / 5.0;
+            double ax = cx + outerR * std::cos(angle);
+            double ay = cy + outerR * std::sin(angle);
+            if (i == 0) star.moveTo(ax, ay);
+            else star.lineTo(ax, ay);
+            double angle2 = angle + M_PI / 5.0;
+            star.lineTo(cx + innerR * std::cos(angle2), cy + innerR * std::sin(angle2));
+        }
+        star.closeSubpath();
+        painter->drawPath(star);
+        break;
+    }
+    case IconSetConfig::Checkmarks3: {
+        // Checkmarks: X (red), ~ (yellow), checkmark (green)
+        QFont iconFont = painter->font();
+        iconFont.setPointSize(11);
+        iconFont.setBold(true);
+        painter->setFont(iconFont);
+        if (vf.iconIndex == 0) {
+            painter->setPen(QColor(220, 50, 50));
+            painter->drawText(iconRect, Qt::AlignCenter, QString::fromUtf8("\xe2\x9c\x97")); // X mark
+        } else if (vf.iconIndex == 1) {
+            painter->setPen(QColor(200, 160, 40));
+            painter->drawText(iconRect, Qt::AlignCenter, QString::fromUtf8("~"));
+        } else {
+            painter->setPen(QColor(60, 160, 60));
+            painter->drawText(iconRect, Qt::AlignCenter, QString::fromUtf8("\xe2\x9c\x93")); // check mark
+        }
+        break;
+    }
     }
 
     painter->setRenderHint(QPainter::Antialiasing, false);

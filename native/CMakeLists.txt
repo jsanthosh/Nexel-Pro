@@ -85,10 +85,13 @@ set(CORE_SOURCES
     src/core/PivotEngine.cpp
     src/core/PivotEngine.h
     src/core/SparklineConfig.h
+    src/core/NamedRange.h
     src/core/MacroEngine.cpp
     src/core/MacroEngine.h
     src/core/DocumentTheme.cpp
     src/core/DocumentTheme.h
+    src/core/StringPool.cpp
+    src/core/StringPool.h
 )
 
 # Database Sources
@@ -109,6 +112,8 @@ set(SERVICES_SOURCES
     src/services/CsvService.h
     src/services/XlsxService.cpp
     src/services/XlsxService.h
+    src/services/AutoSaveService.cpp
+    src/services/AutoSaveService.h
 )
 
 # UI Sources
@@ -158,6 +163,10 @@ set(UI_SOURCES
     src/ui/ImageWidget.h
     src/ui/MacroEditorDialog.cpp
     src/ui/MacroEditorDialog.h
+    src/ui/PasteSpecialDialog.cpp
+    src/ui/PasteSpecialDialog.h
+    src/ui/GoalSeekDialog.cpp
+    src/ui/GoalSeekDialog.h
     src/ui/Theme.cpp
     src/ui/Theme.h
 )

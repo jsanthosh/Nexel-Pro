@@ -122,9 +122,11 @@ public:
 
     QVector<NexelTheme> availableThemes() const;
     const NexelTheme& currentTheme() const;
+    bool isDarkTheme() const;
     void setTheme(const QString& themeId);
     void loadSavedTheme();
     void applyTheme(QMainWindow* window);
+    void detectAndApplySystemTheme();
 
     // Shared stylesheet builders
     static QString dialogStylesheet();

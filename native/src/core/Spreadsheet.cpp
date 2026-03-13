@@ -8,9 +8,18 @@
 // atIndex: 0-based row or column where insert/delete happens
 // delta: positive for insert, negative for delete
 static QString shiftFormulaRefs(const QString& formula, char mode, int atIndex, int delta) {
+    // Quick bail-out: if formula has no letter characters, it can't contain cell references
+    bool hasAlpha = false;
+    for (int i = 0; i < formula.size(); ++i) {
+        if (formula[i].isLetter()) { hasAlpha = true; break; }
+    }
+    if (!hasAlpha) return formula;
+
+    // Pre-compiled regex (static local — compiled once, reused across calls)
     static QRegularExpression cellRefRe("(\\$?)([A-Za-z]+)(\\$?)(\\d+)");
     QString result;
     int lastEnd = 0;
+    bool hasRefError = false;
     auto it = cellRefRe.globalMatch(formula);
     while (it.hasNext()) {
         auto match = it.next();
@@ -21,18 +30,45 @@ static QString shiftFormulaRefs(const QString& formula, char mode, int atIndex, 
         bool rowAbsolute = !match.captured(3).isEmpty();
         int rowNum = match.captured(4).toInt(); // 1-based
 
+        bool refDeleted = false;
+
         if (mode == 'R') {
-            // Shift row references at or after atIndex (0-based → 1-based = atIndex+1)
-            if (rowNum > atIndex) { // rowNum is 1-based, atIndex is 0-based
+            // rowNum is 1-based, atIndex is 0-based
+            if (delta < 0) {
+                // Deletion: check if reference points to a deleted row
+                int deletedStart = atIndex + 1; // 1-based start of deleted range
+                int deletedEnd = atIndex - delta; // 1-based end (exclusive), since delta is negative
+                if (rowNum >= deletedStart && rowNum < deletedEnd) {
+                    refDeleted = true;
+                } else if (rowNum >= deletedEnd) {
+                    rowNum += delta;
+                }
+            } else if (rowNum > atIndex) {
                 rowNum += delta;
-                if (rowNum < 1) rowNum = 1;
             }
         } else if (mode == 'C') {
             // Shift column references at or after atIndex
             int colIdx = 0;
             for (QChar ch : colLetters)
                 colIdx = colIdx * 26 + (ch.toUpper().toLatin1() - 'A');
-            if (colIdx >= atIndex) {
+            if (delta < 0) {
+                // Deletion: check if reference points to a deleted column
+                int deletedStart = atIndex;
+                int deletedEnd = atIndex - delta; // since delta is negative
+                if (colIdx >= deletedStart && colIdx < deletedEnd) {
+                    refDeleted = true;
+                } else if (colIdx >= deletedEnd) {
+                    colIdx += delta;
+                    if (colIdx < 0) colIdx = 0;
+                    bool wasUpper = !colLetters.isEmpty() && colLetters[0].isUpper();
+                    colLetters.clear();
+                    int c = colIdx + 1;
+                    while (c > 0) {
+                        colLetters = QChar((wasUpper ? 'A' : 'a') + (c - 1) % 26) + colLetters;
+                        c = (c - 1) / 26;
+                    }
+                }
+            } else if (colIdx >= atIndex) {
                 colIdx += delta;
                 if (colIdx < 0) colIdx = 0;
                 bool wasUpper = !colLetters.isEmpty() && colLetters[0].isUpper();
@@ -45,7 +81,12 @@ static QString shiftFormulaRefs(const QString& formula, char mode, int atIndex, 
             }
         }
 
-        result += (colAbsolute ? "$" : "") + colLetters + (rowAbsolute ? "$" : "") + QString::number(rowNum);
+        if (refDeleted) {
+            result += "#REF!";
+            hasRefError = true;
+        } else {
+            result += (colAbsolute ? "$" : "") + colLetters + (rowAbsolute ? "$" : "") + QString::number(rowNum);
+        }
         lastEnd = match.capturedEnd();
     }
     result += formula.mid(lastEnd);
@@ -69,6 +110,7 @@ std::shared_ptr<Cell> Spreadsheet::getCell(const CellAddress& addr) {
 }
 
 std::shared_ptr<Cell> Spreadsheet::getCell(int row, int col) {
+    std::unique_lock lock(m_cellMutex);
     CellKey key{row, col};
     auto it = m_cells.find(key);
     if (it != m_cells.end()) {
@@ -76,7 +118,9 @@ std::shared_ptr<Cell> Spreadsheet::getCell(int row, int col) {
     }
     auto cell = std::make_shared<Cell>();
     m_cells.emplace(key, cell);
-    m_maxRowColDirty = true;
+    if (row > m_cachedMaxRow || col > m_cachedMaxCol) {
+        m_maxRowColDirty = true;
+    }
     return cell;
 }
 
@@ -85,6 +129,7 @@ std::shared_ptr<Cell> Spreadsheet::getCellIfExists(const CellAddress& addr) cons
 }
 
 std::shared_ptr<Cell> Spreadsheet::getCellIfExists(int row, int col) const {
+    std::shared_lock lock(m_cellMutex);
     CellKey key{row, col};
     auto it = m_cells.find(key);
     return (it != m_cells.end()) ? it->second : nullptr;
@@ -101,9 +146,16 @@ QVariant Spreadsheet::getCellValue(const CellAddress& addr) {
 
 void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
     bool wasNew = (m_cells.find(CellKey{addr.row, addr.col}) == m_cells.end());
+
+    // Clear any existing spill range from this cell (was previously a spill-producing formula)
+    clearSpillRange(addr);
+
     auto cell = getCell(addr);
     cell->setValue(value);
-    m_maxRowColDirty = true;
+    // Only mark dirty if this cell extends beyond cached bounds
+    if (addr.row > m_cachedMaxRow || addr.col > m_cachedMaxCol) {
+        m_maxRowColDirty = true;
+    }
 
     // Remove from formula tracking (it's now a value cell)
     m_formulaCells.erase(CellKey{addr.row, addr.col});
@@ -114,6 +166,12 @@ void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
     } else if (m_autoRecalculate) {
         // If nav was already dirty (bulk mode), keep it dirty
         m_navIndexDirty = true;
+    }
+
+    // Track dirty cells during batch update
+    if (m_inBatchUpdate) {
+        m_batchDirtyCells.insert(CellKey{addr.row, addr.col});
+        return; // defer recalculation until endBatchUpdate()
     }
 
     // Skip dependency graph work when autoRecalculate is off (bulk import mode)
@@ -131,7 +189,9 @@ void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula
     bool wasNew = (m_cells.find(CellKey{addr.row, addr.col}) == m_cells.end());
     auto cell = getCell(addr);
     cell->setFormula(formula);
-    m_maxRowColDirty = true;
+    if (addr.row > m_cachedMaxRow || addr.col > m_cachedMaxCol) {
+        m_maxRowColDirty = true;
+    }
 
     // Track as formula cell
     m_formulaCells.insert(CellKey{addr.row, addr.col});
@@ -145,6 +205,9 @@ void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula
         m_navIndexDirty = true;
     }
 
+    // Clear any existing spill range from this cell before re-evaluation
+    clearSpillRange(addr);
+
     // Single evaluation: compute result AND extract dependencies in one pass
     QVariant result = m_formulaEngine->evaluate(formula);
 
@@ -156,6 +219,13 @@ void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula
     for (const auto& dep : m_formulaEngine->getLastDependencies()) {
         m_depGraph.addDependency(addr, dep);
     }
+    // Add range-level dependencies for large ranges (enables circular detection)
+    for (const auto& range : m_formulaEngine->getLastRangeArgs()) {
+        long long cellCount = static_cast<long long>(range.getRowCount()) * range.getColumnCount();
+        if (cellCount >= 10000) {
+            m_depGraph.addRangeDependency(addr, range);
+        }
+    }
     for (int col : m_formulaEngine->getLastColumnDeps()) {
         m_colRefFormulas[col].push_back(addr);
     }
@@ -166,6 +236,29 @@ void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula
     }
 
     cell->setComputedValue(result);
+
+    // Check if result is a 2D array (dynamic array / spill)
+    if (result.typeId() == QMetaType::QVariantList) {
+        QVariantList outerList = result.toList();
+        if (!outerList.isEmpty() && outerList[0].typeId() == QMetaType::QVariantList) {
+            // Convert QVariantList of QVariantList to vector<vector<QVariant>>
+            std::vector<std::vector<QVariant>> array2D;
+            for (const auto& rowVar : outerList) {
+                QVariantList rowList = rowVar.toList();
+                std::vector<QVariant> row;
+                row.reserve(rowList.size());
+                for (const auto& v : rowList) {
+                    row.push_back(v);
+                }
+                array2D.push_back(std::move(row));
+            }
+            applySpillResult(addr, array2D);
+            // Set the formula cell's computed value to the top-left element
+            if (!array2D.empty() && !array2D[0].empty()) {
+                cell->setComputedValue(array2D[0][0]);
+            }
+        }
+    }
 
     if (m_autoRecalculate && !m_inTransaction) {
         recalculateDependents(addr);
@@ -239,6 +332,15 @@ void Spreadsheet::insertRow(int row, int count) {
         if (e.row >= row) e.row += count;
         tbl.range = CellRange(s, e);
     }
+    // Shift row heights: rows >= row move up by count
+    {
+        std::map<int, int> shifted;
+        for (auto& [r, h] : m_rowHeights) {
+            if (r >= row) shifted[r + count] = h;
+            else shifted[r] = h;
+        }
+        m_rowHeights = std::move(shifted);
+    }
     m_rowCount += count;
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
@@ -281,6 +383,15 @@ void Spreadsheet::insertColumn(int column, int count) {
         if (e.col >= column) e.col += count;
         tbl.range = CellRange(s, e);
     }
+    // Shift column widths: cols >= column move right by count
+    {
+        std::map<int, int> shifted;
+        for (auto& [c, w] : m_columnWidths) {
+            if (c >= column) shifted[c + count] = w;
+            else shifted[c] = w;
+        }
+        m_columnWidths = std::move(shifted);
+    }
     m_columnCount += count;
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
@@ -307,17 +418,29 @@ void Spreadsheet::deleteRow(int row, int count) {
             if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
         }
     }
-    // Remove merged regions in deleted rows, shift others
+    // Remove merged regions fully in deleted rows; clamp partially overlapping ones
     m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
         [row, count](const MergedRegion& mr) {
             return mr.range.getStart().row >= row && mr.range.getEnd().row < row + count;
         }), m_mergedRegions.end());
     for (auto& mr : m_mergedRegions) {
         auto s = mr.range.getStart(); auto e = mr.range.getEnd();
-        if (s.row >= row + count) s.row -= count;
-        if (e.row >= row + count) e.row -= count;
+        // Clamp start if it falls within the deleted range
+        if (s.row >= row && s.row < row + count) s.row = row;
+        else if (s.row >= row + count) s.row -= count;
+        // Clamp end if it falls within the deleted range
+        if (e.row >= row && e.row < row + count) e.row = row > 0 ? row - 1 : 0;
+        else if (e.row >= row + count) e.row -= count;
+        // Ensure region is still valid (start <= end)
+        if (s.row > e.row) { s.row = e.row; }
         mr.range = CellRange(s, e);
     }
+    // Remove any merged regions that collapsed to invalid state
+    m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
+        [](const MergedRegion& mr) {
+            return mr.range.getStart().row == mr.range.getEnd().row &&
+                   mr.range.getStart().col == mr.range.getEnd().col;
+        }), m_mergedRegions.end());
     for (auto& rule : m_validationRules) {
         auto s = rule.range.getStart(); auto e = rule.range.getEnd();
         if (s.row >= row + count) s.row -= count;
@@ -329,6 +452,16 @@ void Spreadsheet::deleteRow(int row, int count) {
         if (s.row >= row + count) s.row -= count;
         if (e.row >= row + count) e.row -= count;
         tbl.range = CellRange(s, e);
+    }
+    // Shift row heights: remove deleted rows, shift remaining down
+    {
+        std::map<int, int> shifted;
+        for (auto& [r, h] : m_rowHeights) {
+            if (r >= row && r < row + count) continue; // deleted
+            else if (r >= row + count) shifted[r - count] = h;
+            else shifted[r] = h;
+        }
+        m_rowHeights = std::move(shifted);
     }
     m_rowCount -= count;
     m_maxRowColDirty = true;
@@ -362,10 +495,21 @@ void Spreadsheet::deleteColumn(int column, int count) {
         }), m_mergedRegions.end());
     for (auto& mr : m_mergedRegions) {
         auto s = mr.range.getStart(); auto e = mr.range.getEnd();
-        if (s.col >= column + count) s.col -= count;
-        if (e.col >= column + count) e.col -= count;
+        // Clamp start if it falls within the deleted range
+        if (s.col >= column && s.col < column + count) s.col = column;
+        else if (s.col >= column + count) s.col -= count;
+        // Clamp end if it falls within the deleted range
+        if (e.col >= column && e.col < column + count) e.col = column > 0 ? column - 1 : 0;
+        else if (e.col >= column + count) e.col -= count;
+        if (s.col > e.col) { s.col = e.col; }
         mr.range = CellRange(s, e);
     }
+    // Remove collapsed merged regions
+    m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
+        [](const MergedRegion& mr) {
+            return mr.range.getStart().row == mr.range.getEnd().row &&
+                   mr.range.getStart().col == mr.range.getEnd().col;
+        }), m_mergedRegions.end());
     for (auto& rule : m_validationRules) {
         auto s = rule.range.getStart(); auto e = rule.range.getEnd();
         if (s.col >= column + count) s.col -= count;
@@ -377,6 +521,16 @@ void Spreadsheet::deleteColumn(int column, int count) {
         if (s.col >= column + count) s.col -= count;
         if (e.col >= column + count) e.col -= count;
         tbl.range = CellRange(s, e);
+    }
+    // Shift column widths: remove deleted cols, shift remaining left
+    {
+        std::map<int, int> shifted;
+        for (auto& [c, w] : m_columnWidths) {
+            if (c >= column && c < column + count) continue; // deleted
+            else if (c >= column + count) shifted[c - count] = w;
+            else shifted[c] = w;
+        }
+        m_columnWidths = std::move(shifted);
     }
     m_columnCount -= count;
     m_maxRowColDirty = true;
@@ -390,6 +544,7 @@ void Spreadsheet::setSheetName(const QString& name) { m_sheetName = name; }
 
 void Spreadsheet::updateMaxRowCol() const {
     if (!m_maxRowColDirty) return;
+    std::shared_lock lock(m_cellMutex);
     m_cachedMaxRow = -1;
     m_cachedMaxCol = -1;
     for (const auto& pair : m_cells) {
@@ -405,6 +560,7 @@ int Spreadsheet::getMaxRow() const { updateMaxRowCol(); return m_cachedMaxRow; }
 int Spreadsheet::getMaxColumn() const { updateMaxRowCol(); return m_cachedMaxCol; }
 
 std::vector<CellAddress> Spreadsheet::getDirtyCells() const {
+    std::shared_lock lock(m_cellMutex);
     std::vector<CellAddress> dirty;
     for (const auto& pair : m_cells) {
         if (pair.second->isDirty()) {
@@ -431,9 +587,71 @@ FormulaEngine& Spreadsheet::getFormulaEngine() { return *m_formulaEngine; }
 void Spreadsheet::setAutoRecalculate(bool enabled) { m_autoRecalculate = enabled; }
 bool Spreadsheet::getAutoRecalculate() const { return m_autoRecalculate; }
 
+void Spreadsheet::beginBatchUpdate() {
+    m_inBatchUpdate = true;
+    m_batchDirtyCells.clear();
+}
+
+void Spreadsheet::endBatchUpdate() {
+    m_inBatchUpdate = false;
+    if (m_batchDirtyCells.empty()) return;
+
+    // Collect all dirty cells and recalculate dependents in optimal order
+    // First, recalculate the dirty cells themselves (they may be formula cells)
+    std::vector<CellAddress> allDirty;
+    allDirty.reserve(m_batchDirtyCells.size());
+    for (const auto& key : m_batchDirtyCells) {
+        allDirty.emplace_back(key.row, key.col);
+    }
+
+    // Recalculate all formula cells that were directly changed
+    for (const auto& addr : allDirty) {
+        auto cell = getCellIfExists(addr);
+        if (cell && cell->getType() == CellType::Formula) {
+            cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
+        }
+    }
+
+    // Collect all dependents of dirty cells and recalculate in topological order
+    std::unordered_set<uint64_t> visited;
+    std::vector<CellAddress> recalcOrder;
+    for (const auto& addr : allDirty) {
+        auto order = m_depGraph.getRecalcOrder(addr);
+        for (const auto& depAddr : order) {
+            uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(depAddr.row)) << 32)
+                         | static_cast<uint64_t>(static_cast<uint32_t>(depAddr.col));
+            if (visited.insert(key).second) {
+                recalcOrder.push_back(depAddr);
+            }
+        }
+    }
+
+    std::vector<CellAddress> recalculated;
+    for (const auto& depAddr : recalcOrder) {
+        auto cell = getCellIfExists(depAddr);
+        if (cell && cell->getType() == CellType::Formula) {
+            cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
+            recalculated.push_back(depAddr);
+        }
+    }
+
+    if (!recalculated.empty() && onDependentsRecalculated) {
+        onDependentsRecalculated(recalculated);
+    }
+
+    m_batchDirtyCells.clear();
+    m_navIndexDirty = true;
+}
+
 Cell* Spreadsheet::getOrCreateCellFast(int row, int col) {
+    // No mutex — main-thread-only bulk import path
     auto& ptr = m_cells[CellKey{row, col}];
-    if (!ptr) ptr = std::make_shared<Cell>();
+    if (!ptr) {
+        ptr = std::make_shared<Cell>();
+        // Incrementally build nav index during import (appended in order, sorted at finish)
+        m_colIndexCache[col].push_back(row);
+        m_rowIndexCache[row].push_back(col);
+    }
     return ptr.get();
 }
 
@@ -441,10 +659,33 @@ void Spreadsheet::finishBulkImport() {
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
     m_formulaCells.clear();
-    // Pre-build caches now (runs on the import background thread, no UI freeze)
-    updateMaxRowCol();
-    buildNavIndexIfNeeded();
-    // Formula tracker is populated inside buildNavIndexIfNeeded
+    // Clear incrementally built nav caches — they'll be rebuilt fully on first use
+    m_colIndexCache.clear();
+    m_rowIndexCache.clear();
+    m_sortedOccupiedRows.clear();
+}
+
+void Spreadsheet::finishBulkImportWithMaxRowCol(int maxRow, int maxCol) {
+    m_cachedMaxRow = maxRow;
+    m_cachedMaxCol = maxCol;
+    m_maxRowColDirty = false;
+    m_formulaCells.clear();
+
+    // Nav index was built incrementally during getOrCreateCellFast.
+    // CSV rows are parsed sequentially, so vectors are already sorted —
+    // std::sort on sorted data is O(n) verification.
+    for (auto& [c, rows] : m_colIndexCache)
+        std::sort(rows.begin(), rows.end());
+    for (auto& [r, cols] : m_rowIndexCache)
+        std::sort(cols.begin(), cols.end());
+
+    m_sortedOccupiedRows.clear();
+    m_sortedOccupiedRows.reserve(m_rowIndexCache.size());
+    for (const auto& [r, _] : m_rowIndexCache)
+        m_sortedOccupiedRows.push_back(r);
+    std::sort(m_sortedOccupiedRows.begin(), m_sortedOccupiedRows.end());
+
+    m_navIndexDirty = false;
 }
 
 void Spreadsheet::rebuildDependencyGraph() {
@@ -464,6 +705,7 @@ void Spreadsheet::rebuildDependencyGraph() {
 }
 
 void Spreadsheet::mergeBulkCells(CellMap& source) {
+    std::unique_lock lock(m_cellMutex);
     m_cells.merge(source);
     // Any remaining entries in source (duplicates) — move them over
     for (auto& [key, cell] : source) {
@@ -507,6 +749,7 @@ CellSnapshot Spreadsheet::takeCellSnapshot(const CellAddress& addr) {
 }
 
 void Spreadsheet::forEachCell(std::function<void(int row, int col, const Cell&)> callback) const {
+    std::shared_lock lock(m_cellMutex);
     for (const auto& pair : m_cells) {
         if (pair.second && pair.second->getType() != CellType::Empty) {
             callback(pair.first.row, pair.first.col, *pair.second);
@@ -958,4 +1201,105 @@ bool Spreadsheet::validateCell(int row, int col, const QString& value) const {
         default: return true;
     }
     return true;
+}
+
+// Named ranges
+void Spreadsheet::addNamedRange(const QString& name, const CellRange& range, int sheetIndex) {
+    NamedRange nr;
+    nr.name = name;
+    nr.range = range;
+    nr.sheetIndex = sheetIndex;
+    nr.isGlobal = (sheetIndex == -1);
+    m_namedRanges[name.toUpper()] = nr;
+}
+
+void Spreadsheet::removeNamedRange(const QString& name) {
+    m_namedRanges.erase(name.toUpper());
+}
+
+const NamedRange* Spreadsheet::getNamedRange(const QString& name) const {
+    auto it = m_namedRanges.find(name.toUpper());
+    if (it != m_namedRanges.end()) return &it->second;
+    return nullptr;
+}
+
+const std::map<QString, NamedRange>& Spreadsheet::getNamedRanges() const {
+    return m_namedRanges;
+}
+
+// ============== Dynamic Array Spill Support ==============
+void Spreadsheet::clearSpillRange(const CellAddress& formulaCell) {
+    CellKey key{formulaCell.row, formulaCell.col};
+    auto it = m_spillRanges.find(key);
+    if (it == m_spillRanges.end()) return;
+
+    CellRange range = it->second;
+    // Clear all spill child cells (not the formula cell itself)
+    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+            if (r == formulaCell.row && c == formulaCell.col) continue;
+            auto cell = getCellIfExists(r, c);
+            if (cell && cell->isSpillCell() &&
+                cell->getSpillParent().row == formulaCell.row &&
+                cell->getSpillParent().col == formulaCell.col) {
+                cell->clear();
+                cell->clearSpillParent();
+            }
+        }
+    }
+    m_spillRanges.erase(it);
+    m_maxRowColDirty = true;
+    m_navIndexDirty = true;
+}
+
+void Spreadsheet::applySpillResult(const CellAddress& formulaCell,
+                                    const std::vector<std::vector<QVariant>>& result) {
+    // 1. Clear any previous spill from this formula cell
+    clearSpillRange(formulaCell);
+
+    if (result.empty() || result[0].empty()) return;
+
+    int rows = static_cast<int>(result.size());
+    int cols = static_cast<int>(result[0].size());
+
+    // Single cell result - no spill needed
+    if (rows == 1 && cols == 1) return;
+
+    int startRow = formulaCell.row;
+    int startCol = formulaCell.col;
+
+    // 2. Check if target area is free
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            if (r == 0 && c == 0) continue; // skip formula cell itself
+            int targetRow = startRow + r;
+            int targetCol = startCol + c;
+            auto existing = getCellIfExists(targetRow, targetCol);
+            if (existing && existing->getType() != CellType::Empty && !existing->isSpillCell()) {
+                // Blocked - set #SPILL! error
+                auto formulaCellPtr = getCell(formulaCell);
+                formulaCellPtr->setComputedValue(QVariant("#SPILL!"));
+                return;
+            }
+        }
+    }
+
+    // 3. Fill in spill cells
+    for (int r = 0; r < rows; ++r) {
+        int numCols = static_cast<int>(result[r].size());
+        for (int c = 0; c < numCols; ++c) {
+            if (r == 0 && c == 0) continue; // formula cell already has its value
+            int targetRow = startRow + r;
+            int targetCol = startCol + c;
+            auto cell = getCell(targetRow, targetCol);
+            cell->setValue(result[r][c]);
+            cell->setSpillParent(formulaCell);
+        }
+    }
+
+    // Record the spill range
+    CellKey key{formulaCell.row, formulaCell.col};
+    m_spillRanges[key] = CellRange(startRow, startCol, startRow + rows - 1, startCol + cols - 1);
+    m_maxRowColDirty = true;
+    m_navIndexDirty = true;
 }

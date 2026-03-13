@@ -3,6 +3,7 @@
 
 #include <QStyledItemDelegate>
 #include "../core/SparklineConfig.h"
+#include "../core/ConditionalFormatting.h"
 
 class SpreadsheetView;
 
@@ -49,6 +50,14 @@ private:
                           Qt::Alignment alignment = Qt::AlignLeft | Qt::AlignVCenter) const;
     static QColor tagBgColor(int index);
     static QColor tagTextColor(int index);
+
+    // Visual conditional formatting renderers
+    void drawDataBar(QPainter* painter, const QRect& rect, const VisualFormatResult& vf,
+                     const QString& text, int alignment) const;
+    void drawColorScaleBackground(QPainter* painter, const QRect& rect, const VisualFormatResult& vf) const;
+    void drawIconSet(QPainter* painter, const QRect& rect, const VisualFormatResult& vf) const;
+    static constexpr int ICON_SIZE = 16;
+    static constexpr int ICON_MARGIN = 4;
 };
 
 #endif // CELLDELEGATE_H

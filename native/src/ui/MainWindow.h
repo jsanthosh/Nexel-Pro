@@ -10,9 +10,12 @@
 #include <QToolButton>
 #include <QJsonArray>
 #include <QSettings>
+#include <QLabel>
 #include <memory>
 #include <vector>
+#include <atomic>
 
+class AutoSaveService;
 enum class ChartBackend;
 struct NexelTheme;
 class Spreadsheet;
@@ -41,8 +44,11 @@ class MainWindow : public QMainWindow {
 
 public:
     MainWindow(QWidget* parent = nullptr);
-    ~MainWindow() = default;
+    ~MainWindow();
     void openFile(const QString& fileName);
+
+    // Access sheets for auto-save
+    const std::vector<std::shared_ptr<Spreadsheet>>& getSheets() const { return m_sheets; }
 
     // Z-order operations (called from widget context menus)
     void bringToFront(QWidget* w);
@@ -202,6 +208,20 @@ private:
     // Background import completion handlers
     void finishXlsxOpen(const XlsxImportResult& result, const QString& fileName, qint64 elapsedMs);
     void finishCsvOpen(const std::shared_ptr<Spreadsheet>& spreadsheet, const QString& fileName, qint64 elapsedMs);
+
+    // Progressive CSV loading
+    void startProgressiveCsvLoad(const QString& fileName);
+    void continueCsvLoadChunk();
+    void finishProgressiveCsvLoad();
+    struct CsvLoadState;
+    std::unique_ptr<CsvLoadState> m_csvLoadState;
+    QWidget* m_loadingOverlay = nullptr;
+    QLabel* m_loadingLabel = nullptr;
+    bool m_isProgressiveLoading = false;
+
+    // Auto-save and crash recovery
+    AutoSaveService* m_autoSave = nullptr;
+    void checkAutoSaveRecovery();
 
     // Macro engine
     MacroEngine* m_macroEngine = nullptr;

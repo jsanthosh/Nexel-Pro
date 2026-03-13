@@ -23,8 +23,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Load saved theme
+    // Load saved theme, or detect system dark mode
     ThemeManager::instance().loadSavedTheme();
+    ThemeManager::instance().detectAndApplySystemTheme();
 
     // Create main window (heap-allocated so closing one window doesn't quit the app)
     MainWindow* window = new MainWindow();

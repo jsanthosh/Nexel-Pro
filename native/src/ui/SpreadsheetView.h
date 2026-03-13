@@ -34,6 +34,7 @@ public:
     void cut();
     void copy();
     void paste();
+    void pasteSpecial();
     void deleteSelection();
     void selectAll() override;
     void clearAll();
@@ -161,6 +162,27 @@ public:
     // Pivot report filter dropdown
     void showPivotFilterDropdown(int filterIndex);
 
+    // Formula view toggle (Ctrl+`)
+    void toggleFormulaView();
+    bool showFormulas() const { return m_showFormulas; }
+
+    // Bulk loading guard: disables cell-scanning navigation (Ctrl+Arrow etc.)
+    void setBulkLoading(bool loading) { m_bulkLoading = loading; }
+
+    // Cell comments
+    void insertOrEditComment();
+    void deleteComment();
+
+    // Hyperlinks
+    void insertOrEditHyperlink();
+    void removeHyperlink();
+    void openHyperlink(int row, int col);
+
+    // Trace precedents/dependents
+    void tracePrecedents();
+    void traceDependents();
+    void clearTraceArrows();
+
 signals:
     void cellSelected(int row, int col, const QString& content, const QString& address);
     void formatCellsRequested();
@@ -178,6 +200,7 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
     void currentChanged(const QModelIndex& current, const QModelIndex& previous) override;
     void selectionChanged(const QItemSelection& selected, const QItemSelection& deselected) override;
+    bool viewportEvent(QEvent* event) override;
     void closeEditor(QWidget* editor, QAbstractItemDelegate::EndEditHint hint) override;
     void commitData(QWidget* editor) override;
 
@@ -260,6 +283,8 @@ private:
 
     // Efficient style application: only process occupied cells for large selections
     void applyStyleChange(std::function<void(CellStyle&)> modifier, const QList<int>& roles);
+    // Check if ALL cells in selection match a style predicate (for Excel-style toggle)
+    bool selectionAllMatch(std::function<bool(const CellStyle&)> predicate) const;
 
     // Freeze pane overlay views
     int m_frozenRow = -1;
@@ -298,8 +323,21 @@ private:
     ChartRangeHighlight m_chartHighlight;
     bool m_chartHighlightActive = false;
 
+    // Formula view toggle
+    bool m_showFormulas = false;
+
+    // Bulk loading: when true, skip operations that scan m_cells (race with bg thread)
+    bool m_bulkLoading = false;
+
     // Picklist popup re-entry guard
     bool m_picklistPopupOpen = false;
+
+    // Trace arrows state
+    bool m_showPrecedents = false;
+    bool m_showDependents = false;
+    CellAddress m_traceCell;
+    std::vector<CellAddress> m_tracedCells;
+    void drawTraceArrows(QPainter& painter);
 };
 
 #endif // SPREADSHEETVIEW_H

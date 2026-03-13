@@ -73,6 +73,20 @@ CellType Cell::getType() const {
 }
 
 void Cell::setStyle(const CellStyle& style) {
+    // Skip allocation if style matches default (common for bulk import with styleIdx 0)
+    const auto& def = defaultStyle();
+    if (style.fontName == def.fontName && style.fontSize == def.fontSize &&
+        style.bold == def.bold && style.italic == def.italic &&
+        style.underline == def.underline && style.strikethrough == def.strikethrough &&
+        style.foregroundColor == def.foregroundColor &&
+        style.backgroundColor == def.backgroundColor &&
+        style.numberFormat == def.numberFormat &&
+        !style.borderTop.enabled && !style.borderBottom.enabled &&
+        !style.borderLeft.enabled && !style.borderRight.enabled &&
+        style.hAlign == def.hAlign && style.vAlign == def.vAlign) {
+        m_customStyle.reset(); // use default
+        return;
+    }
     m_customStyle = std::make_unique<CellStyle>(style);
 }
 
@@ -109,6 +123,18 @@ QString Cell::getError() const {
     return m_error;
 }
 
+QString Cell::getComment() const {
+    return m_comment;
+}
+
+void Cell::setComment(const QString& comment) {
+    m_comment = comment;
+}
+
+bool Cell::hasComment() const {
+    return !m_comment.isEmpty();
+}
+
 QString Cell::toString() const {
     switch (m_type) {
         case CellType::Formula:
@@ -135,5 +161,7 @@ void Cell::clear() {
     m_type = CellType::Empty;
     m_customStyle.reset();
     m_error = QString();
+    m_hyperlink = QString();
     m_dirty = true;
+    m_spillParent = CellAddress(-1, -1);
 }

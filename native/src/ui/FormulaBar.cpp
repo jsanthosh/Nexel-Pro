@@ -131,11 +131,19 @@ void FormulaBar::setupAutocomplete() {
         if (reg.contains(funcName)) {
             m_detailPanel->setText(buildDetailHtml(reg[funcName]));
             m_detailPanel->adjustSize();
-            QPoint pos = m_popup->mapToGlobal(QPoint(m_popup->width() + 4, 0));
-            m_detailPanel->move(pos);
+            // Try right side first; if it would be clipped, move to left side
+            QPoint rightPos = m_popup->mapToGlobal(QPoint(m_popup->width() + 4, 0));
+            QScreen* screen = m_popup->screen();
+            if (screen && rightPos.x() + m_detailPanel->width() > screen->availableGeometry().right()) {
+                QPoint leftPos = m_popup->mapToGlobal(QPoint(-m_detailPanel->width() - 4, 0));
+                m_detailPanel->move(leftPos);
+            } else {
+                m_detailPanel->move(rightPos);
+            }
             m_detailPanel->show();
         }
     });
+
 
     connect(m_formulaEdit, &QLineEdit::textEdited, this, [this]() {
         m_detailPanel->hide();
@@ -153,6 +161,11 @@ void FormulaBar::setupAutocomplete() {
 }
 
 bool FormulaBar::eventFilter(QObject* obj, QEvent* event) {
+    // When popup auto-closes (e.g. clicked outside), also hide tooltip panels
+    if (obj == m_popup && event->type() == QEvent::Hide) {
+        if (m_paramHint) m_paramHint->hide();
+        if (m_detailPanel) m_detailPanel->hide();
+    }
     // Handle key events from popup (Qt::Popup grabs keyboard)
     if (obj == m_popup && event->type() == QEvent::KeyPress) {
         auto* ke = static_cast<QKeyEvent*>(event);
@@ -192,6 +205,10 @@ bool FormulaBar::eventFilter(QObject* obj, QEvent* event) {
             return true;
         }
     }
+    // When formula edit loses focus, hide all panels
+    if (obj == m_formulaEdit && event->type() == QEvent::FocusOut) {
+        hideAllPanels();
+    }
     return QWidget::eventFilter(obj, event);
 }
 
@@ -230,10 +247,23 @@ void FormulaBar::updatePopup() {
     }
 
     if (m_popup->count() > 0) {
-        QPoint pos = m_formulaEdit->mapToGlobal(QPoint(0, m_formulaEdit->height()));
-        m_popup->setFixedWidth(qMax(460, m_formulaEdit->width()));
+        int popupW = qMax(460, m_formulaEdit->width());
         int visibleItems = qMin(m_popup->count(), 8);
-        m_popup->setFixedHeight(visibleItems * 30 + 6);
+        int popupH = visibleItems * 30 + 6;
+        m_popup->setFixedWidth(popupW);
+        m_popup->setFixedHeight(popupH);
+        QPoint pos = m_formulaEdit->mapToGlobal(QPoint(0, m_formulaEdit->height()));
+        // Clamp to screen bounds
+        QScreen* screen = m_formulaEdit->screen();
+        if (screen) {
+            QRect sr = screen->availableGeometry();
+            if (pos.x() + popupW > sr.right())
+                pos.setX(sr.right() - popupW);
+            if (pos.x() < sr.left())
+                pos.setX(sr.left());
+            if (pos.y() + popupH > sr.bottom())
+                pos.setY(m_formulaEdit->mapToGlobal(QPoint(0, 0)).y() - popupH - 2);
+        }
         m_popup->move(pos);
         m_popup->show();
         m_popup->setCurrentRow(0);
@@ -260,6 +290,15 @@ void FormulaBar::updateParamHint() {
         QPoint hintPos = m_formulaEdit->mapToGlobal(QPoint(0, m_formulaEdit->height() + 2));
         if (m_popup && m_popup->isVisible()) {
             hintPos.setY(m_popup->mapToGlobal(QPoint(0, m_popup->height())).y() + 2);
+        }
+        // Clamp to screen bounds
+        QScreen* screen = m_formulaEdit->screen();
+        if (screen) {
+            QRect sr = screen->availableGeometry();
+            if (hintPos.x() + m_paramHint->width() > sr.right())
+                hintPos.setX(sr.right() - m_paramHint->width());
+            if (hintPos.x() < sr.left())
+                hintPos.setX(sr.left());
         }
         m_paramHint->move(hintPos);
         m_paramHint->show();
