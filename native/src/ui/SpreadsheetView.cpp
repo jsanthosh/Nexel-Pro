@@ -1611,9 +1611,10 @@ void SpreadsheetView::applyBorderStyle(const QString& borderType, const QColor& 
             s.borderLeft = off;
             s.borderRight = off;
         } else if (borderType == "all") {
-            s.borderTop = on;
+            // Only set top/left on outer edges to avoid double-drawing internal borders
+            s.borderTop = (row == minRow) ? on : off;
+            s.borderLeft = (col == minCol) ? on : off;
             s.borderBottom = on;
-            s.borderLeft = on;
             s.borderRight = on;
         } else if (borderType == "outside") {
             if (row == minRow) s.borderTop = on;

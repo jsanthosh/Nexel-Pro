@@ -779,7 +779,9 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
     }
 
     // --- Gridlines: single thin line on right and bottom edges ---
-    if (m_showGridlines) {
+    // Excel behavior: gridlines are hidden when a cell has a background color
+    bool hasBgColor = bgColor != defaultBg;
+    if (m_showGridlines && !hasBgColor) {
         painter->setPen(QPen(ThemeManager::instance().currentTheme().gridLineColor, 1, Qt::SolidLine));
         painter->drawLine(rect.right(), rect.top(), rect.right(), rect.bottom());
         painter->drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom());
