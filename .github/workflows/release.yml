@@ -322,14 +322,14 @@ jobs:
             | Windows (64-bit) | `Nexel-${{ github.ref_name }}-Windows-x64.zip` |
             | Linux (64-bit) | `Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage` |
 
-            ### What's New in v6.2.0
-            - **Excel-style Formatting Toggle**: Bold/Italic/Underline/Strikethrough now toggle like Excel — if any cell is unset, all become set; only if all set, all unset
-            - **Fix Underline & Strikethrough**: These styles now persist correctly (was silently discarded)
-            - **Column/Row Width Shift on Delete**: Deleting columns/rows now preserves neighboring widths/heights exactly like Excel
-            - **Table Style Undo/Redo**: Applying or changing table styles is now fully undoable
-            - **Picklist Selection Tint**: Picklist/Checkbox cells now show selection highlight in multi-cell selections
-            - **Picklist Range Picker**: Sheet switching no longer closes the range picker bar
-            - **Undo/Redo Improvements**: Structural operations (insert/delete row/col) properly restore dimensions on undo
+            ### What's New in v6.3.0
+            - **Text Overflow**: Cell text now spills into empty neighbor cells (like Excel)
+            - **Wrap Text**: Wrap long text within cell boundaries
+            - **Shrink to Fit**: Automatically reduce font size to fit text in cell
+            - **Editor Expansion**: Text editor expands rightward while typing into empty cells
+            - **Gridline Hiding**: Gridlines hidden where text overflows into neighbor cells
+            - **Background Gridlines**: Gridlines properly hidden behind background-colored cells
+            - **All Borders Fix**: "All borders" no longer draws double-thick internal edges
           files: |
             artifacts/**/*
           draft: false
