@@ -48,6 +48,7 @@ jobs:
 
       - name: Create DMG
         run: |
+          rm -rf /tmp/nexel-dmg
           mkdir -p /tmp/nexel-dmg
           cp -R "native/install/NativeSpreadsheet.app" "/tmp/nexel-dmg/Nexel 6.app"
           ln -s /Applications /tmp/nexel-dmg/Applications
@@ -102,6 +103,7 @@ jobs:
 
       - name: Create DMG
         run: |
+          rm -rf /tmp/nexel-dmg
           mkdir -p /tmp/nexel-dmg
           cp -R "native/install/NativeSpreadsheet.app" "/tmp/nexel-dmg/Nexel 6.app"
           ln -s /Applications /tmp/nexel-dmg/Applications
