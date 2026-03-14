@@ -83,7 +83,8 @@ void Cell::setStyle(const CellStyle& style) {
         style.numberFormat == def.numberFormat &&
         !style.borderTop.enabled && !style.borderBottom.enabled &&
         !style.borderLeft.enabled && !style.borderRight.enabled &&
-        style.hAlign == def.hAlign && style.vAlign == def.vAlign) {
+        style.hAlign == def.hAlign && style.vAlign == def.vAlign &&
+        style.textOverflow == def.textOverflow) {
         m_customStyle.reset(); // use default
         return;
     }

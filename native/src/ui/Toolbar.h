@@ -77,6 +77,8 @@ signals:
     // Indent
     void increaseIndent();
     void decreaseIndent();
+    // Text overflow
+    void textOverflowChanged(TextOverflowMode mode);
     // Text rotation
     void textRotationChanged(int degrees);
     // Conditional formatting & validation
@@ -127,6 +129,7 @@ private:
     QToolButton* m_vAlignBottomBtn = nullptr;
     QToolBar* m_secondaryToolbar = nullptr;
     QToolButton* m_chatBtn = nullptr;
+    QToolButton* m_textOverflowBtn = nullptr;
 };
 
 #endif // TOOLBAR_H

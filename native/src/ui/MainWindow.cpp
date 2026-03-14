@@ -1015,6 +1015,7 @@ void MainWindow::connectSignals() {
     connect(m_toolbar, &Toolbar::increaseIndent, m_spreadsheetView, &SpreadsheetView::increaseIndent);
     connect(m_toolbar, &Toolbar::decreaseIndent, m_spreadsheetView, &SpreadsheetView::decreaseIndent);
     connect(m_toolbar, &Toolbar::textRotationChanged, m_spreadsheetView, &SpreadsheetView::applyTextRotation);
+    connect(m_toolbar, &Toolbar::textOverflowChanged, m_spreadsheetView, &SpreadsheetView::applyTextOverflow);
 
     connect(m_toolbar, &Toolbar::conditionalFormatRequested, this, &MainWindow::onConditionalFormat);
     connect(m_toolbar, &Toolbar::dataValidationRequested, this, &MainWindow::onDataValidation);

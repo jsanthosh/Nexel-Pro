@@ -1580,6 +1580,12 @@ void SpreadsheetView::applyTextRotation(int degrees) {
     }, {Qt::UserRole + 16});
 }
 
+void SpreadsheetView::applyTextOverflow(TextOverflowMode mode) {
+    applyStyleChange([mode](CellStyle& s) {
+        s.textOverflow = mode;
+    }, {Qt::DisplayRole});
+}
+
 // ============== Borders ==============
 
 void SpreadsheetView::applyBorderStyle(const QString& borderType, const QColor& color, int width, int penStyle) {

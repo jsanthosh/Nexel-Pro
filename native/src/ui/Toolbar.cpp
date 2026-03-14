@@ -1008,6 +1008,54 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
         emit vAlignChanged(VerticalAlignment::Bottom);
     });
 
+    // ===== Text Overflow (Wrap / Shrink to Fit) =====
+    m_textOverflowBtn = new QToolButton(bar);
+    m_textOverflowBtn->setToolTip("Text Overflow");
+    m_textOverflowBtn->setPopupMode(QToolButton::MenuButtonPopup);
+    m_textOverflowBtn->setFixedSize(38, 24);
+    // Wrap text icon: text with wrap-around arrow (Excel style)
+    m_textOverflowBtn->setIcon(createIcon(16, [](QPainter& p, int) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QColor clr("#344054");
+        p.setPen(QPen(clr, 1.3, Qt::SolidLine, Qt::RoundCap));
+        // Two text lines
+        p.drawLine(1, 4, 11, 4);
+        p.drawLine(1, 12, 7, 12);
+        // Line that wraps: goes right, curves down to second line
+        p.drawLine(1, 8, 11, 8);
+        QPainterPath arrow;
+        arrow.moveTo(11, 8);
+        arrow.cubicTo(14, 8, 14, 12, 10, 12);
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(arrow);
+        // Arrowhead pointing left at the end of curve
+        p.drawLine(QPointF(10, 12), QPointF(12, 10.5));
+        p.drawLine(QPointF(10, 12), QPointF(12, 13.5));
+    }));
+    m_textOverflowBtn->setStyleSheet(
+        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 0px 2px; }"
+        "QToolButton:hover { background-color: #E8ECF0; border-color: #D0D5DD; }"
+        "QToolButton::menu-button { width: 12px; border: none; }"
+        "QToolButton::menu-arrow { image: url(none); width: 6px; height: 6px; }"
+        "QToolButton::menu-indicator { image: none; width: 0px; }");
+
+    QMenu* overflowMenu = new QMenu(m_textOverflowBtn);
+    overflowMenu->setStyleSheet(
+        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; min-width: 160px; }"
+        "QMenu::item { padding: 6px 16px; border-radius: 4px; font-size: 12px; }"
+        "QMenu::item:selected { background-color: #E8F0FE; }");
+    connect(overflowMenu->addAction("Overflow"), &QAction::triggered, this, [this]() {
+        emit textOverflowChanged(TextOverflowMode::Overflow);
+    });
+    connect(overflowMenu->addAction("Wrap Text"), &QAction::triggered, this, [this]() {
+        emit textOverflowChanged(TextOverflowMode::Wrap);
+    });
+    connect(overflowMenu->addAction("Shrink to Fit"), &QAction::triggered, this, [this]() {
+        emit textOverflowChanged(TextOverflowMode::ShrinkToFit);
+    });
+    m_textOverflowBtn->setMenu(overflowMenu);
+    bar->addWidget(m_textOverflowBtn);
+
     bar->addSeparator();
 
     // ===== Indent =====

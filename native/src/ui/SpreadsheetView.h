@@ -68,6 +68,7 @@ public:
 
     // Text rotation
     void applyTextRotation(int degrees);
+    void applyTextOverflow(TextOverflowMode mode);
 
     // Borders
     void applyBorderStyle(const QString& borderType, const QColor& color = QColor("#000000"), int width = 1, int penStyle = 0);

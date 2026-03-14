@@ -225,6 +225,15 @@ QWidget* CellDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem&
         "border: 2px solid %3; selection-background-color: #0078D4; }")
         .arg(edBg, edText, edTheme.editorBorderColor.name()));
 
+    // Expand editor as text grows (like Excel)
+    connect(editor, &QLineEdit::textChanged, this, [this, editor, index]() {
+        if (!m_spreadsheetView) return;
+        QStyleOptionViewItem opt;
+        opt.rect = m_spreadsheetView->visualRect(index);
+        opt.font = m_spreadsheetView->font();
+        const_cast<CellDelegate*>(this)->updateEditorGeometry(editor, opt, index);
+    });
+
     // --- Custom formula autocomplete popup ---
     auto* popup = new QListWidget(parent->window());
     popup->setWindowFlags(Qt::Popup | Qt::FramelessWindowHint);
@@ -474,8 +483,38 @@ void CellDelegate::setModelData(QWidget* editor, QAbstractItemModel* model,
 
 void CellDelegate::updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option,
                                        const QModelIndex& index) const {
-    // Editor fills the full cell — its own green border replaces the delegate focus border
-    editor->setGeometry(option.rect);
+    // Start with the cell rect
+    QRect geom = option.rect;
+
+    // Expand editor rightward as text grows (like Excel)
+    if (m_spreadsheetView) {
+        auto* lineEdit = qobject_cast<QLineEdit*>(editor);
+        if (lineEdit) {
+            QFontMetrics fm(lineEdit->font());
+            int textW = fm.horizontalAdvance(lineEdit->text()) + 20; // padding for cursor + border
+            if (textW > geom.width()) {
+                auto sp = m_spreadsheetView->getSpreadsheet();
+                int row = index.row();
+                int col = index.column();
+                int maxCol = m_spreadsheetView->model()->columnCount() - 1;
+                int expandedRight = geom.right();
+                // Expand into empty neighbor cells to the right
+                for (int c = col + 1; c <= maxCol; ++c) {
+                    if (sp) {
+                        auto neighbor = sp->getCellIfExists(row, c);
+                        if (neighbor && neighbor->getType() != CellType::Empty) break;
+                    }
+                    QModelIndex nIdx = m_spreadsheetView->model()->index(row, c);
+                    QRect nRect = m_spreadsheetView->visualRect(nIdx);
+                    expandedRight = nRect.right();
+                    if (expandedRight - geom.left() >= textW) break;
+                }
+                geom.setRight(qMax(geom.right(), expandedRight));
+            }
+        }
+    }
+
+    editor->setGeometry(geom);
 }
 
 void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
@@ -672,7 +711,35 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
 
         QRect textRect = rect.adjusted(4 + indentPx + iconTextShift, 1, -4, -1);
 
-        if (rotation == 0) {
+        // Get text overflow mode for this cell
+        TextOverflowMode overflowMode = TextOverflowMode::Overflow;
+        if (m_spreadsheetView) {
+            auto sp = m_spreadsheetView->getSpreadsheet();
+            if (sp) {
+                auto cell = sp->getCellIfExists(index.row(), index.column());
+                if (cell) overflowMode = cell->getStyle().textOverflow;
+            }
+        }
+
+        if (rotation == 0 && overflowMode == TextOverflowMode::Wrap) {
+            // Wrap text within cell
+            painter->drawText(textRect, alignment | Qt::TextWordWrap, text);
+        } else if (rotation == 0 && overflowMode == TextOverflowMode::ShrinkToFit) {
+            // Shrink font until text fits
+            QFontMetrics fm(font);
+            int textW = fm.horizontalAdvance(text);
+            if (textW > textRect.width() && textRect.width() > 0) {
+                double scale = static_cast<double>(textRect.width()) / textW;
+                QFont shrunkFont = font;
+                int newSize = qMax(5, static_cast<int>(font.pointSize() * scale));
+                shrunkFont.setPointSize(newSize);
+                painter->setFont(shrunkFont);
+            }
+            painter->drawText(textRect, alignment, text);
+            painter->setFont(font); // restore
+        } else if (rotation == 0) {
+            // Overflow mode (default): just draw text normally (no clip expansion)
+            // Overflow rendering into neighbor cells is handled below for empty cells
             painter->drawText(textRect, alignment, text);
         } else if (rotation == 270) {
             // Vertical stacked text: draw each character on its own line
@@ -744,6 +811,66 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         }
     }
 
+    // --- Text overflow: draw overflowed text from left neighbor into this empty cell ---
+    {
+        QString cellText = index.data(Qt::DisplayRole).toString();
+        if (cellText.isEmpty() && m_spreadsheetView) {
+            auto sp = m_spreadsheetView->getSpreadsheet();
+            if (sp) {
+                int row = index.row();
+                int col = index.column();
+                // Search leftward for a source cell with overflowing text
+                for (int srcCol = col - 1; srcCol >= 0; --srcCol) {
+                    auto srcCell = sp->getCellIfExists(row, srcCol);
+                    if (!srcCell || srcCell->getType() == CellType::Empty) continue;
+                    // Found a non-empty cell — check if it overflows
+                    const auto& srcStyle = srcCell->getStyle();
+                    if (srcStyle.textOverflow != TextOverflowMode::Overflow) break;
+                    // Check that all cells between source and current are empty
+                    bool allEmpty = true;
+                    for (int c = srcCol + 1; c < col; ++c) {
+                        auto between = sp->getCellIfExists(row, c);
+                        if (between && between->getType() != CellType::Empty) { allEmpty = false; break; }
+                    }
+                    if (!allEmpty) break;
+                    // Get source cell text
+                    QModelIndex srcIdx = m_spreadsheetView->model()->index(row, srcCol);
+                    QString srcText = srcIdx.data(Qt::DisplayRole).toString();
+                    if (srcText.isEmpty()) break;
+                    // Get source cell font
+                    QFont srcFont = option.font;
+                    QVariant srcFontData = srcIdx.data(Qt::FontRole);
+                    if (srcFontData.isValid()) srcFont = srcFontData.value<QFont>();
+                    QFontMetrics srcFm(srcFont);
+                    int srcTextW = srcFm.horizontalAdvance(srcText);
+                    // Get source cell rect
+                    QRect srcRect = m_spreadsheetView->visualRect(srcIdx);
+                    int srcTextLeft = srcRect.left() + 4;
+                    // Check indent
+                    QVariant srcIndent = srcIdx.data(Qt::UserRole + 10);
+                    if (srcIndent.isValid()) srcTextLeft += srcIndent.toInt() * 12;
+                    int textRight = srcTextLeft + srcTextW;
+                    // Does the source text reach into our cell?
+                    if (textRight > rect.left()) {
+                        // Get source fg color
+                        QColor srcFg = theme.textPrimary;
+                        QVariant srcFgData = srcIdx.data(Qt::ForegroundRole);
+                        if (srcFgData.isValid()) {
+                            QColor c = srcFgData.value<QColor>();
+                            if (c.isValid()) srcFg = c;
+                        }
+                        painter->setFont(srcFont);
+                        painter->setPen(srcFg);
+                        // Draw text spanning from source origin across into this cell
+                        QRect fullTextRect(srcTextLeft, rect.top() + 1, textRight - srcTextLeft, rect.height() - 2);
+                        painter->drawText(fullTextRect, Qt::AlignVCenter | Qt::AlignLeft, srcText);
+                    }
+                    break; // only check the nearest non-empty cell to the left
+                }
+            }
+        }
+    }
+
     // --- Comment indicator: small red triangle in top-right corner ---
     if (m_spreadsheetView) {
         auto sp = m_spreadsheetView->getSpreadsheet();
@@ -780,10 +907,68 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
 
     // --- Gridlines: single thin line on right and bottom edges ---
     // Excel behavior: gridlines are hidden when a cell has a background color
+    // Also hide right gridline when text overflows into the next cell
     bool hasBgColor = bgColor != defaultBg;
+    bool hideRightGridline = false;
+    if (m_showGridlines && !hasBgColor && m_spreadsheetView) {
+        auto sp = m_spreadsheetView->getSpreadsheet();
+        if (sp) {
+            int row = index.row();
+            int col = index.column();
+            // Check if THIS cell's text overflows right
+            auto thisCell = sp->getCellIfExists(row, col);
+            if (thisCell && thisCell->getType() != CellType::Empty &&
+                thisCell->getStyle().textOverflow == TextOverflowMode::Overflow) {
+                QString thisText = index.data(Qt::DisplayRole).toString();
+                if (!thisText.isEmpty()) {
+                    QFont f = option.font;
+                    QVariant fd = index.data(Qt::FontRole);
+                    if (fd.isValid()) f = fd.value<QFont>();
+                    QFontMetrics fm(f);
+                    int textW = fm.horizontalAdvance(thisText);
+                    int cellTextW = rect.width() - 8;
+                    if (textW > cellTextW) {
+                        // Check if next cell is empty
+                        auto nextCell = sp->getCellIfExists(row, col + 1);
+                        if (!nextCell || nextCell->getType() == CellType::Empty)
+                            hideRightGridline = true;
+                    }
+                }
+            }
+            // Check if this cell RECEIVES overflow from the left (is empty with overflow text)
+            if (!hideRightGridline && (!thisCell || thisCell->getType() == CellType::Empty)) {
+                for (int srcCol = col - 1; srcCol >= 0; --srcCol) {
+                    auto srcCell = sp->getCellIfExists(row, srcCol);
+                    if (!srcCell || srcCell->getType() == CellType::Empty) continue;
+                    if (srcCell->getStyle().textOverflow != TextOverflowMode::Overflow) break;
+                    // Check all cells between are empty
+                    bool allEmpty = true;
+                    for (int c = srcCol + 1; c < col; ++c) {
+                        auto bet = sp->getCellIfExists(row, c);
+                        if (bet && bet->getType() != CellType::Empty) { allEmpty = false; break; }
+                    }
+                    if (!allEmpty) break;
+                    QModelIndex srcIdx = m_spreadsheetView->model()->index(row, srcCol);
+                    QString srcText = srcIdx.data(Qt::DisplayRole).toString();
+                    QFont sf = option.font;
+                    QVariant sfd = srcIdx.data(Qt::FontRole);
+                    if (sfd.isValid()) sf = sfd.value<QFont>();
+                    QFontMetrics sfm(sf);
+                    QRect srcRect = m_spreadsheetView->visualRect(srcIdx);
+                    int srcTextLeft = srcRect.left() + 4;
+                    QVariant si = srcIdx.data(Qt::UserRole + 10);
+                    if (si.isValid()) srcTextLeft += si.toInt() * 12;
+                    int textRight = srcTextLeft + sfm.horizontalAdvance(srcText);
+                    if (textRight > rect.right()) hideRightGridline = true;
+                    break;
+                }
+            }
+        }
+    }
     if (m_showGridlines && !hasBgColor) {
         painter->setPen(QPen(ThemeManager::instance().currentTheme().gridLineColor, 1, Qt::SolidLine));
-        painter->drawLine(rect.right(), rect.top(), rect.right(), rect.bottom());
+        if (!hideRightGridline)
+            painter->drawLine(rect.right(), rect.top(), rect.right(), rect.bottom());
         painter->drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom());
     }
 

@@ -32,6 +32,12 @@ enum class VerticalAlignment : uint8_t {
     Bottom
 };
 
+enum class TextOverflowMode : uint8_t {
+    Overflow,     // Default: text spills into empty neighbor cells
+    Wrap,         // Text wraps within the cell
+    ShrinkToFit   // Font shrinks to fit within the cell
+};
+
 struct BorderStyle {
     QString color = "#000000";
     uint8_t width : 2;    // 1=thin, 2=medium, 3=thick (fits in 2 bits)
@@ -70,6 +76,7 @@ struct CellStyle {
     // --- Small enum members (1 byte each with uint8_t underlying type) ---
     HorizontalAlignment hAlign = HorizontalAlignment::General;
     VerticalAlignment vAlign = VerticalAlignment::Middle;
+    TextOverflowMode textOverflow = TextOverflowMode::Overflow;
     uint8_t decimalPlaces = 2;
 
     // Boolean flags packed as bitfields (1 byte total instead of 5 bytes)
