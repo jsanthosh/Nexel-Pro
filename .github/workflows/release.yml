@@ -50,9 +50,9 @@ jobs:
         run: |
           rm -rf /tmp/nexel-dmg
           mkdir -p /tmp/nexel-dmg
-          cp -R "native/install/NativeSpreadsheet.app" "/tmp/nexel-dmg/Nexel 6.app"
+          cp -R "native/install/NativeSpreadsheet.app" "/tmp/nexel-dmg/Nexel Pro.app"
           ln -s /Applications /tmp/nexel-dmg/Applications
-          hdiutil create -volname "Nexel 6" \
+          hdiutil create -volname "Nexel Pro" \
             -srcfolder /tmp/nexel-dmg \
             -ov -format UDZO \
             -imagekey zlib-level=9 \
@@ -105,9 +105,9 @@ jobs:
         run: |
           rm -rf /tmp/nexel-dmg
           mkdir -p /tmp/nexel-dmg
-          cp -R "native/install/NativeSpreadsheet.app" "/tmp/nexel-dmg/Nexel 6.app"
+          cp -R "native/install/NativeSpreadsheet.app" "/tmp/nexel-dmg/Nexel Pro.app"
           ln -s /Applications /tmp/nexel-dmg/Applications
-          hdiutil create -volname "Nexel 6" \
+          hdiutil create -volname "Nexel Pro" \
             -srcfolder /tmp/nexel-dmg \
             -ov -format UDZO \
             -imagekey zlib-level=9 \
@@ -176,7 +176,7 @@ jobs:
           # Rename exe to Nexel.exe
           $exe = Get-ChildItem -Path $distDir -Filter "NativeSpreadsheet.exe" -Recurse | Select-Object -First 1
           if ($exe) {
-            Rename-Item -Path $exe.FullName -NewName "Nexel 6.exe"
+            Rename-Item -Path $exe.FullName -NewName "Nexel Pro.exe"
           }
 
           Compress-Archive -Path "$distDir/*" -DestinationPath "Nexel-${{ github.ref_name }}-Windows-x64.zip"
@@ -247,7 +247,7 @@ jobs:
           cat > native/AppDir/usr/share/applications/nexel.desktop << 'DESKTOP'
           [Desktop Entry]
           Type=Application
-          Name=Nexel 6
+          Name=Nexel Pro
           Comment=High-performance native spreadsheet application
           Exec=NativeSpreadsheet
           Icon=nexel
@@ -310,9 +310,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Nexel 6 ${{ github.ref_name }}"
+          name: "Nexel Pro ${{ github.ref_name }}"
           body: |
-            ## Nexel 6 ${{ github.ref_name }}
+            ## Nexel Pro ${{ github.ref_name }}
 
             High-performance native spreadsheet — handles millions of rows.
 

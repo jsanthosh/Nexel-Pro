@@ -261,7 +261,7 @@ if(APPLE)
     set_target_properties(NativeSpreadsheet PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.nexel.app"
-        MACOSX_BUNDLE_BUNDLE_NAME "Nexel 6"
+        MACOSX_BUNDLE_BUNDLE_NAME "Nexel Pro"
         MACOSX_BUNDLE_BUNDLE_VERSION "6.3.0"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "6.3"
         MACOSX_BUNDLE_ICON_FILE AppIcon.icns

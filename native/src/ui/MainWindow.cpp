@@ -70,7 +70,7 @@
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
-    setWindowTitle("Nexel 6");
+    setWindowTitle("Nexel Pro");
     setGeometry(100, 100, 1280, 800);
 
 #ifdef HAS_DATA2APP
@@ -564,7 +564,7 @@ void MainWindow::createMenuBar() {
         QString newName = QInputDialog::getText(this, "Rename Document",
             "Document name:", QLineEdit::Normal, baseName, &ok);
         if (ok && !newName.isEmpty()) {
-            setWindowTitle("Nexel 6 - " + newName);
+            setWindowTitle("Nexel Pro - " + newName);
             statusBar()->showMessage("Renamed to: " + newName);
         }
     });
@@ -1408,7 +1408,7 @@ void MainWindow::finishProgressiveCsvLoad() {
 void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& fileName, qint64 elapsedMs) {
     if (!result.sheets.empty()) {
         setSheets(result.sheets);
-        setWindowTitle("Nexel 6 - " + QFileInfo(fileName).fileName());
+        setWindowTitle("Nexel Pro - " + QFileInfo(fileName).fileName());
 
         // Create chart widgets from imported charts
         static const QVector<QColor> excelColors = {
@@ -2651,7 +2651,7 @@ void MainWindow::setDirty(bool dirty) {
 }
 
 void MainWindow::updateWindowTitle() {
-    QString title = "Nexel 6";
+    QString title = "Nexel Pro";
     if (!m_currentFilePath.isEmpty()) {
         title += " - " + QFileInfo(m_currentFilePath).fileName();
     }
@@ -4074,7 +4074,7 @@ void MainWindow::applyTemplate(const TemplateResult& result) {
     }
 
     setSheets(result.sheets);
-    setWindowTitle("Nexel 6 - " + result.sheets[0]->getSheetName());
+    setWindowTitle("Nexel Pro - " + result.sheets[0]->getSheetName());
 
     // Create chart widgets from template charts
     for (int i = 0; i < static_cast<int>(result.charts.size()); ++i) {
