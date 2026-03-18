@@ -234,49 +234,54 @@ jobs:
         run: cmake --build native/build --config Release -j$(nproc)
 
       - name: Install
-        run: DESTDIR=native/AppDir cmake --install native/build
-
-      - name: Create AppImage
         run: |
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod +x linuxdeploy*.AppImage
+          mkdir -p ${{ github.workspace }}/AppDir
+          DESTDIR=${{ github.workspace }}/AppDir cmake --install native/build
+          echo "=== Install contents ==="
+          find ${{ github.workspace }}/AppDir -type f | head -20
 
-          # Create desktop file (printf avoids heredoc indentation issues)
-          mkdir -p native/AppDir/usr/share/applications
-          printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Nexel Pro' 'Comment=High-performance native spreadsheet application' 'Exec=NativeSpreadsheet' 'Icon=nexel' 'Categories=Office;Spreadsheet;' > native/AppDir/usr/share/applications/nexel.desktop
+      - name: Create portable package
+        run: |
+          # Create desktop file
+          mkdir -p AppDir/usr/share/applications
+          printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Nexel Pro' 'Comment=High-performance native spreadsheet application' 'Exec=NativeSpreadsheet' 'Icon=nexel' 'Categories=Office;Spreadsheet;' > AppDir/usr/share/applications/nexel.desktop
 
-          # Create icon
-          mkdir -p native/AppDir/usr/share/icons/hicolor/256x256/apps
+          # Create minimal icon
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
           python3 -c "
           from PIL import Image, ImageDraw
           img = Image.new('RGB', (256, 256), '#1A7A5A')
           d = ImageDraw.Draw(img)
           d.text((90, 60), 'N', fill='white')
-          img.save('native/AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png')
+          img.save('AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png')
           " 2>/dev/null || \
           convert -size 256x256 xc:"#1A7A5A" -gravity center \
             -fill white -font Helvetica-Bold -pointsize 80 \
             -annotate 0 "N" \
-            native/AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png 2>/dev/null || \
-          printf '\x89PNG\r\n\x1a\n' > native/AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png
+            AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png 2>/dev/null || \
+          printf '\x89PNG\r\n\x1a\n' > AppDir/usr/share/icons/hicolor/256x256/apps/nexel.png
+
+          # Try AppImage first
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage || true
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage || true
+          chmod +x linuxdeploy*.AppImage 2>/dev/null || true
 
           export QMAKE=$Qt6_DIR/bin/qmake
           export LD_LIBRARY_PATH=$Qt6_DIR/lib:$LD_LIBRARY_PATH
-          ./linuxdeploy-x86_64.AppImage \
-            --appdir native/AppDir \
-            --plugin qt \
-            --output appimage \
-            --desktop-file native/AppDir/usr/share/applications/nexel.desktop || true
 
-          mv Nexel-*.AppImage Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage 2>/dev/null || \
-          mv *.AppImage Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage 2>/dev/null || true
+          if [ -f linuxdeploy-x86_64.AppImage ]; then
+            ./linuxdeploy-x86_64.AppImage \
+              --appdir AppDir \
+              --plugin qt \
+              --output appimage \
+              --desktop-file AppDir/usr/share/applications/nexel.desktop || true
+            mv *.AppImage Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage 2>/dev/null || true
+          fi
 
-      - name: Fallback - Create tar.gz if AppImage fails
-        if: always()
-        run: |
+          # Fallback: create tar.gz if AppImage failed
           if [ ! -f Nexel-*-Linux-*.AppImage ]; then
-            tar -czf Nexel-${{ github.ref_name }}-Linux-x86_64.tar.gz -C native/AppDir usr/
+            echo "AppImage failed, creating tar.gz fallback"
+            tar -czf Nexel-${{ github.ref_name }}-Linux-x86_64.tar.gz -C AppDir usr/
           fi
 
       - name: Upload artifact
