@@ -4,8 +4,21 @@
 #include <algorithm>
 #include <numeric>
 #include <mutex>
+#include <QElapsedTimer>
 #include <QRegularExpression>
 #include <QtConcurrent>
+
+// Cross-platform bit intrinsics
+#ifdef _MSC_VER
+#include <intrin.h>
+static inline int ctzll_s(uint64_t x) {
+    unsigned long idx;
+    _BitScanForward64(&idx, x);
+    return static_cast<int>(idx);
+}
+#else
+static inline int ctzll_s(uint64_t x) { return __builtin_ctzll(x); }
+#endif
 
 // Helper: adjust formula cell references for row/column insert/delete
 // mode: 'R' = row shift, 'C' = column shift
@@ -1445,7 +1458,7 @@ void Spreadsheet::buildNavIndexIfNeeded() const {
             for (int w = 0; w < ColumnChunk::BITMAP_WORDS; ++w) {
                 uint64_t word = chunk->presence[w];
                 while (word) {
-                    int bit = __builtin_ctzll(word); // count trailing zeros
+                    int bit = ctzll_s(word); // count trailing zeros
                     int offset = w * 64 + bit;
                     rowList.push_back(chunk->baseRow + offset);
                     word &= word - 1; // clear lowest set bit

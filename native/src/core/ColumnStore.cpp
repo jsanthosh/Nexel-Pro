@@ -1,8 +1,29 @@
 #include "ColumnStore.h"
 #include "StringPool.h"
-#include <bit>       // std::popcount (C++20)
 #include <numeric>   // std::iota
 #include <cstring>
+
+// Cross-platform bit intrinsics
+#ifdef _MSC_VER
+#include <intrin.h>
+static inline int ctzll(uint64_t x) {
+    unsigned long idx;
+    _BitScanForward64(&idx, x);
+    return static_cast<int>(idx);
+}
+static inline int clzll(uint64_t x) {
+    unsigned long idx;
+    _BitScanReverse64(&idx, x);
+    return 63 - static_cast<int>(idx);
+}
+static inline int popcountll(uint64_t x) {
+    return static_cast<int>(__popcnt64(x));
+}
+#else
+static inline int ctzll(uint64_t x) { return __builtin_ctzll(x); }
+static inline int clzll(uint64_t x) { return __builtin_clzll(x); }
+static inline int popcountll(uint64_t x) { return __builtin_popcountll(x); }
+#endif
 
 // ============================================================================
 // ColumnChunk — popcount-based dense indexing
@@ -14,11 +35,11 @@ int ColumnChunk::denseIndex(int rowOffset) const {
 
     int count = 0;
     for (int w = 0; w < wordIdx; ++w) {
-        count += std::popcount(presence[w]);
+        count += popcountll(presence[w]);
     }
     if (bitIdx > 0) {
         uint64_t mask = (1ULL << bitIdx) - 1;
-        count += std::popcount(presence[wordIdx] & mask);
+        count += popcountll(presence[wordIdx] & mask);
     }
     return count;
 }
@@ -821,14 +842,14 @@ int ColumnStore::nextOccupiedRow(int col, int startRow) const {
         // Check first partial word
         uint64_t word = chunk->presence[firstWord] & (~0ULL << firstBit);
         if (word) {
-            int bit = __builtin_ctzll(word);
+            int bit = ctzll(word);
             return chunk->baseRow + firstWord * 64 + bit;
         }
         // Check remaining words in this chunk
         for (int w = firstWord + 1; w < ColumnChunk::BITMAP_WORDS; ++w) {
             word = chunk->presence[w];
             if (word) {
-                int bit = __builtin_ctzll(word);
+                int bit = ctzll(word);
                 return chunk->baseRow + w * 64 + bit;
             }
         }
@@ -854,14 +875,14 @@ int ColumnStore::prevOccupiedRow(int col, int startRow) const {
         // Check last partial word (mask off bits above lastBit)
         uint64_t word = chunk->presence[lastWord] & ((2ULL << lastBit) - 1);
         if (word) {
-            int bit = 63 - __builtin_clzll(word);  // highest set bit
+            int bit = 63 - clzll(word);  // highest set bit
             return chunk->baseRow + lastWord * 64 + bit;
         }
         // Check remaining words in reverse
         for (int w = lastWord - 1; w >= 0; --w) {
             word = chunk->presence[w];
             if (word) {
-                int bit = 63 - __builtin_clzll(word);
+                int bit = 63 - clzll(word);
                 return chunk->baseRow + w * 64 + bit;
             }
         }
@@ -889,12 +910,12 @@ int ColumnStore::nextEmptyRow(int col, int startRow) const {
         uint64_t word = chunk->presence[firstWord] | ((1ULL << firstBit) - 1);  // fill lower bits
         if (~word) {  // has at least one zero bit at or above firstBit
             uint64_t inv = ~word;
-            int bit = __builtin_ctzll(inv);
+            int bit = ctzll(inv);
             if (bit < 64) return chunk->baseRow + firstWord * 64 + bit;
         }
         for (int w = firstWord + 1; w < ColumnChunk::BITMAP_WORDS; ++w) {
             if (~chunk->presence[w]) {
-                int bit = __builtin_ctzll(~chunk->presence[w]);
+                int bit = ctzll(~chunk->presence[w]);
                 return chunk->baseRow + w * 64 + bit;
             }
         }
@@ -929,12 +950,12 @@ int ColumnStore::prevEmptyRow(int col, int startRow) const {
         uint64_t word = chunk->presence[lastWord] | (~((2ULL << lastBit) - 1));  // fill upper bits
         if (~word) {
             uint64_t inv = ~word;
-            int bit = 63 - __builtin_clzll(inv);  // highest zero bit
+            int bit = 63 - clzll(inv);  // highest zero bit
             return chunk->baseRow + lastWord * 64 + bit;
         }
         for (int w = lastWord - 1; w >= 0; --w) {
             if (~chunk->presence[w]) {
-                int bit = 63 - __builtin_clzll(~chunk->presence[w]);
+                int bit = 63 - clzll(~chunk->presence[w]);
                 return chunk->baseRow + w * 64 + bit;
             }
         }
