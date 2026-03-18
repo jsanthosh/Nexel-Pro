@@ -242,17 +242,9 @@ jobs:
           wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy*.AppImage
 
-          # Create desktop file
+          # Create desktop file (printf avoids heredoc indentation issues)
           mkdir -p native/AppDir/usr/share/applications
-          cat > native/AppDir/usr/share/applications/nexel.desktop << 'DESKTOP'
-          [Desktop Entry]
-          Type=Application
-          Name=Nexel Pro
-          Comment=High-performance native spreadsheet application
-          Exec=NativeSpreadsheet
-          Icon=nexel
-          Categories=Office;Spreadsheet;
-          DESKTOP
+          printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Nexel Pro' 'Comment=High-performance native spreadsheet application' 'Exec=NativeSpreadsheet' 'Icon=nexel' 'Categories=Office;Spreadsheet;' > native/AppDir/usr/share/applications/nexel.desktop
 
           # Create icon
           mkdir -p native/AppDir/usr/share/icons/hicolor/256x256/apps
