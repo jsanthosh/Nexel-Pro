@@ -131,7 +131,76 @@ SpreadsheetModel::SpreadsheetModel(std::shared_ptr<Spreadsheet> spreadsheet, QOb
 
 int SpreadsheetModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) return 0;
+    if (!m_spreadsheet) return 100;
+    int total = m_spreadsheet->getRowCount();
+    if (total > VIRTUAL_THRESHOLD) {
+        // Return buffer window size (capped at remaining rows from window base)
+        return std::min(WINDOW_SIZE, total - m_windowBase);
+    }
+    return total;
+}
+
+bool SpreadsheetModel::isVirtualMode() const {
+    return m_spreadsheet && m_spreadsheet->getRowCount() > VIRTUAL_THRESHOLD;
+}
+
+int SpreadsheetModel::totalLogicalRows() const {
     return m_spreadsheet ? m_spreadsheet->getRowCount() : 100;
+}
+
+int SpreadsheetModel::toLogicalRow(int modelRow) const {
+    if (!isVirtualMode()) return modelRow;
+    return m_windowBase + modelRow;
+}
+
+int SpreadsheetModel::toModelRow(int logicalRow) const {
+    if (!isVirtualMode()) return logicalRow;
+    int modelRow = logicalRow - m_windowBase;
+    if (modelRow < 0 || modelRow >= rowCount()) return -1;
+    return modelRow;
+}
+
+int SpreadsheetModel::recenterWindow(int logicalRow) {
+    int total = totalLogicalRows();
+    int newBase = std::max(0, logicalRow - WINDOW_SIZE / 2);
+    int maxBase = std::max(0, total - WINDOW_SIZE);
+    newBase = std::min(newBase, maxBase);
+
+    int shift = newBase - m_windowBase;
+    if (shift == 0) return 0;
+
+    m_windowBase = newBase;
+
+    // Signal data change for all rows (Qt only repaints visible ones)
+    int rows = rowCount();
+    int cols = columnCount();
+    if (rows > 0 && cols > 0) {
+        emit dataChanged(index(0, 0), index(rows - 1, cols - 1));
+        emit headerDataChanged(Qt::Vertical, 0, rows - 1);
+    }
+    return shift;
+}
+
+void SpreadsheetModel::jumpToBase(int newBase) {
+    int total = totalLogicalRows();
+    int maxBase = std::max(0, total - WINDOW_SIZE);
+    newBase = std::clamp(newBase, 0, maxBase);
+    if (newBase == m_windowBase) return;
+
+    beginResetModel();
+    m_windowBase = newBase;
+    endResetModel();
+}
+
+// Legacy API — maps to window base for compatibility
+void SpreadsheetModel::setViewportStart(int logicalRow) {
+    recenterWindow(logicalRow);
+}
+
+void SpreadsheetModel::setViewportStartFast(int logicalRow) {
+    int total = totalLogicalRows();
+    int maxBase = std::max(0, total - WINDOW_SIZE);
+    m_windowBase = std::clamp(logicalRow, 0, maxBase);
 }
 
 int SpreadsheetModel::columnCount(const QModelIndex& parent) const {
@@ -144,19 +213,23 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
         return QVariant();
     }
 
+    // Translate model row to logical row (virtual windowing)
+    int logicalRow = toLogicalRow(index.row());
+    int col = index.column();
+
     // Use getCellIfExists to avoid creating Cell objects for empty cells
-    auto cell = m_spreadsheet->getCellIfExists(index.row(), index.column());
+    auto cell = m_spreadsheet->getCellIfExists(logicalRow, col);
 
     // Fast path for empty cells — only check table styling, skip everything else
     if (!cell) {
         switch (role) {
             case Qt::BackgroundRole: {
-                auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
+                auto* table = m_spreadsheet->getTableAt(logicalRow, col);
                 if (table) {
                     int startRow = table->range.getStart().row;
-                    if (table->hasHeaderRow && index.row() == startRow)
+                    if (table->hasHeaderRow && logicalRow == startRow)
                         return table->theme.headerBg;
-                    int dataRow = index.row() - startRow - (table->hasHeaderRow ? 1 : 0);
+                    int dataRow = logicalRow - startRow - (table->hasHeaderRow ? 1 : 0);
                     if (table->bandedRows)
                         return (dataRow % 2 == 0) ? table->theme.bandedRow1 : table->theme.bandedRow2;
                     return table->theme.bandedRow1;
@@ -164,8 +237,8 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                 return QVariant();
             }
             case Qt::FontRole: {
-                auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
-                if (table && table->hasHeaderRow && index.row() == table->range.getStart().row) {
+                auto* table = m_spreadsheet->getTableAt(logicalRow, col);
+                if (table && table->hasHeaderRow && logicalRow == table->range.getStart().row) {
                     QFont font("Arial", 11);
                     font.setBold(true);
                     return font;
@@ -173,8 +246,8 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                 return QVariant();
             }
             case Qt::ForegroundRole: {
-                auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
-                if (table && table->hasHeaderRow && index.row() == table->range.getStart().row)
+                auto* table = m_spreadsheet->getTableAt(logicalRow, col);
+                if (table && table->hasHeaderRow && logicalRow == table->range.getStart().row)
                     return table->theme.headerFg;
                 return QVariant();
             }
@@ -208,7 +281,7 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             if (m_showFormulas && cell->getType() == CellType::Formula) {
                 return cell->getFormula();
             }
-            auto value = m_spreadsheet->getCellValue(CellAddress(index.row(), index.column()));
+            auto value = m_spreadsheet->getCellValue(CellAddress(logicalRow, col));
             if (baseStyle.numberFormat != "General" && !value.toString().isEmpty()) {
                 NumberFormatOptions opts;
                 opts.type = NumberFormat::typeFromString(baseStyle.numberFormat);
@@ -226,7 +299,7 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             }
             // For date-formatted cells, show the date string in the editor (not serial number)
             if (baseStyle.numberFormat == "Date") {
-                auto value = m_spreadsheet->getCellValue(CellAddress(index.row(), index.column()));
+                auto value = m_spreadsheet->getCellValue(CellAddress(logicalRow, col));
                 bool ok;
                 double serial = value.toDouble(&ok);
                 if (ok && serial > 0 && serial < 200000) {
@@ -236,7 +309,7 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                     }
                 }
             }
-            return m_spreadsheet->getCellValue(CellAddress(index.row(), index.column()));
+            return m_spreadsheet->getCellValue(CellAddress(logicalRow, col));
         }
         case Qt::FontRole: {
             // Fast path: cells with default style (vast majority) — return cached default font
@@ -244,7 +317,7 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                 static const QFont s_defaultFont("Arial", 11);
                 return s_defaultFont;
             }
-            CellAddress addr(index.row(), index.column());
+            CellAddress addr(logicalRow, col);
             auto cellValue = m_spreadsheet->getCellValue(addr);
             CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle);
 
@@ -255,8 +328,8 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             font.setUnderline(style.underline);
             font.setStrikeOut(style.strikethrough);
             // Table header row: force bold
-            auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
-            if (table && table->hasHeaderRow && index.row() == table->range.getStart().row) {
+            auto* table = m_spreadsheet->getTableAt(logicalRow, col);
+            if (table && table->hasHeaderRow && logicalRow == table->range.getStart().row) {
                 font.setBold(true);
             }
             return font;
@@ -266,11 +339,11 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             if (!hasCustomStyle && m_spreadsheet->getConditionalFormatting().getAllRules().empty()) {
                 return QVariant(); // Default foreground (black)
             }
-            CellAddress addr(index.row(), index.column());
+            CellAddress addr(logicalRow, col);
             auto cellValue = m_spreadsheet->getCellValue(addr);
             CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle);
-            auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
-            if (table && table->hasHeaderRow && index.row() == table->range.getStart().row) {
+            auto* table = m_spreadsheet->getTableAt(logicalRow, col);
+            if (table && table->hasHeaderRow && logicalRow == table->range.getStart().row) {
                 return table->theme.headerFg;
             }
             QColor fg(style.foregroundColor);
@@ -281,13 +354,13 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
         }
         case Qt::BackgroundRole: {
             // Check table first (common case for styled regions)
-            auto* table = m_spreadsheet->getTableAt(index.row(), index.column());
+            auto* table = m_spreadsheet->getTableAt(logicalRow, col);
             if (table) {
                 int tableStartRow = table->range.getStart().row;
-                if (table->hasHeaderRow && index.row() == tableStartRow) {
+                if (table->hasHeaderRow && logicalRow == tableStartRow) {
                     return table->theme.headerBg;
                 }
-                int dataRow = index.row() - tableStartRow - (table->hasHeaderRow ? 1 : 0);
+                int dataRow = logicalRow - tableStartRow - (table->hasHeaderRow ? 1 : 0);
                 if (table->bandedRows) {
                     return (dataRow % 2 == 0) ? table->theme.bandedRow1 : table->theme.bandedRow2;
                 }
@@ -295,9 +368,9 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             }
             // Highlight invalid cells with red tint
             if (m_highlightInvalid) {
-                CellAddress addr(index.row(), index.column());
+                CellAddress addr(logicalRow, col);
                 QString cellText = m_spreadsheet->getCellValue(addr).toString();
-                if (!cellText.isEmpty() && !m_spreadsheet->validateCell(index.row(), index.column(), cellText)) {
+                if (!cellText.isEmpty() && !m_spreadsheet->validateCell(logicalRow, col, cellText)) {
                     return QColor(255, 200, 200);
                 }
             }
@@ -305,7 +378,7 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             if (!hasCustomStyle && m_spreadsheet->getConditionalFormatting().getAllRules().empty()) {
                 return QVariant(); // Default background (white)
             }
-            CellAddress addr(index.row(), index.column());
+            CellAddress addr(logicalRow, col);
             auto cellValue = m_spreadsheet->getCellValue(addr);
             CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle);
             QColor bg(style.backgroundColor);
@@ -345,7 +418,7 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                     baseStyle.numberFormat == "Scientific" || baseStyle.numberFormat == "Fraction") {
                     isRightAligned = true;
                 } else {
-                    auto value = m_spreadsheet->getCellValue(CellAddress(index.row(), index.column()));
+                    auto value = m_spreadsheet->getCellValue(CellAddress(logicalRow, col));
                     if (value.typeId() == QMetaType::Double || value.typeId() == QMetaType::Int ||
                         value.typeId() == QMetaType::LongLong || value.typeId() == QMetaType::Float) {
                         isRightAligned = true;
@@ -401,7 +474,7 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             return cell->getStyle().textRotation;
         }
         case SparklineRole: { // Sparkline render data
-            auto* sparkline = m_spreadsheet->getSparkline(CellAddress(index.row(), index.column()));
+            auto* sparkline = m_spreadsheet->getSparkline(CellAddress(logicalRow, col));
             if (!sparkline) return QVariant();
 
             SparklineRenderData rd;
@@ -442,7 +515,8 @@ QVariant SpreadsheetModel::headerData(int section, Qt::Orientation orientation, 
         if (orientation == Qt::Horizontal) {
             return columnIndexToLetter(section);
         } else {
-            return section + 1;
+            // In virtual mode, show logical row number (viewport offset + section)
+            return toLogicalRow(section) + 1;
         }
     }
 
@@ -459,7 +533,8 @@ Qt::ItemFlags SpreadsheetModel::flags(const QModelIndex& index) const {
     }
     // Spill cells are non-editable (controlled by parent formula)
     if (m_spreadsheet) {
-        auto cell = m_spreadsheet->getCellIfExists(index.row(), index.column());
+        int logicalRow = toLogicalRow(index.row());
+        auto cell = m_spreadsheet->getCellIfExists(logicalRow, index.column());
         if (cell && cell->isSpillCell()) {
             return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
         }
@@ -472,7 +547,9 @@ bool SpreadsheetModel::setData(const QModelIndex& index, const QVariant& value, 
         return false;
     }
 
-    CellAddress addr(index.row(), index.column());
+    int logicalRow = toLogicalRow(index.row());
+    int col = index.column();
+    CellAddress addr(logicalRow, col);
     QString strValue = value.toString();
 
     // Auto-complete unmatched parentheses in formulas (like Excel)
@@ -490,8 +567,8 @@ bool SpreadsheetModel::setData(const QModelIndex& index, const QVariant& value, 
 
     // Data validation check (skip for formulas)
     if (!strValue.startsWith("=") && !m_suppressUndo) {
-        if (!m_spreadsheet->validateCell(index.row(), index.column(), strValue)) {
-            const auto* rule = m_spreadsheet->getValidationAt(index.row(), index.column());
+        if (!m_spreadsheet->validateCell(logicalRow, col, strValue)) {
+            const auto* rule = m_spreadsheet->getValidationAt(logicalRow, col);
             if (rule && rule->showErrorAlert) {
                 QString errorMsg = rule->errorMessage.isEmpty()
                     ? "The value you entered is not valid.\nA user has restricted values that can be entered into this cell."
@@ -521,7 +598,7 @@ bool SpreadsheetModel::setData(const QModelIndex& index, const QVariant& value, 
     }
 
     // If the cell didn't exist before and there's a sheet-level default style, apply it
-    bool wasNew = (m_spreadsheet->getCellIfExists(addr) == nullptr);
+    bool wasNew = !m_spreadsheet->getCellIfExists(addr);
 
     // Auto-detect date input (before setting value, so we can convert to serial)
     QDate parsedDate;

@@ -1,5 +1,6 @@
 #include "CellDelegate.h"
 #include "SpreadsheetView.h"
+#include "SpreadsheetModel.h"
 #include "FormulaPopupDelegate.h"
 #include "Theme.h"
 #include "../core/FormulaMetadata.h"
@@ -738,9 +739,18 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
             painter->drawText(textRect, alignment, text);
             painter->setFont(font); // restore
         } else if (rotation == 0) {
-            // Overflow mode (default): just draw text normally (no clip expansion)
-            // Overflow rendering into neighbor cells is handled below for empty cells
-            painter->drawText(textRect, alignment, text);
+            // Overflow mode (default): text overflows into empty neighbors.
+            // Numbers: show ### when too wide (Excel behavior) — no overflow.
+            QFontMetrics fm(font);
+            int textW = fm.horizontalAdvance(text);
+            bool isNumeric = (alignment & Qt::AlignRight);
+            if (isNumeric && textW > textRect.width() && textRect.width() > 10) {
+                // Number too wide — show ### like Excel
+                QString hashes = QString(textRect.width() / fm.horizontalAdvance('#'), '#');
+                painter->drawText(textRect, alignment, hashes);
+            } else {
+                painter->drawText(textRect, alignment, text);
+            }
         } else if (rotation == 270) {
             // Vertical stacked text: draw each character on its own line
             QFontMetrics fm(font);
@@ -816,14 +826,19 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         QString cellText = index.data(Qt::DisplayRole).toString();
         if (cellText.isEmpty() && m_spreadsheetView) {
             auto sp = m_spreadsheetView->getSpreadsheet();
-            if (sp) {
-                int row = index.row();
+            auto* mdl = m_spreadsheetView->getModel();
+            if (sp && mdl) {
+                int row = mdl->toLogicalRow(index.row());
                 int col = index.column();
                 // Search leftward for a source cell with overflowing text
-                for (int srcCol = col - 1; srcCol >= 0; --srcCol) {
+                for (int srcCol = col - 1; srcCol >= std::max(0, col - 20); --srcCol) {
                     auto srcCell = sp->getCellIfExists(row, srcCol);
                     if (!srcCell || srcCell->getType() == CellType::Empty) continue;
-                    // Found a non-empty cell — check if it overflows
+                    // Numbers never overflow (they show ### instead)
+                    auto srcType = srcCell->getType();
+                    if (srcType == CellType::Number || srcType == CellType::Date ||
+                        srcType == CellType::Formula) break;
+                    // Found a non-empty text cell — check if it overflows
                     const auto& srcStyle = srcCell->getStyle();
                     if (srcStyle.textOverflow != TextOverflowMode::Overflow) break;
                     // Check that all cells between source and current are empty

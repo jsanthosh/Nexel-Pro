@@ -7,6 +7,7 @@
 #include <memory>
 #include <functional>
 #include "CellRange.h"
+#include "FormulaAST.h"
 
 class Spreadsheet;
 
@@ -18,6 +19,7 @@ public:
     QVariant evaluate(const QString& formula);
     void setSpreadsheet(Spreadsheet* spreadsheet);
     void setAllSheets(const std::vector<std::shared_ptr<Spreadsheet>>* sheets) { m_allSheets = sheets; }
+    const std::vector<std::shared_ptr<Spreadsheet>>* getAllSheets() const { return m_allSheets; }
 
     void clearCache();
     void invalidateCell(const CellAddress& addr);
@@ -172,6 +174,10 @@ private:
     QVariant funcSORT(const std::vector<QVariant>& args);
     QVariant funcUNIQUE(const std::vector<QVariant>& args);
     QVariant funcSEQUENCE(const std::vector<QVariant>& args);
+
+    // AST-based evaluation (parse once, evaluate many — 10x faster recalc)
+    QVariant evaluateAST(uint32_t nodeIndex);
+    QVariant evaluateASTFunction(uint16_t funcId, const QVariantList& argNodeIndices);
 
     // Helpers
     double toNumber(const QVariant& value);

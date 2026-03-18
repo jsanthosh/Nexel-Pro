@@ -95,7 +95,7 @@ int parseRows(const char* data, qint64 dataSize, qint64& pos, char delim,
 
                 int fLen = static_cast<int>(fEnd - fStart);
                 if (fLen > 0) {
-                    Cell* cell = spreadsheet->getOrCreateCellFast(row, col);
+                    auto cell = spreadsheet->getOrCreateCellFast(row, col);
 
                     char firstCh = *fStart;
                     bool isNum = false;
@@ -303,8 +303,10 @@ bool CsvService::exportToFile(const Spreadsheet& spreadsheet, const QString& fil
     int maxRow = spreadsheet.getMaxRow();
     int maxCol = spreadsheet.getMaxColumn();
 
-    QByteArray output;
-    output.reserve(static_cast<qsizetype>((maxRow + 1) * (maxCol + 1) * 10));
+    // Write in chunks to avoid huge memory allocation and allow streaming
+    constexpr int FLUSH_INTERVAL = 10000; // flush every 10K rows
+    QByteArray buffer;
+    buffer.reserve(FLUSH_INTERVAL * (maxCol + 1) * 15);
 
     for (int r = 0; r <= maxRow; ++r) {
         int lastNonEmpty = -1;
@@ -317,7 +319,7 @@ bool CsvService::exportToFile(const Spreadsheet& spreadsheet, const QString& fil
         }
 
         for (int c = 0; c <= lastNonEmpty; ++c) {
-            if (c > 0) output.append(',');
+            if (c > 0) buffer.append(',');
 
             auto cell = spreadsheet.getCellIfExists(r, c);
             if (cell && cell->getType() != CellType::Empty) {
@@ -336,18 +338,28 @@ bool CsvService::exportToFile(const Spreadsheet& spreadsheet, const QString& fil
                 QString str = value.toString();
                 if (str.contains(',') || str.contains('"') || str.contains('\n')) {
                     str.replace('"', "\"\"");
-                    output.append('"');
-                    output.append(str.toUtf8());
-                    output.append('"');
+                    buffer.append('"');
+                    buffer.append(str.toUtf8());
+                    buffer.append('"');
                 } else {
-                    output.append(str.toUtf8());
+                    buffer.append(str.toUtf8());
                 }
             }
         }
-        output.append('\n');
+        buffer.append('\n');
+
+        // Flush buffer periodically to avoid huge memory usage
+        if ((r + 1) % FLUSH_INTERVAL == 0) {
+            file.write(buffer);
+            buffer.clear();
+        }
     }
 
-    file.write(output);
+    // Write remaining
+    if (!buffer.isEmpty()) {
+        file.write(buffer);
+    }
+
     file.close();
     return true;
 }

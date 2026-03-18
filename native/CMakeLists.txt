@@ -92,6 +92,17 @@ set(CORE_SOURCES
     src/core/DocumentTheme.h
     src/core/StringPool.cpp
     src/core/StringPool.h
+    src/core/ColumnStore.cpp
+    src/core/ColumnStore.h
+    src/core/StyleTable.cpp
+    src/core/StyleTable.h
+    src/core/CellProxy.h
+    src/core/FormulaAST.cpp
+    src/core/FormulaAST.h
+    src/core/RecalcScheduler.cpp
+    src/core/RecalcScheduler.h
+    src/core/FilterEngine.cpp
+    src/core/FilterEngine.h
 )
 
 # Database Sources
@@ -114,6 +125,8 @@ set(SERVICES_SOURCES
     src/services/XlsxService.h
     src/services/AutoSaveService.cpp
     src/services/AutoSaveService.h
+    src/services/IncrementalSaveService.cpp
+    src/services/IncrementalSaveService.h
 )
 
 # UI Sources
@@ -169,6 +182,7 @@ set(UI_SOURCES
     src/ui/GoalSeekDialog.h
     src/ui/Theme.cpp
     src/ui/Theme.h
+    src/ui/VirtualScrollBar.h
 )
 
 # Data2App ChartView (optional, macOS only — auto-detected)
@@ -335,6 +349,37 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
             COMMENT "Stripping debug symbols from binary")
     endif()
 endif()
+
+# ============================================================================
+# Benchmark target (optional — not built by default)
+# Build with: cmake --build build --target benchmark_20m
+# ============================================================================
+add_executable(benchmark_20m EXCLUDE_FROM_ALL
+    benchmarks/benchmark_20m.cpp
+    src/core/ColumnStore.cpp
+    src/core/ColumnStore.h
+    src/core/StyleTable.cpp
+    src/core/StyleTable.h
+    src/core/StringPool.cpp
+    src/core/StringPool.h
+    src/core/CellRange.cpp
+    src/core/CellRange.h
+    src/core/Cell.cpp
+    src/core/Cell.h
+    src/core/FilterEngine.cpp
+    src/core/FilterEngine.h
+    src/core/FormulaAST.cpp
+    src/core/FormulaAST.h
+    src/core/DependencyGraph.cpp
+    src/core/DependencyGraph.h
+)
+target_link_libraries(benchmark_20m
+    Qt6::Core
+    Threads::Threads
+)
+target_include_directories(benchmark_20m PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+)
 
 # Install
 install(TARGETS NativeSpreadsheet

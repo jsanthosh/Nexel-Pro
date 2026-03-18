@@ -7,6 +7,7 @@
 #include <QMenu>
 #include <QVariantAnimation>
 #include <QTimer>
+#include <QScrollBar>
 #include <memory>
 #include <functional>
 #include "../core/Cell.h"
@@ -148,6 +149,10 @@ public:
                                 const QColor& categoryColor);
     void clearChartRangeHighlight();
 
+    // Virtual scrollbar management (for large datasets)
+    void refreshVirtualScrollBar();
+    void scrollTo(const QModelIndex& index, ScrollHint hint = EnsureVisible) override;
+
     // UI Operations
     void refreshView();
     void zoomIn();
@@ -191,6 +196,7 @@ signals:
     void cellReferenceReplaced(const QString& newRef);
     void pivotFilterChanged(int filterIndex, QStringList selectedValues);
     void requestSwitchToSheet(int index);
+    void virtualViewportChanged();  // emitted when virtual scroll shifts viewport
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -199,6 +205,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void scrollContentsBy(int dx, int dy) override;
+    void wheelEvent(QWheelEvent* event) override;
     void currentChanged(const QModelIndex& current, const QModelIndex& previous) override;
     void selectionChanged(const QItemSelection& selected, const QItemSelection& deselected) override;
     bool viewportEvent(QEvent* event) override;
@@ -211,6 +219,9 @@ private slots:
     void onDataChanged(const QModelIndex& topLeft, const QModelIndex& bottomRight);
     void onHorizontalSectionResized(int logicalIndex, int oldSize, int newSize);
     void onVerticalSectionResized(int logicalIndex, int oldSize, int newSize);
+
+    // Navigate to a logical row in virtual mode (updates viewport if needed)
+    void navigateToLogicalRow(int logicalRow, int col);
 
 private:
     std::shared_ptr<Spreadsheet> m_spreadsheet;
@@ -235,6 +246,18 @@ private:
     };
     std::vector<std::vector<ClipboardCell>> m_internalClipboard;
     QString m_internalClipboardText;
+
+    // Virtual scroll: independent scrollbar for full-range navigation
+    QScrollBar* m_virtualScrollBar = nullptr;
+    bool m_recentering = false;  // guard to prevent recursive recenter in scrollContentsBy
+    int m_virtualFocusLogicalRow = -1;  // logical row of focused cell (persists across viewport shifts)
+    int m_virtualFocusCol = -1;
+    void setupVirtualScrollBar();
+    void updateVirtualScrollBarRange();
+
+    // Virtual scroll debounce
+    QTimer* m_scrollDebounceTimer = nullptr;
+    int m_pendingViewportStart = -1;
 
     // Fill series state
     bool m_fillDragging = false;

@@ -60,6 +60,13 @@ public:
     // Returns a vector of sheets (one per worksheet in the xlsx file)
     static XlsxImportResult importFromFile(const QString& filePath);
 
+    // Streaming import with progress callback.
+    // The callback receives (rowsParsed, sheetIndex) and can be used for progressive display.
+    // Auto-recalculation is deferred until all sheets are loaded.
+    using ImportProgressCallback = std::function<void(int rowsParsed, int sheetIndex)>;
+    static XlsxImportResult importFromFileStreaming(const QString& filePath,
+                                                     ImportProgressCallback progress = nullptr);
+
     // Export sheets to XLSX with all formatting (optionally including chart configs)
     static bool exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& sheets, const QString& filePath,
                              const std::vector<NexelChartExport>& charts = {});
@@ -148,6 +155,10 @@ private:
                                      const std::map<int, QString>& customNumFmts);
     static void parseSheet(const QByteArray& xmlData, const QStringList& sharedStrings,
                            const std::vector<CellStyle>& styles, Spreadsheet* sheet);
+    // Streaming variant with progress callback (reports every N rows)
+    static void parseSheetStreaming(const QByteArray& xmlData, const QStringList& sharedStrings,
+                                    const std::vector<CellStyle>& styles, Spreadsheet* sheet,
+                                    ImportProgressCallback progress, int sheetIndex);
     static int columnLetterToIndex(const QString& letters);
     static QString mapNumFmtId(int id, const std::map<int, QString>& customNumFmts);
     static bool isDateFormatCode(const QString& formatCode);

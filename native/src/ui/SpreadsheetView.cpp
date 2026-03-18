@@ -92,7 +92,37 @@ void SpreadsheetView::setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet) {
     }
 
     m_model = new SpreadsheetModel(m_spreadsheet, this);
+
+    // In virtual mode, Qt sees a WINDOW_SIZE buffer of rows and scrolls natively.
+    // A separate virtual scrollbar shows position in the full dataset.
+    if (m_model->isVirtualMode()) {
+        int rh = verticalHeader()->defaultSectionSize();
+        if (rh <= 0) rh = 25;
+        int visible = viewport()->height() / rh + 2;
+        m_model->setVisibleRows(std::max(20, visible));
+        // Use Qt's native scrollbar for smooth pixel scrolling within the buffer
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    } else {
+        setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    }
+
     setModel(m_model);
+
+    // Set up virtual scrollbar for full-range navigation
+    if (m_model->isVirtualMode()) {
+        setupVirtualScrollBar();
+    } else if (m_virtualScrollBar) {
+        m_virtualScrollBar->hide();
+    }
+
+    // Auto-size row header width based on max row number
+    if (m_spreadsheet) {
+        int totalRows = m_spreadsheet->getRowCount();
+        QString maxLabel = QString::number(totalRows);
+        QFontMetrics fm(verticalHeader()->font());
+        int labelWidth = fm.horizontalAdvance(maxLabel) + 20; // padding
+        verticalHeader()->setFixedWidth(std::max(40, labelWidth));
+    }
 
     // Re-apply merged regions from the new spreadsheet
     if (m_spreadsheet) {
@@ -108,6 +138,52 @@ void SpreadsheetView::setSpreadsheet(std::shared_ptr<Spreadsheet> spreadsheet) {
 
 std::shared_ptr<Spreadsheet> SpreadsheetView::getSpreadsheet() const {
     return m_spreadsheet;
+}
+
+void SpreadsheetView::refreshVirtualScrollBar() {
+    if (m_model && m_model->isVirtualMode()) {
+        setupVirtualScrollBar();
+    }
+}
+
+void SpreadsheetView::setupVirtualScrollBar() {
+    if (!m_virtualScrollBar) {
+        m_virtualScrollBar = new QScrollBar(Qt::Vertical, this);
+        connect(m_virtualScrollBar, &QScrollBar::valueChanged, this, [this](int value) {
+            if (!m_model || !m_model->isVirtualMode()) return;
+            // Jump the window to show the target logical row
+            m_model->jumpToBase(value);
+            // Scroll Qt's view to the top of the window
+            verticalScrollBar()->setValue(0);
+            // Update focus tracking
+            if (m_virtualFocusLogicalRow >= 0) {
+                int newModelRow = m_model->toModelRow(m_virtualFocusLogicalRow);
+                if (newModelRow >= 0 && newModelRow < m_model->rowCount()) {
+                    QModelIndex newIdx = m_model->index(newModelRow, m_virtualFocusCol);
+                    selectionModel()->setCurrentIndex(newIdx, QItemSelectionModel::ClearAndSelect);
+                } else {
+                    selectionModel()->clearSelection();
+                    selectionModel()->clearCurrentIndex();
+                }
+            }
+            emit virtualViewportChanged();
+        });
+    }
+    updateVirtualScrollBarRange();
+    m_virtualScrollBar->setValue(m_model ? m_model->viewportStart() : 0);
+    m_virtualScrollBar->show();
+    // Position it on the right edge of the widget
+    int sbWidth = m_virtualScrollBar->sizeHint().width();
+    m_virtualScrollBar->setGeometry(width() - sbWidth, 0, sbWidth, height());
+}
+
+void SpreadsheetView::updateVirtualScrollBarRange() {
+    if (!m_virtualScrollBar || !m_model) return;
+    int totalRows = m_model->totalLogicalRows();
+    int visRows = m_model->visibleRows();
+    m_virtualScrollBar->setRange(0, std::max(0, totalRows - visRows));
+    m_virtualScrollBar->setPageStep(visRows);
+    m_virtualScrollBar->setSingleStep(3);
 }
 
 void SpreadsheetView::initializeView() {
@@ -311,7 +387,8 @@ void SpreadsheetView::setupHeaderContextMenus() {
 void SpreadsheetView::emitCellSelected(const QModelIndex& index) {
     if (!index.isValid() || !m_spreadsheet) return;
 
-    CellAddress addr(index.row(), index.column());
+    int row = m_model ? m_model->toLogicalRow(index.row()) : index.row();
+    CellAddress addr(row, index.column());
     auto cell = m_spreadsheet->getCell(addr);
 
     QString content;
@@ -344,6 +421,12 @@ void SpreadsheetView::emitCellSelected(const QModelIndex& index) {
 
 void SpreadsheetView::currentChanged(const QModelIndex& current, const QModelIndex& previous) {
     QTableView::currentChanged(current, previous);
+
+    // Update virtual focus tracking when user clicks/navigates to a new cell
+    if (m_model && m_model->isVirtualMode() && current.isValid()) {
+        m_virtualFocusLogicalRow = m_model->toLogicalRow(current.row());
+        m_virtualFocusCol = current.column();
+    }
 
     // Force repaint of previous cell to clear its focus border and fill handle
     if (previous.isValid()) {
@@ -2631,6 +2714,121 @@ void SpreadsheetView::updateFreezeGeometry() {
 void SpreadsheetView::resizeEvent(QResizeEvent* event) {
     QTableView::resizeEvent(event);
     updateFreezeGeometry();
+
+    // Update visible row tracking and reposition virtual scrollbar
+    if (m_model && m_model->isVirtualMode()) {
+        int rh = verticalHeader()->defaultSectionSize();
+        if (rh <= 0) rh = 25;
+        int visible = viewport()->height() / rh + 2;
+        m_model->setVisibleRows(std::max(20, visible));
+        // Reposition virtual scrollbar on resize
+        if (m_virtualScrollBar) {
+            int sbWidth = m_virtualScrollBar->sizeHint().width();
+            m_virtualScrollBar->setGeometry(width() - sbWidth, 0, sbWidth, height());
+        }
+    }
+}
+
+void SpreadsheetView::scrollTo(const QModelIndex& index, ScrollHint hint) {
+    // With the buffer window approach, Qt's native scrollTo works within the buffer.
+    QTableView::scrollTo(index, hint);
+}
+
+void SpreadsheetView::scrollContentsBy(int dx, int dy) {
+    // Let Qt do native smooth pixel-level scrolling
+    QTableView::scrollContentsBy(dx, dy);
+
+    if (m_recentering) return;
+
+    // In virtual mode, check if we need to recenter the buffer window
+    if (m_model && m_model->isVirtualMode() && dy != 0) {
+        int topModelRow = rowAt(0);
+        if (topModelRow < 0) topModelRow = 0;
+        int windowRows = m_model->rowCount();
+        int margin = SpreadsheetModel::RECENTER_MARGIN;
+
+        bool needRecenter = false;
+        if (topModelRow > windowRows - margin && m_model->windowBase() + windowRows < m_model->totalLogicalRows()) {
+            needRecenter = true;  // approaching bottom of window
+        }
+        if (topModelRow < margin && m_model->windowBase() > 0) {
+            needRecenter = true;  // approaching top of window
+        }
+
+        if (needRecenter) {
+            int logicalTopRow = m_model->toLogicalRow(topModelRow);
+            m_recentering = true;
+
+            int shift = m_model->recenterWindow(logicalTopRow);
+            if (shift != 0) {
+                // Compensate Qt's scroll position so the view doesn't jump
+                int rh = verticalHeader()->defaultSectionSize();
+                if (rh <= 0) rh = 25;
+                auto* vsb = verticalScrollBar();
+                vsb->setValue(vsb->value() - shift * rh);
+            }
+
+            m_recentering = false;
+        }
+
+        // Update virtual scrollbar position to reflect current logical position
+        if (m_virtualScrollBar) {
+            int logicalTop = m_model->toLogicalRow(rowAt(0));
+            m_virtualScrollBar->blockSignals(true);
+            m_virtualScrollBar->setValue(logicalTop);
+            m_virtualScrollBar->blockSignals(false);
+        }
+    }
+}
+
+void SpreadsheetView::wheelEvent(QWheelEvent* event) {
+    if (m_model && m_model->isVirtualMode()) {
+        // At dataset boundaries, block momentum to prevent bounce
+        auto phase = event->phase();
+        if (phase == Qt::ScrollMomentum) {
+            int topModelRow = rowAt(0);
+            int logicalTop = m_model->toLogicalRow(topModelRow < 0 ? 0 : topModelRow);
+            if (logicalTop <= 0 || logicalTop >= m_model->totalLogicalRows() - m_model->visibleRows()) {
+                event->accept();
+                return;
+            }
+        }
+    }
+    // Let Qt handle scrolling natively — smooth pixel blitting
+    QTableView::wheelEvent(event);
+}
+
+void SpreadsheetView::navigateToLogicalRow(int logicalRow, int col) {
+    if (!m_model) return;
+
+    if (m_model->isVirtualMode()) {
+        // Check if target row is within current buffer window
+        int modelRow = m_model->toModelRow(logicalRow);
+        if (modelRow < 0 || modelRow >= m_model->rowCount()) {
+            // Row not in current window — jump window so target is centered
+            m_model->jumpToBase(std::max(0, logicalRow - SpreadsheetModel::WINDOW_SIZE / 2));
+            verticalScrollBar()->setValue(0);
+            modelRow = m_model->toModelRow(logicalRow);
+            // Update virtual scrollbar
+            if (m_virtualScrollBar) {
+                m_virtualScrollBar->blockSignals(true);
+                m_virtualScrollBar->setValue(logicalRow);
+                m_virtualScrollBar->blockSignals(false);
+            }
+        }
+
+        QModelIndex target = model()->index(modelRow, col);
+        if (target.isValid()) {
+            selectionModel()->setCurrentIndex(target, QItemSelectionModel::ClearAndSelect);
+            scrollTo(target);
+        }
+    } else {
+        QModelIndex target = model()->index(logicalRow, col);
+        if (target.isValid()) {
+            selectionModel()->setCurrentIndex(target, QItemSelectionModel::ClearAndSelect);
+            scrollTo(target);
+        }
+    }
 }
 
 void SpreadsheetView::zoomIn() {
@@ -2824,60 +3022,53 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
     }
 
     // ===== Ctrl/Cmd+Arrow: Jump to edge of data region =====
-    // Uses sparse cell map scan + binary search instead of row-by-row iteration.
-    // This makes navigation O(total_cells) instead of O(grid_rows), critical for 1M+ row sheets.
-    // Skip during bulk loading — background thread is mutating m_cells concurrently.
+    // Uses ColumnStore direct queries — O(1) per column check, no full cell scan.
+    // Skip during bulk loading — background thread is mutating data concurrently.
     if (ctrl && !shift && !m_bulkLoading &&
         (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
                            event->key() == Qt::Key_Left || event->key() == Qt::Key_Right)) {
         QModelIndex cur = currentIndex();
         if (!cur.isValid() || !m_spreadsheet) { QTableView::keyPressEvent(event); return; }
 
-        int row = cur.row();
+        // Convert model row to logical row for virtual mode
+        int logicalRow = m_model ? m_model->toLogicalRow(cur.row()) : cur.row();
         int col = cur.column();
         int maxRow = m_spreadsheet->getRowCount() - 1;
         int maxCol = m_spreadsheet->getColumnCount() - 1;
 
         if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down) {
-            auto occupied = m_spreadsheet->getOccupiedRowsInColumn(col);
+            // Direct chunk bitmap queries — O(chunks) not O(cells), no index building
+            auto& cs = m_spreadsheet->getColumnStore();
             if (event->key() == Qt::Key_Down) {
-                if (row < maxRow) {
-                    auto it = std::upper_bound(occupied.begin(), occupied.end(), row);
-                    bool nextHasData = (it != occupied.end() && *it == row + 1);
+                if (logicalRow < maxRow) {
+                    bool nextHasData = cs.hasCell(logicalRow + 1, col);
                     if (nextHasData) {
-                        // Walk contiguous data block downward
-                        int last = row + 1;
-                        ++it;
-                        while (it != occupied.end() && *it == last + 1) { last = *it; ++it; }
-                        row = last;
+                        // Jump to end of contiguous filled region
+                        int emptyRow = cs.nextEmptyRow(col, logicalRow + 1);
+                        logicalRow = std::min(emptyRow - 1, maxRow);
                     } else {
-                        // Jump to next non-empty row, or grid bottom
-                        row = (it != occupied.end()) ? *it : maxRow;
+                        // Jump to next occupied cell
+                        int next = cs.nextOccupiedRow(col, logicalRow + 1);
+                        logicalRow = (next >= 0) ? next : maxRow;
                     }
                 }
             } else { // Key_Up
-                if (row > 0) {
-                    auto prevIt = std::lower_bound(occupied.begin(), occupied.end(), row - 1);
-                    bool prevHasData = (prevIt != occupied.end() && *prevIt == row - 1);
+                if (logicalRow > 0) {
+                    bool prevHasData = cs.hasCell(logicalRow - 1, col);
                     if (prevHasData) {
-                        // Walk contiguous data block upward
-                        int first = row - 1;
-                        while (prevIt != occupied.begin()) {
-                            auto before = std::prev(prevIt);
-                            if (*before != first - 1) break;
-                            first = *before;
-                            prevIt = before;
-                        }
-                        row = first;
+                        // Jump to start of contiguous filled region
+                        int emptyRow = cs.prevEmptyRow(col, logicalRow - 1);
+                        logicalRow = std::max(emptyRow + 1, 0);
                     } else {
-                        // Jump to prev non-empty row, or grid top
-                        auto it = std::lower_bound(occupied.begin(), occupied.end(), row);
-                        row = (it != occupied.begin()) ? *std::prev(it) : 0;
+                        // Jump to previous occupied cell
+                        int prev = cs.prevOccupiedRow(col, logicalRow - 1);
+                        logicalRow = (prev >= 0) ? prev : 0;
                     }
                 }
             }
         } else { // Key_Left or Key_Right
-            auto occupied = m_spreadsheet->getOccupiedColsInRow(row);
+            // Horizontal navigation — only ~20 columns, always fast
+            auto occupied = m_spreadsheet->getOccupiedColsInRow(logicalRow);
             if (event->key() == Qt::Key_Right) {
                 if (col < maxCol) {
                     auto it = std::upper_bound(occupied.begin(), occupied.end(), col);
@@ -2912,12 +3103,7 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
             }
         }
 
-        QModelIndex target = model()->index(row, col);
-        if (target.isValid()) {
-            selectionModel()->setCurrentIndex(target,
-                QItemSelectionModel::ClearAndSelect);
-            scrollTo(target);
-        }
+        navigateToLogicalRow(logicalRow, col);
         event->accept();
         return;
     }
@@ -2979,62 +3165,51 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
     }
 
     // ===== Ctrl+Shift+Arrow: Extend selection to data edge =====
-    // Same sparse-map navigation as Ctrl+Arrow above, but extends selection.
-    // Skip during bulk loading — background thread is mutating m_cells concurrently.
+    // Direct chunk bitmap queries — same as Ctrl+Arrow but extends selection.
     if (ctrl && shift && !m_bulkLoading &&
         (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
                            event->key() == Qt::Key_Left || event->key() == Qt::Key_Right)) {
         QModelIndex cur = currentIndex();
         if (!cur.isValid() || !m_spreadsheet) { QTableView::keyPressEvent(event); return; }
 
-        int row = cur.row();
+        int logicalRow = m_model ? m_model->toLogicalRow(cur.row()) : cur.row();
         int col = cur.column();
         int maxRowIdx = m_spreadsheet->getRowCount() - 1;
         int maxColIdx = m_spreadsheet->getColumnCount() - 1;
+        auto& cs = m_spreadsheet->getColumnStore();
 
         if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down) {
-            auto occupied = m_spreadsheet->getOccupiedRowsInColumn(col);
             if (event->key() == Qt::Key_Down) {
-                if (row < maxRowIdx) {
-                    auto it = std::upper_bound(occupied.begin(), occupied.end(), row);
-                    bool nextHasData = (it != occupied.end() && *it == row + 1);
+                if (logicalRow < maxRowIdx) {
+                    bool nextHasData = cs.hasCell(logicalRow + 1, col);
                     if (nextHasData) {
-                        int last = row + 1;
-                        ++it;
-                        while (it != occupied.end() && *it == last + 1) { last = *it; ++it; }
-                        row = last;
+                        int emptyRow = cs.nextEmptyRow(col, logicalRow + 1);
+                        logicalRow = std::min(emptyRow - 1, maxRowIdx);
                     } else {
-                        row = (it != occupied.end()) ? *it : maxRowIdx;
+                        int next = cs.nextOccupiedRow(col, logicalRow + 1);
+                        logicalRow = (next >= 0) ? next : maxRowIdx;
                     }
                 }
             } else {
-                if (row > 0) {
-                    auto prevIt = std::lower_bound(occupied.begin(), occupied.end(), row - 1);
-                    bool prevHasData = (prevIt != occupied.end() && *prevIt == row - 1);
+                if (logicalRow > 0) {
+                    bool prevHasData = cs.hasCell(logicalRow - 1, col);
                     if (prevHasData) {
-                        int first = row - 1;
-                        while (prevIt != occupied.begin()) {
-                            auto before = std::prev(prevIt);
-                            if (*before != first - 1) break;
-                            first = *before;
-                            prevIt = before;
-                        }
-                        row = first;
+                        int emptyRow = cs.prevEmptyRow(col, logicalRow - 1);
+                        logicalRow = std::max(emptyRow + 1, 0);
                     } else {
-                        auto it = std::lower_bound(occupied.begin(), occupied.end(), row);
-                        row = (it != occupied.begin()) ? *std::prev(it) : 0;
+                        int prev = cs.prevOccupiedRow(col, logicalRow - 1);
+                        logicalRow = (prev >= 0) ? prev : 0;
                     }
                 }
             }
         } else {
-            auto occupied = m_spreadsheet->getOccupiedColsInRow(row);
+            auto occupied = m_spreadsheet->getOccupiedColsInRow(logicalRow);
             if (event->key() == Qt::Key_Right) {
                 if (col < maxColIdx) {
                     auto it = std::upper_bound(occupied.begin(), occupied.end(), col);
                     bool nextHasData = (it != occupied.end() && *it == col + 1);
                     if (nextHasData) {
-                        int last = col + 1;
-                        ++it;
+                        int last = col + 1; ++it;
                         while (it != occupied.end() && *it == last + 1) { last = *it; ++it; }
                         col = last;
                     } else {
@@ -3050,8 +3225,7 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
                         while (prevIt != occupied.begin()) {
                             auto before = std::prev(prevIt);
                             if (*before != first - 1) break;
-                            first = *before;
-                            prevIt = before;
+                            first = *before; prevIt = before;
                         }
                         col = first;
                     } else {
@@ -3062,13 +3236,14 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
             }
         }
 
-        QModelIndex target = model()->index(row, col);
+        // Navigate viewport then extend selection
+        navigateToLogicalRow(logicalRow, col);
+        int modelRow = m_model ? m_model->toModelRow(logicalRow) : logicalRow;
+        QModelIndex target = model()->index(modelRow, col);
         if (target.isValid()) {
-            // Extend selection from current to target
             QItemSelection sel(cur, target);
             selectionModel()->select(sel, QItemSelectionModel::ClearAndSelect);
             setCurrentIndex(target);
-            scrollTo(target);
         }
         event->accept();
         return;
@@ -3631,7 +3806,10 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
             // Compute bounding rect for the column's cells in this range
             QRect colBounds;
             for (int row = startRow; row <= endRow; ++row) {
-                QModelIndex idx = m_model->index(row, col);
+                // Convert logical row to model row for virtual mode
+                int modelRow = m_model->toModelRow(row);
+                if (modelRow < 0 || modelRow >= m_model->rowCount()) continue;
+                QModelIndex idx = m_model->index(modelRow, col);
                 QRect cellRect = visualRect(idx);
                 if (cellRect.isNull() || !viewport()->rect().intersects(cellRect)) continue;
 
@@ -4020,7 +4198,8 @@ void SpreadsheetView::onCellClicked(const QModelIndex& index) {
 void SpreadsheetView::onCellDoubleClicked(const QModelIndex& index) {
     // Picklist/Checkbox: block normal editor on double-click
     if (index.isValid() && m_spreadsheet) {
-        auto cell = m_spreadsheet->getCellIfExists(index.row(), index.column());
+        int logRow = m_model ? m_model->toLogicalRow(index.row()) : index.row();
+        auto cell = m_spreadsheet->getCellIfExists(logRow, index.column());
         if (cell) {
             const auto& style = cell->getStyle();
             if (style.numberFormat == "Picklist") {

@@ -136,6 +136,49 @@ void DatabaseManager::createTables() {
         CREATE INDEX IF NOT EXISTS idx_cells_sheetId ON cells(sheetId);
         CREATE INDEX IF NOT EXISTS idx_cells_position ON cells(sheetId, row, col);
         CREATE INDEX IF NOT EXISTS idx_versions_documentId ON versions(documentId);
+
+        -- ================================================================
+        -- Chunk-level storage for 20M+ row scalability
+        -- ================================================================
+        -- Cell data stored per-column-chunk (not one row per cell)
+        -- Each chunk covers 65536 rows of one column
+        CREATE TABLE IF NOT EXISTS cell_chunks (
+            doc_id TEXT NOT NULL,
+            sheet_idx INTEGER NOT NULL,
+            col INTEGER NOT NULL,
+            chunk_id INTEGER NOT NULL,
+            chunk_data BLOB NOT NULL,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (doc_id, sheet_idx, col, chunk_id)
+        );
+
+        -- Sheet metadata (always loaded, small)
+        CREATE TABLE IF NOT EXISTS sheet_meta (
+            doc_id TEXT NOT NULL,
+            sheet_idx INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            col_count INTEGER NOT NULL DEFAULT 0,
+            styles_blob BLOB,
+            settings_json TEXT,
+            PRIMARY KEY (doc_id, sheet_idx)
+        );
+
+        -- Version history: only changed chunks (delta storage)
+        CREATE TABLE IF NOT EXISTS version_deltas (
+            doc_id TEXT NOT NULL,
+            version_id INTEGER NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            sheet_idx INTEGER NOT NULL,
+            col INTEGER NOT NULL,
+            chunk_id INTEGER NOT NULL,
+            old_chunk_data BLOB,
+            PRIMARY KEY (doc_id, version_id, sheet_idx, col, chunk_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cell_chunks_doc ON cell_chunks(doc_id, sheet_idx);
+        CREATE INDEX IF NOT EXISTS idx_sheet_meta_doc ON sheet_meta(doc_id);
+        CREATE INDEX IF NOT EXISTS idx_version_deltas_doc ON version_deltas(doc_id, version_id);
     )";
 
     char* errMsg = nullptr;

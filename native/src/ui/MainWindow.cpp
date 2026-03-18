@@ -174,6 +174,8 @@ MainWindow::MainWindow(QWidget* parent)
     };
     connect(m_spreadsheetView->verticalScrollBar(), &QScrollBar::valueChanged, this, moveOverlays);
     connect(m_spreadsheetView->horizontalScrollBar(), &QScrollBar::valueChanged, this, moveOverlays);
+    // Also reposition on virtual scroll (scrollbar hidden in virtual mode)
+    connect(m_spreadsheetView, &SpreadsheetView::virtualViewportChanged, this, moveOverlays);
 
     setAcceptDrops(true);
 
@@ -1390,9 +1392,17 @@ void MainWindow::finishProgressiveCsvLoad() {
         m_formulaBar->setEnabled(true);
     }
 
-    // Final model refresh
+    // Final model refresh + scrollbar range update for actual row count
     if (m_spreadsheetView && m_spreadsheetView->model()) {
-        QMetaObject::invokeMethod(m_spreadsheetView, "reset", Qt::QueuedConnection);
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_spreadsheetView) return;
+            auto* mdl = m_spreadsheetView->getModel();
+            if (!mdl) return;
+            // Reset the view so model picks up the final row count
+            m_spreadsheetView->reset();
+            // Re-setup virtual scrollbar with actual data size
+            m_spreadsheetView->refreshVirtualScrollBar();
+        });
     }
 
     m_csvLoadState.reset();
@@ -1584,10 +1594,9 @@ void MainWindow::onSaveDocument() {
     }
 
     QString ext = QFileInfo(m_currentFilePath).suffix().toLower();
-    bool success = false;
 
     if (ext == "xlsx" || ext == "xls") {
-        // Collect chart configs for saving
+        // XLSX save — collect chart configs and run synchronously (typically small files)
         std::vector<NexelChartExport> chartExports;
         for (auto* chart : m_charts) {
             NexelChartExport ce;
@@ -1607,20 +1616,43 @@ void MainWindow::onSaveDocument() {
             ce.height = chart->height();
             chartExports.push_back(ce);
         }
-        success = XlsxService::exportToFile(m_sheets, m_currentFilePath, chartExports);
+        bool success = XlsxService::exportToFile(m_sheets, m_currentFilePath, chartExports);
+        if (success) {
+            m_dirty = false;
+            updateWindowTitle();
+            m_toolbar->setSaveEnabled(false);
+            statusBar()->showMessage("Saved: " + m_currentFilePath);
+            if (m_autoSave) m_autoSave->onManualSave();
+        } else {
+            QMessageBox::warning(this, "Save Failed", "Could not save file.");
+        }
     } else {
+        // CSV save — run in background thread to avoid UI freeze on large files
         auto spreadsheet = m_spreadsheetView->getSpreadsheet();
-        if (spreadsheet) success = CsvService::exportToFile(*spreadsheet, m_currentFilePath);
-    }
+        if (!spreadsheet) return;
 
-    if (success) {
-        m_dirty = false;
-        updateWindowTitle();
+        statusBar()->showMessage("Saving...");
         m_toolbar->setSaveEnabled(false);
-        statusBar()->showMessage("Saved: " + m_currentFilePath);
-        if (m_autoSave) m_autoSave->onManualSave();
-    } else {
-        QMessageBox::warning(this, "Save Failed", "Could not save file.");
+
+        QString path = m_currentFilePath;
+        auto* watcher = new QFutureWatcher<bool>(this);
+        connect(watcher, &QFutureWatcher<bool>::finished, this, [this, watcher, path]() {
+            bool success = watcher->result();
+            if (success) {
+                m_dirty = false;
+                updateWindowTitle();
+                statusBar()->showMessage("Saved: " + path);
+                if (m_autoSave) m_autoSave->onManualSave();
+            } else {
+                m_toolbar->setSaveEnabled(true);
+                QMessageBox::warning(this, "Save Failed", "Could not save file.");
+            }
+            watcher->deleteLater();
+        });
+
+        watcher->setFuture(QtConcurrent::run([spreadsheet, path]() {
+            return CsvService::exportToFile(*spreadsheet, path);
+        }));
     }
 }
 
@@ -2669,10 +2701,14 @@ QString MainWindow::getSelectionRange() const {
     QModelIndexList selected = m_spreadsheetView->selectionModel()->selectedIndexes();
     if (selected.isEmpty()) return "";
 
+    // In virtual mode, model row != logical row — must translate
+    auto* model = m_spreadsheetView->getModel();
+
     int minRow = INT_MAX, maxRow = 0, minCol = INT_MAX, maxCol = 0;
     for (const auto& idx : selected) {
-        minRow = qMin(minRow, idx.row());
-        maxRow = qMax(maxRow, idx.row());
+        int logicalRow = model ? model->toLogicalRow(idx.row()) : idx.row();
+        minRow = qMin(minRow, logicalRow);
+        maxRow = qMax(maxRow, logicalRow);
         minCol = qMin(minCol, idx.column());
         maxCol = qMax(maxCol, idx.column());
     }

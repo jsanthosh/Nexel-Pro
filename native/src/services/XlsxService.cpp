@@ -1037,8 +1037,8 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
                 }
             }
 
-            // Use fast path: getOrCreateCellFast returns Cell* (no shared_ptr overhead)
-            Cell* cell = nullptr;
+            // Use fast path: getOrCreateCellFast returns CellProxy (no shared_ptr overhead)
+            auto cell = CellProxy();
             bool cellSet = false;
 
             if (!formula.isEmpty()) {
@@ -1120,6 +1120,420 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
     }
 
     sheet->finishBulkImport();
+}
+
+// ============================================================================
+// Streaming sheet parser with progress callback
+// ============================================================================
+void XlsxService::parseSheetStreaming(const QByteArray& xmlData, const QStringList& sharedStrings,
+                                       const std::vector<CellStyle>& styles, Spreadsheet* sheet,
+                                       ImportProgressCallback progress, int sheetIndex) {
+    QXmlStreamReader xml(xmlData);
+
+    // Pre-reserve based on XML size heuristic
+    size_t estimatedCells = static_cast<size_t>(xmlData.size()) / 100;
+    if (estimatedCells > 4096) {
+        sheet->reserveCells(estimatedCells);
+    }
+
+    int rowCount = 0;
+    static constexpr int PROGRESS_INTERVAL = 50000; // Report every 50K rows
+
+    while (!xml.atEnd()) {
+        xml.readNext();
+
+        // Parse sheet view
+        if (xml.isStartElement() && xml.name() == u"sheetView") {
+            QStringView showGrid = xml.attributes().value("showGridLines");
+            if (showGrid == u"0") sheet->setShowGridlines(false);
+            continue;
+        }
+
+        // Parse column widths
+        if (xml.isStartElement() && xml.name() == u"col") {
+            int minCol = xml.attributes().value("min").toInt() - 1;
+            int maxCol = xml.attributes().value("max").toInt() - 1;
+            double width = xml.attributes().value("width").toDouble();
+            if (width > 0) {
+                int pixelWidth = qMax(30, static_cast<int>(width * 7.5));
+                int colLimit = qMin(maxCol, 16383);
+                for (int c = minCol; c <= colLimit; ++c) {
+                    sheet->setColumnWidth(c, pixelWidth);
+                }
+            }
+            continue;
+        }
+
+        // Parse row heights
+        if (xml.isStartElement() && xml.name() == u"row") {
+            QString htStr = xml.attributes().value("ht").toString();
+            if (!htStr.isEmpty()) {
+                int rowIdx = xml.attributes().value("r").toInt() - 1;
+                double ht = htStr.toDouble();
+                if (ht > 0 && rowIdx >= 0) {
+                    int pixelHeight = qMax(14, static_cast<int>(ht * 1.333));
+                    sheet->setRowHeight(rowIdx, pixelHeight);
+                }
+            }
+            // Track row count for progress
+            rowCount++;
+            if (progress && (rowCount % PROGRESS_INTERVAL == 0)) {
+                progress(rowCount, sheetIndex);
+            }
+            continue;
+        }
+
+        // Parse merged cells
+        if (xml.isStartElement() && xml.name() == u"mergeCell") {
+            QStringView ref = xml.attributes().value("ref");
+            int sr, sc, er, ec;
+            if (parseRangeRef(ref, sr, sc, er, ec)) {
+                sheet->mergeCells(CellRange(CellAddress(sr, sc), CellAddress(er, ec)));
+            }
+            continue;
+        }
+
+        // Parse conditional formatting (skip detail — same as non-streaming)
+        if (xml.isStartElement() && xml.name() == u"conditionalFormatting") {
+            QString sqref = xml.attributes().value("sqref").toString();
+            CellRange cfRange(sqref);
+
+            while (!xml.atEnd()) {
+                xml.readNext();
+                if (xml.isEndElement() && xml.name() == u"conditionalFormatting") break;
+                if (!xml.isStartElement() || xml.name() != u"cfRule") continue;
+
+                QString ruleType = xml.attributes().value("type").toString();
+
+                if (ruleType == "dataBar") {
+                    auto rule = std::make_shared<ConditionalFormat>(cfRange, ConditionType::DataBar);
+                    DataBarConfig cfg;
+                    while (!xml.atEnd()) {
+                        xml.readNext();
+                        if (xml.isEndElement() && xml.name() == u"cfRule") break;
+                        if (xml.isStartElement() && xml.name() == u"color") {
+                            QString rgb = xml.attributes().value("rgb").toString();
+                            if (rgb.length() == 8) rgb = "#" + rgb.mid(2);
+                            else if (!rgb.startsWith("#")) rgb = "#" + rgb;
+                            cfg.barColor = QColor(rgb);
+                        }
+                        if (xml.isStartElement() && xml.name() == u"cfvo") {
+                            QString cfvoType = xml.attributes().value("type").toString();
+                            if (cfvoType == "min") cfg.autoRange = true;
+                        }
+                    }
+                    rule->setDataBarConfig(cfg);
+                    sheet->getConditionalFormatting().addRule(rule);
+                } else if (ruleType == "colorScale") {
+                    QVector<QColor> colors;
+                    int cfvoCount = 0;
+                    while (!xml.atEnd()) {
+                        xml.readNext();
+                        if (xml.isEndElement() && xml.name() == u"cfRule") break;
+                        if (xml.isStartElement() && xml.name() == u"cfvo") cfvoCount++;
+                        if (xml.isStartElement() && xml.name() == u"color") {
+                            QString rgb = xml.attributes().value("rgb").toString();
+                            if (rgb.length() == 8) rgb = "#" + rgb.mid(2);
+                            else if (!rgb.startsWith("#")) rgb = "#" + rgb;
+                            colors.append(QColor(rgb));
+                        }
+                    }
+                    bool isThreeColor = (cfvoCount >= 3 && colors.size() >= 3);
+                    auto condType = isThreeColor ? ConditionType::ColorScale3 : ConditionType::ColorScale2;
+                    auto rule = std::make_shared<ConditionalFormat>(cfRange, condType);
+                    ColorScaleConfig cfg;
+                    cfg.autoRange = true;
+                    if (colors.size() >= 2) {
+                        cfg.minColor = colors[0];
+                        cfg.maxColor = colors[colors.size() - 1];
+                    }
+                    if (isThreeColor && colors.size() >= 3) {
+                        cfg.midColor = colors[1];
+                        cfg.threeColor = true;
+                    }
+                    rule->setColorScaleConfig(cfg);
+                    sheet->getConditionalFormatting().addRule(rule);
+                } else if (ruleType == "iconSet") {
+                    auto rule = std::make_shared<ConditionalFormat>(cfRange, ConditionType::IconSet);
+                    IconSetConfig cfg;
+                    while (!xml.atEnd()) {
+                        xml.readNext();
+                        if (xml.isEndElement() && xml.name() == u"cfRule") break;
+                        if (xml.isStartElement() && xml.name() == u"iconSet") {
+                            QString iconSetType = xml.attributes().value("iconSet").toString();
+                            if (iconSetType.contains("3Arrows")) cfg.iconType = IconSetConfig::Arrows3;
+                            else if (iconSetType.contains("3Flags")) cfg.iconType = IconSetConfig::Flags3;
+                            else if (iconSetType.contains("3Stars")) cfg.iconType = IconSetConfig::Stars3;
+                            else if (iconSetType.contains("3Symbols")) cfg.iconType = IconSetConfig::Checkmarks3;
+                            else cfg.iconType = IconSetConfig::TrafficLights;
+                            QString reverse = xml.attributes().value("reverse").toString();
+                            cfg.reverseOrder = (reverse == "1");
+                            QString showVal = xml.attributes().value("showValue").toString();
+                            if (showVal == "0") cfg.showValue = false;
+                        }
+                    }
+                    rule->setIconSetConfig(cfg);
+                    sheet->getConditionalFormatting().addRule(rule);
+                } else {
+                    xml.skipCurrentElement();
+                }
+            }
+            continue;
+        }
+
+        // Parse cell data
+        if (xml.isStartElement() && xml.name() == u"c") {
+            QStringView ref = xml.attributes().value("r");
+            QString type = xml.attributes().value("t").toString();
+            int styleIdx = xml.attributes().value("s").toInt();
+
+            int row, col;
+            if (!parseCellRef(ref, row, col)) continue;
+
+            QString value;
+            QString formula;
+            QString inlineStr;
+            bool hasInlineStr = false;
+            int depth = 1;
+
+            while (!xml.atEnd() && depth > 0) {
+                xml.readNext();
+                if (xml.isStartElement()) {
+                    if (xml.name() == u"v") {
+                        value = xml.readElementText();
+                    } else if (xml.name() == u"f") {
+                        formula = xml.readElementText();
+                    } else if (xml.name() == u"is") {
+                        hasInlineStr = true;
+                    } else if (hasInlineStr && xml.name() == u"t") {
+                        inlineStr += xml.readElementText();
+                    } else {
+                        depth++;
+                    }
+                } else if (xml.isEndElement()) {
+                    if (xml.name() == u"c") {
+                        depth = 0;
+                    } else if (xml.name() == u"is") {
+                        hasInlineStr = false;
+                    }
+                }
+            }
+
+            auto cell = CellProxy();
+            bool cellSet = false;
+
+            if (!formula.isEmpty()) {
+                cell = sheet->getOrCreateCellFast(row, col);
+                if (!formula.startsWith(u'=')) formula.prepend(u'=');
+                cell->setFormula(formula);
+                cellSet = true;
+                if (!value.isEmpty() && type != u"s") {
+                    bool ok;
+                    double num = value.toDouble(&ok);
+                    if (ok) cell->setComputedValue(num);
+                }
+            }
+            else if (type == u"inlineStr" && !inlineStr.isEmpty()) {
+                cell = sheet->getOrCreateCellFast(row, col);
+                cell->setValueDirect(inlineStr);
+                cellSet = true;
+            }
+            else if (type == u"s" && !value.isEmpty()) {
+                int ssIdx = value.toInt();
+                if (ssIdx >= 0 && ssIdx < sharedStrings.size()) {
+                    cell = sheet->getOrCreateCellFast(row, col);
+                    cell->setValueDirect(sharedStrings[ssIdx]);
+                    cellSet = true;
+                }
+            }
+            else if (type == u"b" && !value.isEmpty()) {
+                cell = sheet->getOrCreateCellFast(row, col);
+                cell->setValueDirect(value == u"1" ? QStringLiteral("TRUE") : QStringLiteral("FALSE"));
+                cellSet = true;
+            }
+            else if (type == u"str" && !value.isEmpty()) {
+                cell = sheet->getOrCreateCellFast(row, col);
+                cell->setValueDirect(value);
+                cellSet = true;
+            }
+            else if (!value.isEmpty()) {
+                bool ok;
+                double num = value.toDouble(&ok);
+                if (ok) {
+                    bool isDateFmt = false;
+                    if (styleIdx > 0 && styleIdx < static_cast<int>(styles.size())) {
+                        const auto& fmt = styles[styleIdx].numberFormat;
+                        isDateFmt = (fmt == "Date" || fmt == "Time");
+                    }
+                    cell = sheet->getOrCreateCellFast(row, col);
+                    if (isDateFmt && num > 0 && num < 2958466) {
+                        QDate epoch(1899, 12, 30);
+                        QDate date = epoch.addDays(static_cast<qint64>(num));
+                        if (date.isValid()) {
+                            cell->setValueDirect(date.toString("MM/dd/yyyy"));
+                        } else {
+                            cell->setValueDirect(num);
+                        }
+                    } else {
+                        cell->setValueDirect(num);
+                    }
+                } else {
+                    cell = sheet->getOrCreateCellFast(row, col);
+                    cell->setValueDirect(value);
+                }
+                cellSet = true;
+            }
+
+            // Apply style
+            if ((cellSet || styleIdx > 0) && styleIdx < static_cast<int>(styles.size())) {
+                if (!cell) cell = sheet->getOrCreateCellFast(row, col);
+                CellStyle cellStyle = styles[styleIdx];
+                if ((cellStyle.numberFormat == "Date" || cellStyle.numberFormat == "Time")) {
+                    bool ok;
+                    double num = value.toDouble(&ok);
+                    if (ok && (num < 0 || num >= 2958466)) {
+                        cellStyle.numberFormat = "General";
+                    }
+                }
+                cell->setStyle(cellStyle);
+            }
+        }
+    }
+
+    // Final progress report
+    if (progress) {
+        progress(rowCount, sheetIndex);
+    }
+
+    sheet->finishBulkImport();
+}
+
+// ============================================================================
+// Streaming import entry point
+// ============================================================================
+XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
+                                                       ImportProgressCallback progress) {
+    XlsxImportResult result;
+
+    QZipReader zip(filePath);
+    if (!zip.isReadable()) return result;
+
+    // Read shared strings
+    QStringList sharedStrings;
+    QByteArray ssData = zip.fileData("xl/sharedStrings.xml");
+    if (!ssData.isEmpty()) {
+        sharedStrings = parseSharedStrings(ssData);
+    }
+
+    // Parse styles
+    std::vector<CellStyle> styles;
+    QByteArray stylesData = zip.fileData("xl/styles.xml");
+    if (!stylesData.isEmpty()) {
+        auto fonts = parseFonts(stylesData);
+        auto fills = parseFills(stylesData);
+        auto borders = parseBorders(stylesData);
+        auto cellXfs = parseCellXfs(stylesData);
+        auto customNumFmts = parseNumFmts(stylesData);
+        for (const auto& xf : cellXfs) {
+            styles.push_back(buildCellStyle(xf, fonts, fills, borders, xf.numFmtId, customNumFmts));
+        }
+    }
+
+    // Parse workbook
+    QByteArray workbookData = zip.fileData("xl/workbook.xml");
+    QByteArray relsData = zip.fileData("xl/_rels/workbook.xml.rels");
+    auto sheetInfos = parseWorkbook(workbookData, relsData);
+
+    if (sheetInfos.empty()) {
+        SheetInfo si;
+        si.name = "Sheet1";
+        si.filePath = "worksheets/sheet1.xml";
+        sheetInfos.push_back(si);
+    }
+
+    // Parse each sheet with streaming progress
+    for (int sheetIdx = 0; sheetIdx < static_cast<int>(sheetInfos.size()); ++sheetIdx) {
+        const auto& info = sheetInfos[sheetIdx];
+        QString path = "xl/" + info.filePath;
+        QByteArray sheetData = zip.fileData(path);
+        if (sheetData.isEmpty()) continue;
+
+        auto spreadsheet = std::make_shared<Spreadsheet>();
+        spreadsheet->setAutoRecalculate(false);
+        spreadsheet->setSheetName(info.name);
+
+        // Use streaming parser with progress callback
+        parseSheetStreaming(sheetData, sharedStrings, styles, spreadsheet.get(), progress, sheetIdx);
+
+        // Parse sheet rels for charts (same as non-streaming)
+        QString fullSheetPath = "xl/" + info.filePath;
+        int lastSlash = fullSheetPath.lastIndexOf('/');
+        QString sheetDirPath = fullSheetPath.left(lastSlash);
+        QString sheetFileName = fullSheetPath.mid(lastSlash + 1);
+        QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
+        QByteArray sheetRelsData = zip.fileData(sheetRelsPath);
+        auto sheetRels = parseRels(sheetRelsData);
+
+        // Chart import
+        QByteArray sheetXmlForDrawing = sheetData;
+        QString drawingRId = findDrawingRId(sheetXmlForDrawing);
+        if (!drawingRId.isEmpty() && sheetRels.count(drawingRId)) {
+            QString drawingPath = resolveRelativePath(fullSheetPath, sheetRels[drawingRId]);
+            QByteArray drawingData = zip.fileData(drawingPath);
+            if (!drawingData.isEmpty()) {
+                auto chartRefs = parseDrawing(drawingData);
+                int dLastSlash = drawingPath.lastIndexOf('/');
+                QString drawingDir = drawingPath.left(dLastSlash);
+                QString drawingFile = drawingPath.mid(dLastSlash + 1);
+                QString drawingRelsPath = drawingDir + "/_rels/" + drawingFile + ".rels";
+                QByteArray drawingRelsData = zip.fileData(drawingRelsPath);
+                auto drawingRels = parseRels(drawingRelsData);
+
+                for (const auto& cref : chartRefs) {
+                    if (drawingRels.count(cref.chartRId)) {
+                        QString chartPath = resolveRelativePath(drawingPath, drawingRels[cref.chartRId]);
+                        QByteArray chartData = zip.fileData(chartPath);
+                        if (!chartData.isEmpty()) {
+                            ImportedChart chart = parseChartXml(chartData);
+                            chart.sheetIndex = sheetIdx;
+                            chart.x = cref.fromCol * 70;
+                            chart.y = cref.fromRow * 25;
+                            chart.width = (cref.toCol - cref.fromCol) * 70;
+                            chart.height = (cref.toRow - cref.fromRow) * 25;
+                            if (chart.width < 200) chart.width = 420;
+                            if (chart.height < 100) chart.height = 320;
+                            result.charts.push_back(chart);
+                        }
+                    }
+                }
+            }
+        }
+
+        result.sheets.push_back(spreadsheet);
+    }
+
+    // Check for Nexel-native custom JSON
+    QByteArray customJson = zip.fileData("xl/nexel/custom.json");
+    if (!customJson.isEmpty()) {
+        QJsonDocument doc = QJsonDocument::fromJson(customJson);
+        if (doc.isObject()) {
+            QJsonObject root = doc.object();
+            QJsonArray chartsArr = root["charts"].toArray();
+            for (const auto& cv : chartsArr) {
+                QJsonObject co = cv.toObject();
+                int si = co["sheetIndex"].toInt();
+                if (si < 0 || si >= static_cast<int>(result.charts.size())) continue;
+                auto& chart = result.charts[si];
+                chart.dataRange = co["dataRange"].toString();
+                chart.themeIndex = co["themeIndex"].toInt();
+                chart.showLegend = co["showLegend"].toBool(true);
+                chart.showGridLines = co["showGridLines"].toBool(true);
+                chart.isNexelNative = true;
+            }
+        }
+    }
+
+    return result;
 }
 
 int XlsxService::columnLetterToIndex(const QString& letters) {

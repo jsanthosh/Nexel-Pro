@@ -1,8 +1,11 @@
 #include "Spreadsheet.h"
 #include "PivotEngine.h"
+#include "StringPool.h"
 #include <algorithm>
+#include <numeric>
 #include <mutex>
 #include <QRegularExpression>
+#include <QtConcurrent>
 
 // Helper: adjust formula cell references for row/column insert/delete
 // mode: 'R' = row shift, 'C' = column shift
@@ -98,7 +101,6 @@ Spreadsheet::Spreadsheet()
     : m_sheetName("Sheet1"), m_rowCount(1000), m_columnCount(256),
       m_autoRecalculate(true), m_inTransaction(false) {
     m_formulaEngine = std::make_unique<FormulaEngine>(this);
-    m_cells.reserve(4096);
     m_conditionalFormatting.setFormulaEvaluator([this](const QString& formula) -> QVariant {
         return m_formulaEngine->evaluate(formula);
     });
@@ -106,54 +108,45 @@ Spreadsheet::Spreadsheet()
 
 Spreadsheet::~Spreadsheet() = default;
 
-std::shared_ptr<Cell> Spreadsheet::getCell(const CellAddress& addr) {
+CellProxy Spreadsheet::getCell(const CellAddress& addr) {
     return getCell(addr.row, addr.col);
 }
 
-std::shared_ptr<Cell> Spreadsheet::getCell(int row, int col) {
-    std::unique_lock lock(m_cellMutex);
-    CellKey key{row, col};
-    auto it = m_cells.find(key);
-    if (it != m_cells.end()) {
-        return it->second;
-    }
-    auto cell = std::make_shared<Cell>();
-    m_cells.emplace(key, cell);
+CellProxy Spreadsheet::getCell(int row, int col) {
+    // Ensure the column exists in the store (getOrCreateColumn creates it)
+    m_columnStore.getOrCreateColumn(col);
     if (row > m_cachedMaxRow || col > m_cachedMaxCol) {
         m_maxRowColDirty = true;
     }
-    return cell;
+    return CellProxy(&m_columnStore, row, col);
 }
 
-std::shared_ptr<Cell> Spreadsheet::getCellIfExists(const CellAddress& addr) const {
+CellProxy Spreadsheet::getCellIfExists(const CellAddress& addr) const {
     return getCellIfExists(addr.row, addr.col);
 }
 
-std::shared_ptr<Cell> Spreadsheet::getCellIfExists(int row, int col) const {
-    std::shared_lock lock(m_cellMutex);
-    CellKey key{row, col};
-    auto it = m_cells.find(key);
-    return (it != m_cells.end()) ? it->second : nullptr;
+CellProxy Spreadsheet::getCellIfExists(int row, int col) const {
+    if (!m_columnStore.hasCell(row, col)) {
+        return CellProxy(); // invalid proxy — operator bool() returns false
+    }
+    return CellProxy(const_cast<ColumnStore*>(&m_columnStore), row, col);
 }
 
 QVariant Spreadsheet::getCellValue(const CellAddress& addr) {
-    auto cell = getCellIfExists(addr.row, addr.col);
-    if (!cell) return QVariant();
-    if (cell->getType() == CellType::Formula) {
-        return cell->getComputedValue();
-    }
-    return cell->getValue();
+    if (!m_columnStore.hasCell(addr.row, addr.col)) return QVariant();
+    CellProxy proxy(&m_columnStore, addr.row, addr.col);
+    return proxy.getValue();
 }
 
 void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
-    bool wasNew = (m_cells.find(CellKey{addr.row, addr.col}) == m_cells.end());
+    bool wasNew = !m_columnStore.hasCell(addr.row, addr.col);
 
     // Clear any existing spill range from this cell (was previously a spill-producing formula)
     clearSpillRange(addr);
 
-    auto cell = getCell(addr);
-    cell->setValue(value);
-    // Only mark dirty if this cell extends beyond cached bounds
+    // Set the value in ColumnStore
+    m_columnStore.setCellValue(addr.row, addr.col, value);
+
     if (addr.row > m_cachedMaxRow || addr.col > m_cachedMaxCol) {
         m_maxRowColDirty = true;
     }
@@ -165,7 +158,6 @@ void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
     if (!m_navIndexDirty && wasNew) {
         navIndexInsert(addr.row, addr.col);
     } else if (m_autoRecalculate) {
-        // If nav was already dirty (bulk mode), keep it dirty
         m_navIndexDirty = true;
     }
 
@@ -187,9 +179,12 @@ void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
 }
 
 void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula) {
-    bool wasNew = (m_cells.find(CellKey{addr.row, addr.col}) == m_cells.end());
-    auto cell = getCell(addr);
-    cell->setFormula(formula);
+    QElapsedTimer _timer; _timer.start();
+    bool wasNew = !m_columnStore.hasCell(addr.row, addr.col);
+
+    // Set formula in ColumnStore
+    m_columnStore.setCellFormula(addr.row, addr.col, formula);
+
     if (addr.row > m_cachedMaxRow || addr.col > m_cachedMaxCol) {
         m_maxRowColDirty = true;
     }
@@ -232,11 +227,11 @@ void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula
     }
 
     if (m_depGraph.hasCircularDependency(addr)) {
-        cell->setComputedValue(QVariant("#CIRCULAR!"));
+        m_columnStore.setComputedValue(addr.row, addr.col, QVariant("#CIRCULAR!"));
         return;
     }
 
-    cell->setComputedValue(result);
+    m_columnStore.setComputedValue(addr.row, addr.col, result);
 
     // Check if result is a 2D array (dynamic array / spill)
     if (result.typeId() == QMetaType::QVariantList) {
@@ -256,62 +251,139 @@ void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula
             applySpillResult(addr, array2D);
             // Set the formula cell's computed value to the top-left element
             if (!array2D.empty() && !array2D[0].empty()) {
-                cell->setComputedValue(array2D[0][0]);
+                m_columnStore.setComputedValue(addr.row, addr.col, array2D[0][0]);
             }
         }
     }
 
+    qDebug() << "[setCellFormula] before recalcDeps:" << _timer.elapsed() << "ms";
     if (m_autoRecalculate && !m_inTransaction) {
         recalculateDependents(addr);
     }
+    qDebug() << "[setCellFormula] TOTAL:" << _timer.elapsed() << "ms";
 }
 
 void Spreadsheet::fillRange(const CellRange& range, const QVariant& value) {
-    for (const auto& addr : range.getCells()) {
-        setCellValue(addr, value);
+    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+            setCellValue(CellAddress(r, c), value);
+        }
     }
 }
 
 void Spreadsheet::clearRange(const CellRange& range) {
     for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
         for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
-            CellKey key{r, c};
-            auto it = m_cells.find(key);
-            if (it != m_cells.end()) {
-                it->second->clear();
-            }
+            m_columnStore.removeCell(r, c);
         }
     }
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
 }
 
-std::vector<std::shared_ptr<Cell>> Spreadsheet::getRange(const CellRange& range) {
-    std::vector<std::shared_ptr<Cell>> result;
-    for (const auto& addr : range.getCells()) {
-        result.push_back(getCell(addr));
+std::vector<CellProxy> Spreadsheet::getRange(const CellRange& range) {
+    std::vector<CellProxy> result;
+    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+            result.push_back(getCell(r, c));
+        }
     }
     return result;
 }
 
 void Spreadsheet::insertRow(int row, int count) {
-    std::vector<std::pair<CellKey, std::shared_ptr<Cell>>> toReinsert;
-    std::vector<CellKey> toRemove;
-    for (const auto& pair : m_cells) {
-        if (pair.first.row >= row) {
-            toRemove.push_back(pair.first);
-            toReinsert.push_back({CellKey{pair.first.row + count, pair.first.col}, pair.second});
+    // Collect all cells at or below the insertion point, shift them down
+    // We need to iterate all columns and shift rows within each
+    int maxCol = m_columnStore.maxCol();
+    for (int c = 0; c <= maxCol; ++c) {
+        Column* col = m_columnStore.getColumn(c);
+        if (!col) continue;
+
+        // Collect cell data from bottom to top to avoid overwrites
+        struct CellData {
+            int srcRow;
+            QVariant value;
+            CellDataType type;
+            uint16_t styleIdx;
+            QString formula;
+            QString comment;
+            QString hyperlink;
+            CellAddress spillParent;
+        };
+        std::vector<CellData> toShift;
+
+        for (auto& chunk : col->chunks()) {
+            for (int offset = ColumnChunk::CHUNK_SIZE - 1; offset >= 0; --offset) {
+                if (!chunk->hasData(offset)) continue;
+                int r = chunk->baseRow + offset;
+                if (r < row) continue;
+
+                CellData cd;
+                cd.srcRow = r;
+                cd.type = chunk->getType(offset);
+                cd.value = chunk->getValue(offset);
+                cd.styleIdx = chunk->getStyleIndex(offset);
+                if (cd.type == CellDataType::Formula) {
+                    cd.formula = chunk->getFormulaString(offset);
+                }
+                cd.comment = m_columnStore.getCellComment(r, c);
+                cd.hyperlink = m_columnStore.getCellHyperlink(r, c);
+                cd.spillParent = m_columnStore.getSpillParent(r, c);
+                toShift.push_back(cd);
+            }
+        }
+
+        // Remove old cells (process from highest row to avoid issues)
+        std::sort(toShift.begin(), toShift.end(), [](const CellData& a, const CellData& b) {
+            return a.srcRow > b.srcRow;
+        });
+        for (const auto& cd : toShift) {
+            m_columnStore.removeCell(cd.srcRow, c);
+        }
+
+        // Re-insert at shifted positions
+        for (const auto& cd : toShift) {
+            int newRow = cd.srcRow + count;
+            switch (cd.type) {
+                case CellDataType::Double:
+                case CellDataType::Date:
+                case CellDataType::Boolean:
+                    m_columnStore.setCellNumeric(newRow, c, cd.value.toDouble());
+                    break;
+                case CellDataType::String:
+                    m_columnStore.setCellString(newRow, c, cd.value.toString());
+                    break;
+                case CellDataType::Formula: {
+                    QString adjusted = shiftFormulaRefs(cd.formula, 'R', row, count);
+                    m_columnStore.setCellFormula(newRow, c, adjusted);
+                    break;
+                }
+                case CellDataType::Error:
+                    m_columnStore.setCellValue(newRow, c, cd.value);
+                    break;
+                default:
+                    break;
+            }
+            if (cd.styleIdx != 0) m_columnStore.setCellStyle(newRow, c, cd.styleIdx);
+            if (!cd.comment.isEmpty()) m_columnStore.setCellComment(newRow, c, cd.comment);
+            if (!cd.hyperlink.isEmpty()) m_columnStore.setCellHyperlink(newRow, c, cd.hyperlink);
+            if (cd.spillParent.row >= 0) m_columnStore.setSpillParent(newRow, c, cd.spillParent);
         }
     }
-    for (const auto& key : toRemove) m_cells.erase(key);
-    for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
-    // Shift formula references
-    for (auto& [key, cell] : m_cells) {
-        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
-            QString adjusted = shiftFormulaRefs(cell->getFormula(), 'R', row, count);
-            if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
+
+    // Shift formula references in cells that weren't moved (above insertion point)
+    m_columnStore.forEachCell([&](int r, int c, CellDataType type, const QVariant&) {
+        if (r < row && type == CellDataType::Formula) {
+            QString formula = m_columnStore.getCellFormula(r, c);
+            if (!formula.isEmpty()) {
+                QString adjusted = shiftFormulaRefs(formula, 'R', row, count);
+                if (adjusted != formula) {
+                    m_columnStore.setCellFormula(r, c, adjusted);
+                }
+            }
         }
-    }
+    });
+
     // Shift merged regions
     for (auto& mr : m_mergedRegions) {
         auto s = mr.range.getStart(); auto e = mr.range.getEnd();
@@ -350,22 +422,53 @@ void Spreadsheet::insertRow(int row, int count) {
 }
 
 void Spreadsheet::insertColumn(int column, int count) {
-    std::vector<std::pair<CellKey, std::shared_ptr<Cell>>> toReinsert;
-    std::vector<CellKey> toRemove;
-    for (const auto& pair : m_cells) {
-        if (pair.first.col >= column) {
-            toRemove.push_back(pair.first);
-            toReinsert.push_back({CellKey{pair.first.row, pair.first.col + count}, pair.second});
+    // Shift columns right: process from rightmost to avoid overwrites
+    int maxCol = m_columnStore.maxCol();
+    for (int c = maxCol; c >= column; --c) {
+        Column* col = m_columnStore.getColumn(c);
+        if (!col) continue;
+
+        // Move all cells from column c to column c+count
+        for (auto& chunk : col->chunks()) {
+            for (int offset = 0; offset < ColumnChunk::CHUNK_SIZE; ++offset) {
+                if (!chunk->hasData(offset)) continue;
+                int r = chunk->baseRow + offset;
+                QVariant val = chunk->getValue(offset);
+                CellDataType type = chunk->getType(offset);
+                uint16_t styleIdx = chunk->getStyleIndex(offset);
+
+                if (type == CellDataType::Formula) {
+                    QString formula = chunk->getFormulaString(offset);
+                    QString adjusted = shiftFormulaRefs(formula, 'C', column, count);
+                    m_columnStore.setCellFormula(r, c + count, adjusted);
+                } else {
+                    m_columnStore.setCellValue(r, c + count, val);
+                }
+                if (styleIdx != 0) m_columnStore.setCellStyle(r, c + count, styleIdx);
+            }
+        }
+        // Clear old column cells
+        col->clear();
+    }
+
+    // Shift formula references in columns that weren't moved (left of insertion)
+    for (int c = 0; c < column; ++c) {
+        Column* col = m_columnStore.getColumn(c);
+        if (!col) continue;
+        for (auto& chunk : col->chunks()) {
+            for (int offset = 0; offset < ColumnChunk::CHUNK_SIZE; ++offset) {
+                if (!chunk->hasData(offset) || chunk->getType(offset) != CellDataType::Formula)
+                    continue;
+                int r = chunk->baseRow + offset;
+                QString formula = chunk->getFormulaString(offset);
+                QString adjusted = shiftFormulaRefs(formula, 'C', column, count);
+                if (adjusted != formula) {
+                    m_columnStore.setCellFormula(r, c, adjusted);
+                }
+            }
         }
     }
-    for (const auto& key : toRemove) m_cells.erase(key);
-    for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
-    for (auto& [key, cell] : m_cells) {
-        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
-            QString adjusted = shiftFormulaRefs(cell->getFormula(), 'C', column, count);
-            if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
-        }
-    }
+
     for (auto& mr : m_mergedRegions) {
         auto s = mr.range.getStart(); auto e = mr.range.getEnd();
         if (s.col >= column) s.col += count;
@@ -401,24 +504,105 @@ void Spreadsheet::insertColumn(int column, int count) {
 }
 
 void Spreadsheet::deleteRow(int row, int count) {
-    std::vector<CellKey> toRemove;
-    std::vector<std::pair<CellKey, std::shared_ptr<Cell>>> toReinsert;
-    for (const auto& pair : m_cells) {
-        if (pair.first.row >= row && pair.first.row < row + count) {
-            toRemove.push_back(pair.first);
-        } else if (pair.first.row >= row + count) {
-            toRemove.push_back(pair.first);
-            toReinsert.push_back({CellKey{pair.first.row - count, pair.first.col}, pair.second});
+    int maxCol = m_columnStore.maxCol();
+
+    // Delete cells in the target rows, then shift cells below up
+    for (int c = 0; c <= maxCol; ++c) {
+        // Remove cells in deleted rows
+        for (int r = row; r < row + count; ++r) {
+            m_columnStore.removeCell(r, c);
+        }
+
+        // Collect cells below the deleted range and shift up
+        Column* col = m_columnStore.getColumn(c);
+        if (!col) continue;
+
+        struct CellData {
+            int srcRow;
+            QVariant value;
+            CellDataType type;
+            uint16_t styleIdx;
+            QString formula;
+            QString comment;
+            QString hyperlink;
+            CellAddress spillParent;
+        };
+        std::vector<CellData> toShift;
+
+        for (auto& chunk : col->chunks()) {
+            for (int offset = 0; offset < ColumnChunk::CHUNK_SIZE; ++offset) {
+                if (!chunk->hasData(offset)) continue;
+                int r = chunk->baseRow + offset;
+                if (r < row + count) continue;
+
+                CellData cd;
+                cd.srcRow = r;
+                cd.type = chunk->getType(offset);
+                cd.value = chunk->getValue(offset);
+                cd.styleIdx = chunk->getStyleIndex(offset);
+                if (cd.type == CellDataType::Formula) {
+                    cd.formula = chunk->getFormulaString(offset);
+                }
+                cd.comment = m_columnStore.getCellComment(r, c);
+                cd.hyperlink = m_columnStore.getCellHyperlink(r, c);
+                cd.spillParent = m_columnStore.getSpillParent(r, c);
+                toShift.push_back(cd);
+            }
+        }
+
+        // Sort by row ascending for clean removal
+        std::sort(toShift.begin(), toShift.end(), [](const CellData& a, const CellData& b) {
+            return a.srcRow < b.srcRow;
+        });
+
+        // Remove old positions
+        for (const auto& cd : toShift) {
+            m_columnStore.removeCell(cd.srcRow, c);
+        }
+
+        // Re-insert at shifted positions
+        for (const auto& cd : toShift) {
+            int newRow = cd.srcRow - count;
+            switch (cd.type) {
+                case CellDataType::Double:
+                case CellDataType::Date:
+                case CellDataType::Boolean:
+                    m_columnStore.setCellNumeric(newRow, c, cd.value.toDouble());
+                    break;
+                case CellDataType::String:
+                    m_columnStore.setCellString(newRow, c, cd.value.toString());
+                    break;
+                case CellDataType::Formula: {
+                    QString adjusted = shiftFormulaRefs(cd.formula, 'R', row, -count);
+                    m_columnStore.setCellFormula(newRow, c, adjusted);
+                    break;
+                }
+                case CellDataType::Error:
+                    m_columnStore.setCellValue(newRow, c, cd.value);
+                    break;
+                default:
+                    break;
+            }
+            if (cd.styleIdx != 0) m_columnStore.setCellStyle(newRow, c, cd.styleIdx);
+            if (!cd.comment.isEmpty()) m_columnStore.setCellComment(newRow, c, cd.comment);
+            if (!cd.hyperlink.isEmpty()) m_columnStore.setCellHyperlink(newRow, c, cd.hyperlink);
+            if (cd.spillParent.row >= 0) m_columnStore.setSpillParent(newRow, c, cd.spillParent);
         }
     }
-    for (const auto& key : toRemove) m_cells.erase(key);
-    for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
-    for (auto& [key, cell] : m_cells) {
-        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
-            QString adjusted = shiftFormulaRefs(cell->getFormula(), 'R', row, -count);
-            if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
+
+    // Adjust formula refs in cells above deleted rows
+    m_columnStore.forEachCell([&](int r, int c, CellDataType type, const QVariant&) {
+        if (r < row && type == CellDataType::Formula) {
+            QString formula = m_columnStore.getCellFormula(r, c);
+            if (!formula.isEmpty()) {
+                QString adjusted = shiftFormulaRefs(formula, 'R', row, -count);
+                if (adjusted != formula) {
+                    m_columnStore.setCellFormula(r, c, adjusted);
+                }
+            }
         }
-    }
+    });
+
     // Remove merged regions fully in deleted rows; clamp partially overlapping ones
     m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
         [row, count](const MergedRegion& mr) {
@@ -426,17 +610,13 @@ void Spreadsheet::deleteRow(int row, int count) {
         }), m_mergedRegions.end());
     for (auto& mr : m_mergedRegions) {
         auto s = mr.range.getStart(); auto e = mr.range.getEnd();
-        // Clamp start if it falls within the deleted range
         if (s.row >= row && s.row < row + count) s.row = row;
         else if (s.row >= row + count) s.row -= count;
-        // Clamp end if it falls within the deleted range
         if (e.row >= row && e.row < row + count) e.row = row > 0 ? row - 1 : 0;
         else if (e.row >= row + count) e.row -= count;
-        // Ensure region is still valid (start <= end)
         if (s.row > e.row) { s.row = e.row; }
         mr.range = CellRange(s, e);
     }
-    // Remove any merged regions that collapsed to invalid state
     m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
         [](const MergedRegion& mr) {
             return mr.range.getStart().row == mr.range.getEnd().row &&
@@ -472,40 +652,71 @@ void Spreadsheet::deleteRow(int row, int count) {
 }
 
 void Spreadsheet::deleteColumn(int column, int count) {
-    std::vector<CellKey> toRemove;
-    std::vector<std::pair<CellKey, std::shared_ptr<Cell>>> toReinsert;
-    for (const auto& pair : m_cells) {
-        if (pair.first.col >= column && pair.first.col < column + count) {
-            toRemove.push_back(pair.first);
-        } else if (pair.first.col >= column + count) {
-            toRemove.push_back(pair.first);
-            toReinsert.push_back({CellKey{pair.first.row, pair.first.col - count}, pair.second});
+    // Delete cells in the target columns
+    for (int c = column; c < column + count; ++c) {
+        Column* col = m_columnStore.getColumn(c);
+        if (col) col->clear();
+    }
+
+    // Shift columns left
+    int maxCol = m_columnStore.maxCol();
+    for (int c = column + count; c <= maxCol; ++c) {
+        Column* srcCol = m_columnStore.getColumn(c);
+        if (!srcCol) continue;
+
+        int destC = c - count;
+        for (auto& chunk : srcCol->chunks()) {
+            for (int offset = 0; offset < ColumnChunk::CHUNK_SIZE; ++offset) {
+                if (!chunk->hasData(offset)) continue;
+                int r = chunk->baseRow + offset;
+                QVariant val = chunk->getValue(offset);
+                CellDataType type = chunk->getType(offset);
+                uint16_t styleIdx = chunk->getStyleIndex(offset);
+
+                if (type == CellDataType::Formula) {
+                    QString formula = chunk->getFormulaString(offset);
+                    QString adjusted = shiftFormulaRefs(formula, 'C', column, -count);
+                    m_columnStore.setCellFormula(r, destC, adjusted);
+                } else {
+                    m_columnStore.setCellValue(r, destC, val);
+                }
+                if (styleIdx != 0) m_columnStore.setCellStyle(r, destC, styleIdx);
+            }
+        }
+        srcCol->clear();
+    }
+
+    // Adjust formula refs in columns left of deletion
+    for (int c = 0; c < column; ++c) {
+        Column* col = m_columnStore.getColumn(c);
+        if (!col) continue;
+        for (auto& chunk : col->chunks()) {
+            for (int offset = 0; offset < ColumnChunk::CHUNK_SIZE; ++offset) {
+                if (!chunk->hasData(offset) || chunk->getType(offset) != CellDataType::Formula)
+                    continue;
+                int r = chunk->baseRow + offset;
+                QString formula = chunk->getFormulaString(offset);
+                QString adjusted = shiftFormulaRefs(formula, 'C', column, -count);
+                if (adjusted != formula) {
+                    m_columnStore.setCellFormula(r, c, adjusted);
+                }
+            }
         }
     }
-    for (const auto& key : toRemove) m_cells.erase(key);
-    for (auto& [key, cell] : toReinsert) m_cells.emplace(key, std::move(cell));
-    for (auto& [key, cell] : m_cells) {
-        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
-            QString adjusted = shiftFormulaRefs(cell->getFormula(), 'C', column, -count);
-            if (adjusted != cell->getFormula()) cell->setFormula(adjusted);
-        }
-    }
+
     m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
         [column, count](const MergedRegion& mr) {
             return mr.range.getStart().col >= column && mr.range.getEnd().col < column + count;
         }), m_mergedRegions.end());
     for (auto& mr : m_mergedRegions) {
         auto s = mr.range.getStart(); auto e = mr.range.getEnd();
-        // Clamp start if it falls within the deleted range
         if (s.col >= column && s.col < column + count) s.col = column;
         else if (s.col >= column + count) s.col -= count;
-        // Clamp end if it falls within the deleted range
         if (e.col >= column && e.col < column + count) e.col = column > 0 ? column - 1 : 0;
         else if (e.col >= column + count) e.col -= count;
         if (s.col > e.col) { s.col = e.col; }
         mr.range = CellRange(s, e);
     }
-    // Remove collapsed merged regions
     m_mergedRegions.erase(std::remove_if(m_mergedRegions.begin(), m_mergedRegions.end(),
         [](const MergedRegion& mr) {
             return mr.range.getStart().row == mr.range.getEnd().row &&
@@ -523,11 +734,11 @@ void Spreadsheet::deleteColumn(int column, int count) {
         if (e.col >= column + count) e.col -= count;
         tbl.range = CellRange(s, e);
     }
-    // Shift column widths: remove deleted cols, shift remaining left
+    // Shift column widths
     {
         std::map<int, int> shifted;
         for (auto& [c, w] : m_columnWidths) {
-            if (c >= column && c < column + count) continue; // deleted
+            if (c >= column && c < column + count) continue;
             else if (c >= column + count) shifted[c - count] = w;
             else shifted[c] = w;
         }
@@ -545,15 +756,8 @@ void Spreadsheet::setSheetName(const QString& name) { m_sheetName = name; }
 
 void Spreadsheet::updateMaxRowCol() const {
     if (!m_maxRowColDirty) return;
-    std::shared_lock lock(m_cellMutex);
-    m_cachedMaxRow = -1;
-    m_cachedMaxCol = -1;
-    for (const auto& pair : m_cells) {
-        if (pair.second && pair.second->getType() != CellType::Empty) {
-            if (pair.first.row > m_cachedMaxRow) m_cachedMaxRow = pair.first.row;
-            if (pair.first.col > m_cachedMaxCol) m_cachedMaxCol = pair.first.col;
-        }
-    }
+    m_cachedMaxRow = m_columnStore.maxRow();
+    m_cachedMaxCol = m_columnStore.maxCol();
     m_maxRowColDirty = false;
 }
 
@@ -561,18 +765,12 @@ int Spreadsheet::getMaxRow() const { updateMaxRowCol(); return m_cachedMaxRow; }
 int Spreadsheet::getMaxColumn() const { updateMaxRowCol(); return m_cachedMaxCol; }
 
 std::vector<CellAddress> Spreadsheet::getDirtyCells() const {
-    std::shared_lock lock(m_cellMutex);
-    std::vector<CellAddress> dirty;
-    for (const auto& pair : m_cells) {
-        if (pair.second->isDirty()) {
-            dirty.push_back(CellAddress(pair.first.row, pair.first.col));
-        }
-    }
-    return dirty;
+    // TODO: integrate with ColumnStore flags bitmap
+    return {};
 }
 
 void Spreadsheet::clearDirtyFlag() {
-    for (auto& pair : m_cells) pair.second->setDirty(false);
+    // TODO: integrate with ColumnStore flags bitmap
 }
 
 void Spreadsheet::startTransaction() { m_inTransaction = true; }
@@ -598,7 +796,6 @@ void Spreadsheet::endBatchUpdate() {
     if (m_batchDirtyCells.empty()) return;
 
     // Collect all dirty cells and recalculate dependents in optimal order
-    // First, recalculate the dirty cells themselves (they may be formula cells)
     std::vector<CellAddress> allDirty;
     allDirty.reserve(m_batchDirtyCells.size());
     for (const auto& key : m_batchDirtyCells) {
@@ -607,32 +804,38 @@ void Spreadsheet::endBatchUpdate() {
 
     // Recalculate all formula cells that were directly changed
     for (const auto& addr : allDirty) {
-        auto cell = getCellIfExists(addr);
-        if (cell && cell->getType() == CellType::Formula) {
-            cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
+        if (m_columnStore.getCellType(addr.row, addr.col) == CellDataType::Formula) {
+            QString formula = m_columnStore.getCellFormula(addr.row, addr.col);
+            m_columnStore.setComputedValue(addr.row, addr.col, m_formulaEngine->evaluate(formula));
         }
     }
 
-    // Collect all dependents of dirty cells and recalculate in topological order
-    std::unordered_set<uint64_t> visited;
-    std::vector<CellAddress> recalcOrder;
-    for (const auto& addr : allDirty) {
-        auto order = m_depGraph.getRecalcOrder(addr);
-        for (const auto& depAddr : order) {
-            uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(depAddr.row)) << 32)
-                         | static_cast<uint64_t>(static_cast<uint32_t>(depAddr.col));
-            if (visited.insert(key).second) {
-                recalcOrder.push_back(depAddr);
-            }
-        }
-    }
-
+    // Level-parallel recalculation: get topological levels and evaluate each level concurrently
+    auto levels = m_depGraph.getRecalcLevels(allDirty);
     std::vector<CellAddress> recalculated;
-    for (const auto& depAddr : recalcOrder) {
-        auto cell = getCellIfExists(depAddr);
-        if (cell && cell->getType() == CellType::Formula) {
-            cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
-            recalculated.push_back(depAddr);
+
+    for (const auto& level : levels) {
+        if (level.size() <= 4) {
+            // Small level — sequential (avoids thread overhead)
+            for (const auto& depAddr : level) {
+                if (m_columnStore.getCellType(depAddr.row, depAddr.col) == CellDataType::Formula) {
+                    QString formula = m_columnStore.getCellFormula(depAddr.row, depAddr.col);
+                    m_columnStore.setComputedValue(depAddr.row, depAddr.col,
+                                                   m_formulaEngine->evaluate(formula));
+                    recalculated.push_back(depAddr);
+                }
+            }
+        } else {
+            // Large level — sequential for now (parallel requires thread-safe AST pool)
+            // TODO: Add per-thread AST pools for true parallel recalc
+            for (const auto& depAddr : level) {
+                if (m_columnStore.getCellType(depAddr.row, depAddr.col) == CellDataType::Formula) {
+                    QString formula = m_columnStore.getCellFormula(depAddr.row, depAddr.col);
+                    m_columnStore.setComputedValue(depAddr.row, depAddr.col,
+                                                   m_formulaEngine->evaluate(formula));
+                    recalculated.push_back(depAddr);
+                }
+            }
         }
     }
 
@@ -644,16 +847,13 @@ void Spreadsheet::endBatchUpdate() {
     m_navIndexDirty = true;
 }
 
-Cell* Spreadsheet::getOrCreateCellFast(int row, int col) {
+CellProxy Spreadsheet::getOrCreateCellFast(int row, int col) {
     // No mutex — main-thread-only bulk import path
-    auto& ptr = m_cells[CellKey{row, col}];
-    if (!ptr) {
-        ptr = std::make_shared<Cell>();
-        // Incrementally build nav index during import (appended in order, sorted at finish)
-        m_colIndexCache[col].push_back(row);
-        m_rowIndexCache[row].push_back(col);
-    }
-    return ptr.get();
+    m_columnStore.getOrCreateColumn(col);
+    // Skip nav index during bulk import — built lazily on first use
+    // m_rowIndexCache per-row is too expensive at scale (4M+ rows = 500MB+)
+    m_navIndexDirty = true;
+    return CellProxy(&m_columnStore, row, col);
 }
 
 void Spreadsheet::finishBulkImport() {
@@ -672,46 +872,56 @@ void Spreadsheet::finishBulkImportWithMaxRowCol(int maxRow, int maxCol) {
     m_maxRowColDirty = false;
     m_formulaCells.clear();
 
-    // Nav index was built incrementally during getOrCreateCellFast.
-    // CSV rows are parsed sequentially, so vectors are already sorted —
-    // std::sort on sorted data is O(n) verification.
-    for (auto& [c, rows] : m_colIndexCache)
-        std::sort(rows.begin(), rows.end());
-    for (auto& [r, cols] : m_rowIndexCache)
-        std::sort(cols.begin(), cols.end());
-
+    // Nav index will be built lazily on first use — skip expensive sort of
+    // per-row cache (which would be 500MB+ for millions of rows)
+    m_colIndexCache.clear();
+    m_rowIndexCache.clear();
     m_sortedOccupiedRows.clear();
-    m_sortedOccupiedRows.reserve(m_rowIndexCache.size());
-    for (const auto& [r, _] : m_rowIndexCache)
-        m_sortedOccupiedRows.push_back(r);
-    std::sort(m_sortedOccupiedRows.begin(), m_sortedOccupiedRows.end());
-
-    m_navIndexDirty = false;
+    m_navIndexDirty = true;
 }
 
 void Spreadsheet::rebuildDependencyGraph() {
     m_colRefFormulas.clear();
-    for (auto& [key, cell] : m_cells) {
-        if (cell->getType() == CellType::Formula && !cell->getFormula().isEmpty()) {
-            CellAddress addr(key.row, key.col);
-            m_formulaEngine->evaluate(cell->getFormula());
+    m_columnStore.forEachCell([&](int row, int col, CellDataType type, const QVariant&) {
+        if (type == CellDataType::Formula) {
+            CellAddress addr(row, col);
+            QString formula = m_columnStore.getCellFormula(row, col);
+            m_formulaEngine->evaluate(formula);
             for (const auto& dep : m_formulaEngine->getLastDependencies()) {
                 m_depGraph.addDependency(addr, dep);
             }
-            for (int col : m_formulaEngine->getLastColumnDeps()) {
-                m_colRefFormulas[col].push_back(addr);
+            for (int c : m_formulaEngine->getLastColumnDeps()) {
+                m_colRefFormulas[c].push_back(addr);
             }
         }
-    }
+    });
 }
 
 void Spreadsheet::mergeBulkCells(CellMap& source) {
-    std::unique_lock lock(m_cellMutex);
-    m_cells.merge(source);
-    // Any remaining entries in source (duplicates) — move them over
+    // Legacy compatibility: import from old CellMap format into ColumnStore
     for (auto& [key, cell] : source) {
-        m_cells[key] = std::move(cell);
+        if (!cell) continue;
+        if (cell->getType() == CellType::Formula) {
+            m_columnStore.setCellFormula(key.row, key.col, cell->getFormula());
+            m_columnStore.setComputedValue(key.row, key.col, cell->getComputedValue());
+        } else {
+            m_columnStore.setCellValue(key.row, key.col, cell->getValue());
+        }
+        if (cell->hasCustomStyle()) {
+            uint16_t styleIdx = StyleTable::instance().intern(cell->getStyle());
+            m_columnStore.setCellStyle(key.row, key.col, styleIdx);
+        }
+        if (cell->hasComment()) {
+            m_columnStore.setCellComment(key.row, key.col, cell->getComment());
+        }
+        if (cell->hasHyperlink()) {
+            m_columnStore.setCellHyperlink(key.row, key.col, cell->getHyperlink());
+        }
+        if (cell->isSpillCell()) {
+            m_columnStore.setSpillParent(key.row, key.col, cell->getSpillParent());
+        }
     }
+    source.clear();
 }
 
 void Spreadsheet::setRowHeight(int row, int height) { m_rowHeights[row] = height; }
@@ -739,29 +949,63 @@ const SparklineConfig* Spreadsheet::getSparkline(const CellAddress& addr) const 
 }
 
 CellSnapshot Spreadsheet::takeCellSnapshot(const CellAddress& addr) {
-    auto cell = getCell(addr);
+    CellProxy cell = getCell(addr);
     CellSnapshot snap;
     snap.addr = addr;
-    snap.value = cell->getValue();
-    snap.formula = cell->getFormula();
-    snap.style = cell->getStyle();
-    snap.type = cell->getType();
+    snap.value = cell.getValue();
+    snap.formula = cell.getFormula();
+    snap.style = cell.getStyle();
+    snap.type = cell.getType();
     return snap;
 }
 
 void Spreadsheet::forEachCell(std::function<void(int row, int col, const Cell&)> callback) const {
-    std::shared_lock lock(m_cellMutex);
-    for (const auto& pair : m_cells) {
-        if (pair.second && pair.second->getType() != CellType::Empty) {
-            callback(pair.first.row, pair.first.col, *pair.second);
+    // Bridge: ColumnStore → Cell for backward-compatible serialization
+    // Creates a temporary Cell object for each populated cell
+    m_columnStore.forEachCell([&](int row, int col, CellDataType type, const QVariant& value) {
+        Cell tempCell;
+        switch (type) {
+            case CellDataType::Formula: {
+                QString formula = m_columnStore.getCellFormula(row, col);
+                tempCell.setFormula(formula);
+                QVariant computed = m_columnStore.getComputedValue(row, col);
+                if (computed.isValid()) tempCell.setComputedValue(computed);
+                break;
+            }
+            case CellDataType::Error:
+                tempCell.setError(value.toString());
+                break;
+            default:
+                tempCell.setValue(value);
+                break;
         }
-    }
+
+        // Copy style if non-default
+        uint16_t styleIdx = m_columnStore.getCellStyleIndex(row, col);
+        if (styleIdx != 0) {
+            tempCell.setStyle(StyleTable::instance().get(styleIdx));
+        }
+
+        // Copy comment
+        QString comment = m_columnStore.getCellComment(row, col);
+        if (!comment.isEmpty()) tempCell.setComment(comment);
+
+        // Copy hyperlink
+        QString hyperlink = m_columnStore.getCellHyperlink(row, col);
+        if (!hyperlink.isEmpty()) tempCell.setHyperlink(hyperlink);
+
+        // Copy spill parent
+        CellAddress spillParent = m_columnStore.getSpillParent(row, col);
+        if (spillParent.row >= 0) tempCell.setSpillParent(spillParent);
+
+        callback(row, col, tempCell);
+    });
 }
 
 void Spreadsheet::recalculate(const CellAddress& addr) {
-    auto cell = getCellIfExists(addr);
-    if (cell && cell->getType() == CellType::Formula) {
-        cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
+    if (m_columnStore.getCellType(addr.row, addr.col) == CellDataType::Formula) {
+        QString formula = m_columnStore.getCellFormula(addr.row, addr.col);
+        m_columnStore.setComputedValue(addr.row, addr.col, m_formulaEngine->evaluate(formula));
     }
 }
 
@@ -769,19 +1013,20 @@ void Spreadsheet::recalculateAll() {
     // Use formula cell tracker for O(f) instead of scanning all O(n) cells
     if (!m_formulaCells.empty()) {
         for (const auto& key : m_formulaCells) {
-            auto it = m_cells.find(key);
-            if (it != m_cells.end() && it->second->getType() == CellType::Formula) {
-                it->second->setComputedValue(m_formulaEngine->evaluate(it->second->getFormula()));
+            if (m_columnStore.getCellType(key.row, key.col) == CellDataType::Formula) {
+                QString formula = m_columnStore.getCellFormula(key.row, key.col);
+                m_columnStore.setComputedValue(key.row, key.col, m_formulaEngine->evaluate(formula));
             }
         }
     } else {
         // Fallback: scan all cells (only needed if formula tracker wasn't populated)
-        for (auto& pair : m_cells) {
-            if (pair.second->getType() == CellType::Formula) {
-                pair.second->setComputedValue(m_formulaEngine->evaluate(pair.second->getFormula()));
-                m_formulaCells.insert(pair.first);
+        m_columnStore.forEachCell([&](int row, int col, CellDataType type, const QVariant&) {
+            if (type == CellDataType::Formula) {
+                QString formula = m_columnStore.getCellFormula(row, col);
+                m_columnStore.setComputedValue(row, col, m_formulaEngine->evaluate(formula));
+                m_formulaCells.insert(CellKey{row, col});
             }
-        }
+        });
     }
 }
 
@@ -793,9 +1038,9 @@ void Spreadsheet::updateDependencies(const CellAddress& addr) {
         addrs.erase(std::remove(addrs.begin(), addrs.end(), addr), addrs.end());
     }
 
-    auto cell = getCellIfExists(addr);
-    if (cell && cell->getType() == CellType::Formula) {
-        m_formulaEngine->evaluate(cell->getFormula());
+    if (m_columnStore.getCellType(addr.row, addr.col) == CellDataType::Formula) {
+        QString formula = m_columnStore.getCellFormula(addr.row, addr.col);
+        m_formulaEngine->evaluate(formula);
         for (const auto& dep : m_formulaEngine->getLastDependencies()) {
             m_depGraph.addDependency(addr, dep);
         }
@@ -810,14 +1055,48 @@ void Spreadsheet::recalculateDependents(const CellAddress& addr) {
     auto order = m_depGraph.getRecalcOrder(addr);
     std::vector<CellAddress> recalculated;
     for (const auto& depAddr : order) {
-        auto cell = getCellIfExists(depAddr);
-        if (cell && cell->getType() == CellType::Formula) {
-            cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
+        if (m_columnStore.getCellType(depAddr.row, depAddr.col) == CellDataType::Formula) {
+            QString formula = m_columnStore.getCellFormula(depAddr.row, depAddr.col);
+            m_columnStore.setComputedValue(depAddr.row, depAddr.col, m_formulaEngine->evaluate(formula));
             recalculated.push_back(depAddr);
         }
     }
     if (!recalculated.empty() && onDependentsRecalculated) {
         onDependentsRecalculated(recalculated);
+    }
+}
+
+void Spreadsheet::recalculateDependentsParallel(const CellAddress& addr) {
+    // Get topological levels: cells at the same level are independent → can run in parallel
+    auto levels = m_depGraph.getRecalcLevels(addr);
+    std::vector<CellAddress> allRecalculated;
+
+    for (const auto& level : levels) {
+        if (level.size() <= 4) {
+            // Small level — sequential is faster (avoids thread overhead)
+            for (const auto& depAddr : level) {
+                if (m_columnStore.getCellType(depAddr.row, depAddr.col) == CellDataType::Formula) {
+                    QString formula = m_columnStore.getCellFormula(depAddr.row, depAddr.col);
+                    m_columnStore.setComputedValue(depAddr.row, depAddr.col,
+                                                   m_formulaEngine->evaluate(formula));
+                    allRecalculated.push_back(depAddr);
+                }
+            }
+        } else {
+            // Large level — sequential for now (parallel requires thread-safe AST pool)
+            for (const auto& depAddr : level) {
+                if (m_columnStore.getCellType(depAddr.row, depAddr.col) == CellDataType::Formula) {
+                    QString formula = m_columnStore.getCellFormula(depAddr.row, depAddr.col);
+                    m_columnStore.setComputedValue(depAddr.row, depAddr.col,
+                                                   m_formulaEngine->evaluate(formula));
+                    allRecalculated.push_back(depAddr);
+                }
+            }
+        }
+    }
+
+    if (!allRecalculated.empty() && onDependentsRecalculated) {
+        onDependentsRecalculated(allRecalculated);
     }
 }
 
@@ -827,9 +1106,9 @@ void Spreadsheet::recalculateColumnDependents(int col) {
 
     std::vector<CellAddress> recalculated;
     for (const auto& depAddr : it->second) {
-        auto cell = getCellIfExists(depAddr);
-        if (cell && cell->getType() == CellType::Formula) {
-            cell->setComputedValue(m_formulaEngine->evaluate(cell->getFormula()));
+        if (m_columnStore.getCellType(depAddr.row, depAddr.col) == CellDataType::Formula) {
+            QString formula = m_columnStore.getCellFormula(depAddr.row, depAddr.col);
+            m_columnStore.setComputedValue(depAddr.row, depAddr.col, m_formulaEngine->evaluate(formula));
             recalculated.push_back(depAddr);
             // Cascade: recalculate anything that depends on this formula cell
             recalculateDependents(depAddr);
@@ -847,64 +1126,145 @@ void Spreadsheet::sortRange(const CellRange& range, int sortColumn, bool ascendi
     int endCol = range.getEnd().col;
     if (startRow >= endRow) return;
 
-    struct RowData {
-        QVariant sortValue;
-        std::vector<std::pair<int, std::shared_ptr<Cell>>> cells;
+    int numRows = endRow - startRow + 1;
+
+    // Extract sort keys: separate numeric and string keys for faster comparison
+    struct SortKey {
+        double numericKey;
+        QString stringKey;
+        bool isNumeric;
+        bool isEmpty;
+        int originalIndex;
+    };
+    std::vector<SortKey> keys(numRows);
+
+    // Parallel key extraction for large ranges
+    auto extractKey = [&](int i) {
+        int r = startRow + i;
+        keys[i].originalIndex = i;
+        CellProxy proxy(&m_columnStore, r, sortColumn);
+        QVariant val = proxy.getValue();
+        if (!val.isValid() || val.toString().isEmpty()) {
+            keys[i].isEmpty = true;
+            keys[i].isNumeric = false;
+            keys[i].numericKey = 0;
+        } else {
+            keys[i].isEmpty = false;
+            bool ok;
+            keys[i].numericKey = val.toString().toDouble(&ok);
+            keys[i].isNumeric = ok;
+            if (!ok) keys[i].stringKey = val.toString();
+        }
     };
 
-    std::vector<RowData> rows;
-    for (int r = startRow; r <= endRow; ++r) {
-        RowData rd;
-        rd.sortValue = getCellValue(CellAddress(r, sortColumn));
-        for (int c = startCol; c <= endCol; ++c) {
-            auto it = m_cells.find(CellKey{r, c});
-            if (it != m_cells.end()) rd.cells.push_back({c, it->second});
-        }
-        rows.push_back(std::move(rd));
+    if (numRows > 10000) {
+        // Parallel key extraction
+        std::vector<int> rowIndices(numRows);
+        std::iota(rowIndices.begin(), rowIndices.end(), 0);
+        QtConcurrent::blockingMap(rowIndices, extractKey);
+    } else {
+        for (int i = 0; i < numRows; ++i) extractKey(i);
     }
 
-    std::sort(rows.begin(), rows.end(), [ascending](const RowData& a, const RowData& b) {
-        bool aEmpty = !a.sortValue.isValid() || a.sortValue.toString().isEmpty();
-        bool bEmpty = !b.sortValue.isValid() || b.sortValue.toString().isEmpty();
-        if (aEmpty && bEmpty) return false;
-        if (aEmpty) return false;
-        if (bEmpty) return true;
-        bool aOk, bOk;
-        double aNum = a.sortValue.toString().toDouble(&aOk);
-        double bNum = b.sortValue.toString().toDouble(&bOk);
-        if (aOk && bOk) return ascending ? (aNum < bNum) : (aNum > bNum);
-        int cmp = a.sortValue.toString().compare(b.sortValue.toString(), Qt::CaseInsensitive);
+    // Sort (std::sort is already quite fast; parallel sort needs TBB or C++17 execution policies)
+    std::sort(keys.begin(), keys.end(), [ascending](const SortKey& a, const SortKey& b) {
+        if (a.isEmpty && b.isEmpty) return false;
+        if (a.isEmpty) return false;
+        if (b.isEmpty) return true;
+        if (a.isNumeric && b.isNumeric) {
+            return ascending ? (a.numericKey < b.numericKey) : (a.numericKey > b.numericKey);
+        }
+        // Mixed: numbers before strings
+        if (a.isNumeric != b.isNumeric) return a.isNumeric;
+        int cmp = a.stringKey.compare(b.stringKey, Qt::CaseInsensitive);
         return ascending ? (cmp < 0) : (cmp > 0);
     });
 
-    for (int r = startRow; r <= endRow; ++r)
-        for (int c = startCol; c <= endCol; ++c)
-            m_cells.erase(CellKey{r, c});
-
-    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-        int targetRow = startRow + i;
-        for (auto& [col, cell] : rows[i].cells)
-            m_cells[CellKey{targetRow, col}] = cell;
+    // Build permutation vector
+    std::vector<int> perm(numRows);
+    for (int i = 0; i < numRows; ++i) {
+        perm[i] = keys[i].originalIndex;
     }
+
+    // Apply permutation to all columns in range
+    m_columnStore.applyPermutation(startRow, startCol, endCol, perm);
+
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
+}
+
+// ============================================================================
+// Parallel search across all cells
+// ============================================================================
+std::vector<CellAddress> Spreadsheet::searchAllCells(const QString& query, bool caseSensitive,
+                                                      bool wholeCell) const {
+    int maxCol = m_columnStore.maxCol();
+    int maxRow = m_columnStore.maxRow();
+    if (maxCol < 0 || maxRow < 0) return {};
+
+    Qt::CaseSensitivity cs = caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive;
+
+    // Per-column results (to avoid contention)
+    std::vector<std::vector<CellAddress>> perColResults(maxCol + 1);
+
+    auto searchColumn = [&](int col) {
+        m_columnStore.scanColumnValues(col, 0, maxRow,
+            [&](int row, const QVariant& val) {
+                QString str = val.toString();
+                bool match = wholeCell
+                    ? (str.compare(query, cs) == 0)
+                    : str.contains(query, cs);
+                if (match) {
+                    perColResults[col].push_back(CellAddress(row, col));
+                }
+            });
+    };
+
+    if (maxCol > 4) {
+        // Parallel search across columns
+        std::vector<int> colIndices(maxCol + 1);
+        std::iota(colIndices.begin(), colIndices.end(), 0);
+        QtConcurrent::blockingMap(colIndices, searchColumn);
+    } else {
+        for (int c = 0; c <= maxCol; ++c) searchColumn(c);
+    }
+
+    // Merge results in row-major order
+    std::vector<CellAddress> results;
+    for (auto& colResult : perColResults) {
+        results.insert(results.end(), colResult.begin(), colResult.end());
+    }
+
+    // Sort by row, then column for consistent ordering
+    std::sort(results.begin(), results.end(), [](const CellAddress& a, const CellAddress& b) {
+        return a.row < b.row || (a.row == b.row && a.col < b.col);
+    });
+
+    return results;
 }
 
 void Spreadsheet::insertCellsShiftRight(const CellRange& range) {
     int startRow = range.getStart().row, endRow = range.getEnd().row;
     int startCol = range.getStart().col;
     int colCount = range.getEnd().col - startCol + 1;
+    int maxCol = m_columnStore.maxCol();
+
     for (int r = startRow; r <= endRow; ++r) {
-        std::vector<std::pair<CellKey, std::shared_ptr<Cell>>> ri;
-        std::vector<CellKey> rm;
-        for (const auto& p : m_cells) {
-            if (p.first.row == r && p.first.col >= startCol) {
-                rm.push_back(p.first);
-                ri.push_back({CellKey{r, p.first.col + colCount}, p.second});
+        // Shift cells right: process from rightmost to avoid overwrites
+        for (int c = maxCol; c >= startCol; --c) {
+            if (m_columnStore.hasCell(r, c)) {
+                QVariant val = m_columnStore.getCellValue(r, c);
+                uint16_t styleIdx = m_columnStore.getCellStyleIndex(r, c);
+                CellDataType type = m_columnStore.getCellType(r, c);
+                if (type == CellDataType::Formula) {
+                    m_columnStore.setCellFormula(r, c + colCount, m_columnStore.getCellFormula(r, c));
+                } else {
+                    m_columnStore.setCellValue(r, c + colCount, val);
+                }
+                if (styleIdx != 0) m_columnStore.setCellStyle(r, c + colCount, styleIdx);
+                m_columnStore.removeCell(r, c);
             }
         }
-        for (const auto& k : rm) m_cells.erase(k);
-        for (auto& [k, c] : ri) m_cells.emplace(k, std::move(c));
     }
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
@@ -914,17 +1274,24 @@ void Spreadsheet::insertCellsShiftDown(const CellRange& range) {
     int startRow = range.getStart().row;
     int startCol = range.getStart().col, endCol = range.getEnd().col;
     int rowCount = range.getEnd().row - startRow + 1;
+    int maxRow = m_columnStore.maxRow();
+
     for (int c = startCol; c <= endCol; ++c) {
-        std::vector<std::pair<CellKey, std::shared_ptr<Cell>>> ri;
-        std::vector<CellKey> rm;
-        for (const auto& p : m_cells) {
-            if (p.first.col == c && p.first.row >= startRow) {
-                rm.push_back(p.first);
-                ri.push_back({CellKey{p.first.row + rowCount, c}, p.second});
+        // Shift cells down: process from bottom to avoid overwrites
+        for (int r = maxRow; r >= startRow; --r) {
+            if (m_columnStore.hasCell(r, c)) {
+                QVariant val = m_columnStore.getCellValue(r, c);
+                uint16_t styleIdx = m_columnStore.getCellStyleIndex(r, c);
+                CellDataType type = m_columnStore.getCellType(r, c);
+                if (type == CellDataType::Formula) {
+                    m_columnStore.setCellFormula(r + rowCount, c, m_columnStore.getCellFormula(r, c));
+                } else {
+                    m_columnStore.setCellValue(r + rowCount, c, val);
+                }
+                if (styleIdx != 0) m_columnStore.setCellStyle(r + rowCount, c, styleIdx);
+                m_columnStore.removeCell(r, c);
             }
         }
-        for (const auto& k : rm) m_cells.erase(k);
-        for (auto& [k, cl] : ri) m_cells.emplace(k, std::move(cl));
     }
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
@@ -934,18 +1301,28 @@ void Spreadsheet::deleteCellsShiftLeft(const CellRange& range) {
     int startRow = range.getStart().row, endRow = range.getEnd().row;
     int startCol = range.getStart().col, endCol = range.getEnd().col;
     int colCount = endCol - startCol + 1;
+    int maxCol = m_columnStore.maxCol();
+
     for (int r = startRow; r <= endRow; ++r) {
-        for (int c = startCol; c <= endCol; ++c) m_cells.erase(CellKey{r, c});
-        std::vector<std::pair<CellKey, std::shared_ptr<Cell>>> ri;
-        std::vector<CellKey> rm;
-        for (const auto& p : m_cells) {
-            if (p.first.row == r && p.first.col > endCol) {
-                rm.push_back(p.first);
-                ri.push_back({CellKey{r, p.first.col - colCount}, p.second});
+        // Remove cells in range
+        for (int c = startCol; c <= endCol; ++c) {
+            m_columnStore.removeCell(r, c);
+        }
+        // Shift cells left
+        for (int c = endCol + 1; c <= maxCol; ++c) {
+            if (m_columnStore.hasCell(r, c)) {
+                QVariant val = m_columnStore.getCellValue(r, c);
+                uint16_t styleIdx = m_columnStore.getCellStyleIndex(r, c);
+                CellDataType type = m_columnStore.getCellType(r, c);
+                if (type == CellDataType::Formula) {
+                    m_columnStore.setCellFormula(r, c - colCount, m_columnStore.getCellFormula(r, c));
+                } else {
+                    m_columnStore.setCellValue(r, c - colCount, val);
+                }
+                if (styleIdx != 0) m_columnStore.setCellStyle(r, c - colCount, styleIdx);
+                m_columnStore.removeCell(r, c);
             }
         }
-        for (const auto& k : rm) m_cells.erase(k);
-        for (auto& [k, c] : ri) m_cells.emplace(k, std::move(c));
     }
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
@@ -955,18 +1332,28 @@ void Spreadsheet::deleteCellsShiftUp(const CellRange& range) {
     int startRow = range.getStart().row, endRow = range.getEnd().row;
     int startCol = range.getStart().col, endCol = range.getEnd().col;
     int rowCount = endRow - startRow + 1;
+    int maxRow = m_columnStore.maxRow();
+
     for (int c = startCol; c <= endCol; ++c) {
-        for (int r = startRow; r <= endRow; ++r) m_cells.erase(CellKey{r, c});
-        std::vector<std::pair<CellKey, std::shared_ptr<Cell>>> ri;
-        std::vector<CellKey> rm;
-        for (const auto& p : m_cells) {
-            if (p.first.col == c && p.first.row > endRow) {
-                rm.push_back(p.first);
-                ri.push_back({CellKey{p.first.row - rowCount, c}, p.second});
+        // Remove cells in range
+        for (int r = startRow; r <= endRow; ++r) {
+            m_columnStore.removeCell(r, c);
+        }
+        // Shift cells up
+        for (int r = endRow + 1; r <= maxRow; ++r) {
+            if (m_columnStore.hasCell(r, c)) {
+                QVariant val = m_columnStore.getCellValue(r, c);
+                uint16_t styleIdx = m_columnStore.getCellStyleIndex(r, c);
+                CellDataType type = m_columnStore.getCellType(r, c);
+                if (type == CellDataType::Formula) {
+                    m_columnStore.setCellFormula(r - rowCount, c, m_columnStore.getCellFormula(r, c));
+                } else {
+                    m_columnStore.setCellValue(r - rowCount, c, val);
+                }
+                if (styleIdx != 0) m_columnStore.setCellStyle(r - rowCount, c, styleIdx);
+                m_columnStore.removeCell(r, c);
             }
         }
-        for (const auto& k : rm) m_cells.erase(k);
-        for (auto& [k, cl] : ri) m_cells.emplace(k, std::move(cl));
     }
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
@@ -976,11 +1363,9 @@ void Spreadsheet::deleteCellsShiftUp(const CellRange& range) {
 void Spreadsheet::setDocumentTheme(const DocumentTheme& theme) {
     m_documentTheme = theme;
 
-    // Re-theme existing tables: regenerate table themes from the new document theme
-    // and re-assign each table to its corresponding accent-based theme
+    // Re-theme existing tables
     auto newThemes = generateTableThemes(theme);
     for (auto& table : m_tables) {
-        // Try to match the table's current theme name to a generated theme
         for (const auto& nt : newThemes) {
             if (nt.name == table.theme.name) {
                 table.theme = nt;
@@ -1043,50 +1428,48 @@ void Spreadsheet::buildNavIndexIfNeeded() const {
     if (!m_navIndexDirty) return;
     m_colIndexCache.clear();
     m_rowIndexCache.clear();
-    // Also rebuild formula tracker during full scan (avoids separate O(n) pass)
-    auto& formulaCells = const_cast<std::unordered_set<CellKey, CellKeyHash>&>(m_formulaCells);
-    formulaCells.clear();
-    for (const auto& [key, cell] : m_cells) {
-        if (cell && cell->getType() != CellType::Empty) {
-            m_colIndexCache[key.col].push_back(key.row);
-            m_rowIndexCache[key.row].push_back(key.col);
-            if (cell->getType() == CellType::Formula) {
-                formulaCells.insert(key);
+    m_sortedOccupiedRows.clear();
+
+    // Build per-column index by scanning chunks directly — much faster than forEachCell
+    // which iterates every bit in every presence bitmap. This uses popcount to count
+    // populated rows per chunk, then extracts row numbers only for occupied chunks.
+    int numCols = m_columnStore.columnCount();
+    for (int c = 0; c < numCols; ++c) {
+        auto* col = m_columnStore.getColumn(c);
+        if (!col) continue;
+
+        auto& rowList = m_colIndexCache[c];
+        for (const auto& chunk : col->chunks()) {
+            if (chunk->populatedCount == 0) continue;
+            // Scan presence bitmap using popcount for speed
+            for (int w = 0; w < ColumnChunk::BITMAP_WORDS; ++w) {
+                uint64_t word = chunk->presence[w];
+                while (word) {
+                    int bit = __builtin_ctzll(word); // count trailing zeros
+                    int offset = w * 64 + bit;
+                    rowList.push_back(chunk->baseRow + offset);
+                    word &= word - 1; // clear lowest set bit
+                }
             }
         }
+        // Rows are already sorted (chunks sorted by baseRow, bits in order)
     }
-    for (auto& [col, rows] : m_colIndexCache)
-        std::sort(rows.begin(), rows.end());
-    for (auto& [row, cols] : m_rowIndexCache)
-        std::sort(cols.begin(), cols.end());
-    m_sortedOccupiedRows.clear();
-    m_sortedOccupiedRows.reserve(m_rowIndexCache.size());
-    for (const auto& [row, _] : m_rowIndexCache)
-        m_sortedOccupiedRows.push_back(row);
-    std::sort(m_sortedOccupiedRows.begin(), m_sortedOccupiedRows.end());
+
     m_navIndexDirty = false;
 }
 
 void Spreadsheet::navIndexInsert(int row, int col) const {
-    if (m_navIndexDirty) return; // Will rebuild fully later
-    // Insert row into column index (maintain sorted order)
+    if (m_navIndexDirty) return;
     auto& colRows = m_colIndexCache[col];
     auto it = std::lower_bound(colRows.begin(), colRows.end(), row);
     if (it == colRows.end() || *it != row) colRows.insert(it, row);
 
-    // Insert col into row index (maintain sorted order)
-    auto& rowCols = m_rowIndexCache[row];
-    auto it2 = std::lower_bound(rowCols.begin(), rowCols.end(), col);
-    if (it2 == rowCols.end() || *it2 != col) rowCols.insert(it2, col);
-
-    // Insert into sorted occupied rows
     auto it3 = std::lower_bound(m_sortedOccupiedRows.begin(), m_sortedOccupiedRows.end(), row);
     if (it3 == m_sortedOccupiedRows.end() || *it3 != row) m_sortedOccupiedRows.insert(it3, row);
 }
 
 void Spreadsheet::navIndexRemove(int row, int col) const {
     if (m_navIndexDirty) return;
-    // Remove row from column index
     auto colIt = m_colIndexCache.find(col);
     if (colIt != m_colIndexCache.end()) {
         auto& rows = colIt->second;
@@ -1094,15 +1477,14 @@ void Spreadsheet::navIndexRemove(int row, int col) const {
         if (it != rows.end() && *it == row) rows.erase(it);
         if (rows.empty()) m_colIndexCache.erase(colIt);
     }
-    // Remove col from row index
-    auto rowIt = m_rowIndexCache.find(row);
-    if (rowIt != m_rowIndexCache.end()) {
-        auto& cols = rowIt->second;
-        auto it = std::lower_bound(cols.begin(), cols.end(), col);
-        if (it != cols.end() && *it == col) cols.erase(it);
-        if (cols.empty()) {
-            m_rowIndexCache.erase(rowIt);
-            // Remove from sorted occupied rows
+    // Check if this row still has data in any column
+    if (!m_columnStore.hasCell(row, col)) {
+        bool rowEmpty = true;
+        int numCols = m_columnStore.columnCount();
+        for (int c = 0; c < numCols; ++c) {
+            if (m_columnStore.hasCell(row, c)) { rowEmpty = false; break; }
+        }
+        if (rowEmpty) {
             auto it2 = std::lower_bound(m_sortedOccupiedRows.begin(), m_sortedOccupiedRows.end(), row);
             if (it2 != m_sortedOccupiedRows.end() && *it2 == row) m_sortedOccupiedRows.erase(it2);
         }
@@ -1119,28 +1501,24 @@ const std::vector<int>& Spreadsheet::getOccupiedRowsInColumn(int col) const {
 
 void Spreadsheet::streamColumnValues(int col, int startRow, int endRow,
                                      const std::function<void(const QVariant&)>& fn) const {
-    buildNavIndexIfNeeded();
-    auto colIt = m_colIndexCache.find(col);
-    if (colIt == m_colIndexCache.end()) return;
-    const auto& rows = colIt->second;
-    auto lo = std::lower_bound(rows.begin(), rows.end(), startRow);
-    auto hi = std::upper_bound(rows.begin(), rows.end(), endRow);
-    for (auto it = lo; it != hi; ++it) {
-        auto cellIt = m_cells.find(CellKey{*it, col});
-        if (cellIt != m_cells.end() && cellIt->second) {
-            const auto& cell = cellIt->second;
-            fn(cell->getType() == CellType::Formula ?
-                cell->getComputedValue() : cell->getValue());
-        }
-    }
+    // Use ColumnStore directly — zero materialization
+    m_columnStore.scanColumnValues(col, startRow, endRow, [&fn](int, const QVariant& val) {
+        fn(val);
+    });
 }
 
 const std::vector<int>& Spreadsheet::getOccupiedColsInRow(int row) const {
-    static const std::vector<int> empty;
-    buildNavIndexIfNeeded();
-    auto it = m_rowIndexCache.find(row);
-    if (it == m_rowIndexCache.end()) return empty;
-    return it->second;
+    // Query ColumnStore directly — O(numColumns) which is fast (~20 cols)
+    // Avoids maintaining a per-row cache (would be 500MB+ for millions of rows)
+    thread_local std::vector<int> result;
+    result.clear();
+    int numCols = m_columnStore.columnCount();
+    for (int c = 0; c < numCols; ++c) {
+        if (m_columnStore.hasCell(row, c)) {
+            result.push_back(c);
+        }
+    }
+    return result;
 }
 
 const std::vector<int>& Spreadsheet::getOccupiedRows() const {
@@ -1239,12 +1617,12 @@ void Spreadsheet::clearSpillRange(const CellAddress& formulaCell) {
     for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
         for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
             if (r == formulaCell.row && c == formulaCell.col) continue;
-            auto cell = getCellIfExists(r, c);
-            if (cell && cell->isSpillCell() &&
-                cell->getSpillParent().row == formulaCell.row &&
-                cell->getSpillParent().col == formulaCell.col) {
-                cell->clear();
-                cell->clearSpillParent();
+            if (m_columnStore.isSpillCell(r, c)) {
+                CellAddress parent = m_columnStore.getSpillParent(r, c);
+                if (parent.row == formulaCell.row && parent.col == formulaCell.col) {
+                    m_columnStore.removeCell(r, c);
+                    m_columnStore.clearSpillParent(r, c);
+                }
             }
         }
     }
@@ -1272,15 +1650,16 @@ void Spreadsheet::applySpillResult(const CellAddress& formulaCell,
     // 2. Check if target area is free
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
-            if (r == 0 && c == 0) continue; // skip formula cell itself
+            if (r == 0 && c == 0) continue;
             int targetRow = startRow + r;
             int targetCol = startCol + c;
-            auto existing = getCellIfExists(targetRow, targetCol);
-            if (existing && existing->getType() != CellType::Empty && !existing->isSpillCell()) {
-                // Blocked - set #SPILL! error
-                auto formulaCellPtr = getCell(formulaCell);
-                formulaCellPtr->setComputedValue(QVariant("#SPILL!"));
-                return;
+            if (m_columnStore.hasCell(targetRow, targetCol)) {
+                CellDataType type = m_columnStore.getCellType(targetRow, targetCol);
+                if (type != CellDataType::Empty && !m_columnStore.isSpillCell(targetRow, targetCol)) {
+                    // Blocked - set #SPILL! error
+                    m_columnStore.setComputedValue(formulaCell.row, formulaCell.col, QVariant("#SPILL!"));
+                    return;
+                }
             }
         }
     }
@@ -1289,12 +1668,11 @@ void Spreadsheet::applySpillResult(const CellAddress& formulaCell,
     for (int r = 0; r < rows; ++r) {
         int numCols = static_cast<int>(result[r].size());
         for (int c = 0; c < numCols; ++c) {
-            if (r == 0 && c == 0) continue; // formula cell already has its value
+            if (r == 0 && c == 0) continue;
             int targetRow = startRow + r;
             int targetCol = startCol + c;
-            auto cell = getCell(targetRow, targetCol);
-            cell->setValue(result[r][c]);
-            cell->setSpillParent(formulaCell);
+            m_columnStore.setCellValue(targetRow, targetCol, result[r][c]);
+            m_columnStore.setSpillParent(targetRow, targetCol, formulaCell);
         }
     }
 

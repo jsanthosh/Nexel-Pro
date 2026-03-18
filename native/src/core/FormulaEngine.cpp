@@ -29,6 +29,34 @@ QVariant FormulaEngine::evaluate(const QString& formula) {
 
     QString expr = formula.startsWith('=') ? formula.mid(1) : formula;
 
+    // Use AST for all formulas except array constants ({})
+    bool useAST = !expr.contains('{');
+
+    if (useAST) {
+        try {
+            uint32_t root = FormulaASTPool::instance().parse(formula);
+            QVariant result = evaluateAST(root);
+            // If AST evaluation hit a parse error node, fall back to old parser
+            // Only check string result for error types (avoid expensive toString on complex types)
+            if (result.typeId() == QMetaType::QString) {
+                QString resultStr = result.toString();
+                if (resultStr == QStringLiteral("#PARSE!")) {
+                    m_lastDependencies.clear();
+                    m_lastRangeArgs.clear();
+                    m_lastColumnDeps.clear();
+                    return parseExpression(expr);
+                }
+            }
+            return result;
+        } catch (...) {
+            // Fall back to old parser on any AST evaluation failure
+            m_lastDependencies.clear();
+            m_lastRangeArgs.clear();
+            m_lastColumnDeps.clear();
+        }
+    }
+
+    // Fallback: original string-parsing evaluation
     try {
         return parseExpression(expr);
     } catch (const std::exception& e) {
@@ -37,9 +65,165 @@ QVariant FormulaEngine::evaluate(const QString& formula) {
     }
 }
 
+// ============================================================================
+// AST Evaluator — walks cached AST nodes, no string re-parsing
+// ============================================================================
+// Parse happens once per unique formula string (cached in FormulaASTPool).
+// Evaluation walks the flat node array — ~10x faster than re-parsing.
+
+QVariant FormulaEngine::evaluateAST(uint32_t nodeIndex) {
+    auto& pool = FormulaASTPool::instance();
+    const ASTNode& node = pool.getNode(nodeIndex);
+
+    switch (node.type) {
+        case ASTNodeType::Literal:
+            return pool.getLiteral(node.literalIndex);
+
+        case ASTNodeType::Boolean:
+            return QVariant(node.boolValue);
+
+        case ASTNodeType::Error:
+            return pool.getLiteral(node.errorIndex);
+
+        case ASTNodeType::CellRef: {
+            CellAddress addr(node.cellRef.row, node.cellRef.col);
+            m_lastDependencies.push_back(addr);
+            return getCellValue(addr);
+        }
+
+        case ASTNodeType::RangeRef: {
+            CellRange range(
+                CellAddress(node.rangeRef.startRow, node.rangeRef.startCol),
+                CellAddress(node.rangeRef.endRow, node.rangeRef.endCol));
+            m_lastRangeArgs.push_back(range);
+
+            // Track individual cell dependencies for small ranges
+            long long cellCount = static_cast<long long>(range.getRowCount()) * range.getColumnCount();
+            if (cellCount < 10000) {
+                auto cells = range.getCells();
+                for (const auto& c : cells)
+                    m_lastDependencies.push_back(c);
+            }
+
+            // For large ranges, return lazy CellRange for streaming evaluation
+            if (cellCount > 100000) {
+                return QVariant::fromValue(range);
+            }
+
+            return QVariant::fromValue(getRangeValues(range));
+        }
+
+        case ASTNodeType::UnaryOp: {
+            QVariant operand = evaluateAST(node.unary.operand);
+            if (node.unary.op == UnaryOp::Negate)
+                return QVariant(-toNumber(operand));
+            return operand;
+        }
+
+        case ASTNodeType::BinaryOp: {
+            QVariant left = evaluateAST(node.binary.left);
+            QVariant right = evaluateAST(node.binary.right);
+
+            switch (node.binary.op) {
+                case BinaryOp::Add: return QVariant(toNumber(left) + toNumber(right));
+                case BinaryOp::Sub: return QVariant(toNumber(left) - toNumber(right));
+                case BinaryOp::Mul: return QVariant(toNumber(left) * toNumber(right));
+                case BinaryOp::Div: {
+                    double d = toNumber(right);
+                    if (d == 0.0) return QVariant(QStringLiteral("#DIV/0!"));
+                    return QVariant(toNumber(left) / d);
+                }
+                case BinaryOp::Pow:
+                    return QVariant(std::pow(toNumber(left), toNumber(right)));
+                case BinaryOp::Concat:
+                    return QVariant(toString(left) + toString(right));
+                case BinaryOp::Eq:
+                    return QVariant(toString(left).compare(toString(right), Qt::CaseInsensitive) == 0);
+                case BinaryOp::Neq:
+                    return QVariant(toString(left).compare(toString(right), Qt::CaseInsensitive) != 0);
+                case BinaryOp::Lt:  return QVariant(toNumber(left) < toNumber(right));
+                case BinaryOp::Gt:  return QVariant(toNumber(left) > toNumber(right));
+                case BinaryOp::Lte: return QVariant(toNumber(left) <= toNumber(right));
+                case BinaryOp::Gte: return QVariant(toNumber(left) >= toNumber(right));
+            }
+            return QVariant(QStringLiteral("#ERROR!"));
+        }
+
+        case ASTNodeType::FunctionCall: {
+            const QVariant& argData = pool.getLiteral(node.func.argStart);
+            QVariantList argNodeIndices = argData.toList();
+            return evaluateASTFunction(node.func.funcId, argNodeIndices);
+        }
+
+        case ASTNodeType::ColumnRef: {
+            // Column reference D:D → expand to D1:D10000000 (sparse iteration makes this fast)
+            int startCol = node.colRef.startCol;
+            int endCol = node.colRef.endCol;
+            for (int c = startCol; c <= endCol; c++) {
+                m_lastColumnDeps.push_back(c);
+            }
+            CellRange range(CellAddress(0, startCol), CellAddress(9999999, endCol));
+            m_lastRangeArgs.push_back(range);
+            return QVariant::fromValue(range);  // lazy — streaming evaluation
+        }
+
+        case ASTNodeType::CrossSheetCell: {
+            QString sheetName = pool.getLiteral(node.crossSheetCell.sheetNameIndex).toString();
+            CellAddress addr(node.crossSheetCell.row, node.crossSheetCell.col);
+            if (m_allSheets) {
+                for (const auto& sheet : *m_allSheets) {
+                    if (sheet->getSheetName().compare(sheetName, Qt::CaseInsensitive) == 0) {
+                        return sheet->getCellValue(addr);
+                    }
+                }
+            }
+            return QVariant(QStringLiteral("#REF!"));
+        }
+
+        case ASTNodeType::CrossSheetRange: {
+            QString sheetName = pool.getLiteral(node.crossSheetRange.sheetNameIndex).toString();
+            CellRange range(
+                CellAddress(node.crossSheetRange.startRow, node.crossSheetRange.startCol),
+                CellAddress(node.crossSheetRange.endRow, node.crossSheetRange.endCol));
+            m_lastRangeArgs.push_back(range);
+            if (m_allSheets) {
+                for (const auto& sheet : *m_allSheets) {
+                    if (sheet->getSheetName().compare(sheetName, Qt::CaseInsensitive) == 0) {
+                        std::vector<QVariant> values;
+                        auto cells = range.getCells();
+                        for (const auto& c : cells) values.push_back(sheet->getCellValue(c));
+                        return QVariant::fromValue(values);
+                    }
+                }
+            }
+            return QVariant(QStringLiteral("#REF!"));
+        }
+    }
+
+    return QVariant(QStringLiteral("#ERROR!"));
+}
+
+QVariant FormulaEngine::evaluateASTFunction(uint16_t funcId, const QVariantList& argNodeIndices) {
+    auto& pool = FormulaASTPool::instance();
+    QString funcName = pool.getFunctionName(funcId);
+
+    // Evaluate all arguments by walking their AST subtrees
+    std::vector<QVariant> args;
+    args.reserve(argNodeIndices.size());
+    for (const auto& idx : argNodeIndices) {
+        args.push_back(evaluateAST(idx.toUInt()));
+    }
+
+    // Dispatch to existing function implementations (unchanged)
+    return evaluateFunction(funcName, args);
+}
+
 QString FormulaEngine::getLastError() const { return m_lastError; }
 bool FormulaEngine::hasError() const { return !m_lastError.isEmpty(); }
-void FormulaEngine::clearCache() { m_cache.clear(); }
+void FormulaEngine::clearCache() {
+    m_cache.clear();
+    FormulaASTPool::instance().clear();
+}
 void FormulaEngine::invalidateCell(const CellAddress& addr) { m_cache.erase(addr.toString().toStdString()); }
 
 void FormulaEngine::skipWhitespace(const QString& expr, int& pos) {
@@ -473,9 +657,17 @@ QVariant FormulaEngine::funcSUM(const std::vector<QVariant>& args) {
         double sum = 0;
         for (const auto& arg : args) {
             if (arg.canConvert<CellRange>()) {
-                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
-                    if (!v.isNull() && v.isValid()) sum += toNumber(v);
-                });
+                CellRange range = arg.value<CellRange>();
+                // Fast path: use ColumnStore::sumColumn for direct chunk-level summation
+                // Bypasses QVariant entirely — ~100x faster for millions of cells
+                if (m_spreadsheet) {
+                    auto& cs = m_spreadsheet->getColumnStore();
+                    int startRow = range.getStart().row;
+                    int endRow = range.getEnd().row;
+                    for (int c = range.getStart().col; c <= range.getEnd().col; c++) {
+                        sum += cs.sumColumn(c, startRow, endRow);
+                    }
+                }
             } else if (arg.canConvert<std::vector<QVariant>>()) {
                 for (const auto& v : arg.value<std::vector<QVariant>>())
                     if (!v.isNull() && v.isValid()) sum += toNumber(v);
@@ -495,9 +687,16 @@ QVariant FormulaEngine::funcAVERAGE(const std::vector<QVariant>& args) {
         double sum = 0; long long count = 0;
         for (const auto& arg : args) {
             if (arg.canConvert<CellRange>()) {
-                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
-                    if (!v.isNull() && v.isValid()) { sum += toNumber(v); count++; }
-                });
+                CellRange range = arg.value<CellRange>();
+                if (m_spreadsheet) {
+                    auto& cs = m_spreadsheet->getColumnStore();
+                    int startRow = range.getStart().row;
+                    int endRow = range.getEnd().row;
+                    for (int c = range.getStart().col; c <= range.getEnd().col; c++) {
+                        sum += cs.sumColumn(c, startRow, endRow);
+                        count += cs.countColumn(c, startRow, endRow);
+                    }
+                }
             } else if (arg.canConvert<std::vector<QVariant>>()) {
                 for (const auto& v : arg.value<std::vector<QVariant>>())
                     if (!v.isNull() && v.isValid()) { sum += toNumber(v); count++; }
@@ -519,12 +718,16 @@ QVariant FormulaEngine::funcCOUNT(const std::vector<QVariant>& args) {
         long long count = 0;
         for (const auto& arg : args) {
             if (arg.canConvert<CellRange>()) {
-                streamRangeValues(arg.value<CellRange>(), [&](const QVariant& v) {
-                    if (!v.isNull() && v.isValid()) {
-                        bool ok = false; v.toDouble(&ok);
-                        if (ok || v.typeId() == QMetaType::Int || v.typeId() == QMetaType::Double) count++;
+                // Fast path: use ColumnStore::countColumn directly
+                CellRange range = arg.value<CellRange>();
+                if (m_spreadsheet) {
+                    auto& cs = m_spreadsheet->getColumnStore();
+                    int startRow = range.getStart().row;
+                    int endRow = range.getEnd().row;
+                    for (int c = range.getStart().col; c <= range.getEnd().col; c++) {
+                        count += cs.countColumn(c, startRow, endRow);
                     }
-                });
+                }
             } else if (arg.canConvert<std::vector<QVariant>>()) {
                 for (const auto& v : arg.value<std::vector<QVariant>>()) {
                     if (!v.isNull() && v.isValid()) {

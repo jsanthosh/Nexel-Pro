@@ -136,10 +136,20 @@ void AutoSaveService::performAutoSave() {
         return;
     }
 
+    // Skip auto-save for large datasets (>500K rows) — synchronous XLSX export
+    // would freeze the UI for tens of seconds. TODO: implement async background save.
+    const auto& sheets = m_mainWindow->getSheets();
+    if (!sheets.empty()) {
+        for (const auto& sheet : sheets) {
+            if (sheet && sheet->getRowCount() > 500000) {
+                qDebug() << "AutoSave: skipped (large dataset:" << sheet->getRowCount() << "rows)";
+                return;
+            }
+        }
+    }
+
     QString autoSavePath = getAutoSavePath(m_currentFilePath);
 
-    // Use XlsxService to save all sheets (skip charts for speed)
-    const auto& sheets = m_mainWindow->getSheets();
     if (sheets.empty()) {
         qWarning() << "AutoSave: No sheets to save";
         return;

@@ -12,6 +12,9 @@
 #include <shared_mutex>
 #include "Cell.h"
 #include "CellRange.h"
+#include "ColumnStore.h"
+#include "CellProxy.h"
+#include "StyleTable.h"
 #include "TableStyle.h"
 #include "FormulaEngine.h"
 #include "UndoManager.h"
@@ -31,12 +34,13 @@ public:
     // Callback for formula cells that were recalculated as dependents
     std::function<void(const std::vector<CellAddress>&)> onDependentsRecalculated;
 
-    // Cell access and modification
-    std::shared_ptr<Cell> getCell(const CellAddress& addr);
-    std::shared_ptr<Cell> getCell(int row, int col);
-    // Read-only cell access - returns nullptr for non-existent cells (no allocation)
-    std::shared_ptr<Cell> getCellIfExists(const CellAddress& addr) const;
-    std::shared_ptr<Cell> getCellIfExists(int row, int col) const;
+    // Cell access — returns CellProxy (16-byte lightweight accessor, no heap alloc)
+    // getCell() always returns a valid proxy (creates cell storage if needed)
+    // getCellIfExists() returns invalid proxy (operator bool() == false) if cell is empty
+    CellProxy getCell(const CellAddress& addr);
+    CellProxy getCell(int row, int col);
+    CellProxy getCellIfExists(const CellAddress& addr) const;
+    CellProxy getCellIfExists(int row, int col) const;
     QVariant getCellValue(const CellAddress& addr);
     void setCellValue(const CellAddress& addr, const QVariant& value);
     void setCellFormula(const CellAddress& addr, const QString& formula);
@@ -44,7 +48,7 @@ public:
     // Range operations
     void fillRange(const CellRange& range, const QVariant& value);
     void clearRange(const CellRange& range);
-    std::vector<std::shared_ptr<Cell>> getRange(const CellRange& range);
+    std::vector<CellProxy> getRange(const CellRange& range);
 
     // Row/Column operations
     void insertRow(int row, int count = 1);
@@ -77,7 +81,7 @@ public:
     // Dependency graph access (for trace precedents/dependents)
     const DependencyGraph& getDependencyGraph() const { return m_depGraph; }
 
-    // Cell iteration (for serialization)
+    // Cell iteration (for serialization) — callback receives Cell-compatible interface via CellProxy
     void forEachCell(std::function<void(int row, int col, const Cell&)> callback) const;
 
     // Undo/Redo
@@ -86,6 +90,11 @@ public:
 
     // Sorting
     void sortRange(const CellRange& range, int sortColumn, bool ascending);
+
+    // Parallel search: find all cells matching query string across the entire sheet
+    // Returns vector of matching cell addresses. Uses multi-threaded column scan.
+    std::vector<CellAddress> searchAllCells(const QString& query, bool caseSensitive = false,
+                                             bool wholeCell = false) const;
 
     // Cell shift insert/delete
     void insertCellsShiftRight(const CellRange& range);
@@ -166,7 +175,7 @@ public:
     // Performance settings
     void setAutoRecalculate(bool enabled);
     bool getAutoRecalculate() const;
-    void reserveCells(size_t count) { m_cells.reserve(count); }
+    void reserveCells(size_t count) { m_columnStore.reserve(static_cast<int>(count / 256), 256); }
 
     // Batch update: suppress recalculation during bulk operations (paste, import, etc.)
     // All dirty cells are recalculated in optimal order when endBatchUpdate() is called.
@@ -175,18 +184,18 @@ public:
 
     // Fast bulk import — bypasses dependency tracking, recalculation, and dirty flags.
     // Caller MUST call setAutoRecalculate(false) before and finishBulkImport() after.
-    Cell* getOrCreateCellFast(int row, int col);
+    // Returns CellProxy for direct manipulation (matches old Cell* interface via operator->)
+    CellProxy getOrCreateCellFast(int row, int col);
     void finishBulkImport();
     void finishBulkImportWithMaxRowCol(int maxRow, int maxCol); // skip O(n) scan
     void rebuildDependencyGraph();
 
     // Fast cell navigation — uses lazy cached index, O(1) after first build.
-    // Returns const references to sorted vectors of occupied row/col indices.
     const std::vector<int>& getOccupiedRowsInColumn(int col) const;
     const std::vector<int>& getOccupiedColsInRow(int row) const;
     const std::vector<int>& getOccupiedRows() const; // all rows with data, sorted
 
-    // Stream cell values directly from internal storage (avoids per-cell hash lookup)
+    // Stream cell values directly from ColumnStore (zero materialization)
     void streamColumnValues(int col, int startRow, int endRow,
                            const std::function<void(const QVariant&)>& fn) const;
 
@@ -213,7 +222,7 @@ public:
     // Mutable table access (for re-theming)
     std::vector<SpreadsheetTable>& getTablesRef() { return m_tables; }
 
-    // Public cell key types — used by CsvService for parallel bulk import
+    // Public cell key types — kept for backward compatibility
     struct CellKey {
         int row, col;
         bool operator==(const CellKey& other) const {
@@ -232,13 +241,17 @@ public:
         }
     };
 
+    // Legacy CellMap type — kept for backward compatibility with parallel CSV import
     using CellMap = std::unordered_map<CellKey, std::shared_ptr<Cell>, CellKeyHash>;
 
-    // Bulk merge cells from an external map (used by parallel CSV import)
+    // Bulk merge cells from an external map (legacy compatibility for CSV parallel import)
     void mergeBulkCells(CellMap& source);
 
     // Recalculate all formula cells (used after undo/redo)
     void recalculateAll();
+
+    // Level-parallel recalculation: evaluate independent cells concurrently
+    void recalculateDependentsParallel(const CellAddress& addr);
 
     // Dynamic array spill support
     void applySpillResult(const CellAddress& formulaCell, const std::vector<std::vector<QVariant>>& result);
@@ -246,12 +259,17 @@ public:
     const std::unordered_map<CellKey, CellRange, CellKeyHash>& getSpillRanges() const { return m_spillRanges; }
     bool hasSpillRange(const CellAddress& addr) const { return m_spillRanges.count(CellKey{addr.row, addr.col}) > 0; }
 
+    // Direct access to the ColumnStore (for advanced operations)
+    ColumnStore& getColumnStore() { return m_columnStore; }
+    const ColumnStore& getColumnStore() const { return m_columnStore; }
+
 private:
-    // Thread safety: protects m_cells, nav index, and formula tracker
-    // Use std::shared_lock for read operations, std::unique_lock for writes
+    // Thread safety: protects nav index and formula tracker
     mutable std::shared_mutex m_cellMutex;
 
-    CellMap m_cells;
+    // ColumnStore: the primary cell data storage (replaces CellMap)
+    ColumnStore m_columnStore;
+
     std::unique_ptr<FormulaEngine> m_formulaEngine;
     DependencyGraph m_depGraph;
     UndoManager m_undoManager;
