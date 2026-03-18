@@ -1,5 +1,6 @@
 #include "StyleTable.h"
 #include <QHash>
+#include <mutex>
 
 StyleTable& StyleTable::instance() {
     static StyleTable s;

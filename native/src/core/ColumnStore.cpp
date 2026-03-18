@@ -2,6 +2,7 @@
 #include "StringPool.h"
 #include <numeric>   // std::iota
 #include <cstring>
+#include <mutex>
 
 // Cross-platform bit intrinsics
 #ifdef _MSC_VER
