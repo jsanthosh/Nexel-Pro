@@ -1,5 +1,6 @@
 #include "StringPool.h"
 #include <algorithm>
+#include <mutex>
 
 StringPool& StringPool::instance() {
     static StringPool s_instance;
