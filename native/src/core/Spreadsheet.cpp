@@ -1151,22 +1151,53 @@ void Spreadsheet::sortRange(const CellRange& range, int sortColumn, bool ascendi
     };
     std::vector<SortKey> keys(numRows);
 
-    // Parallel key extraction for large ranges
+    // Fast key extraction: read type + value directly from ColumnStore (no QVariant overhead)
     auto extractKey = [&](int i) {
         int r = startRow + i;
         keys[i].originalIndex = i;
-        CellProxy proxy(&m_columnStore, r, sortColumn);
-        QVariant val = proxy.getValue();
-        if (!val.isValid() || val.toString().isEmpty()) {
+
+        if (!m_columnStore.hasCell(r, sortColumn)) {
             keys[i].isEmpty = true;
             keys[i].isNumeric = false;
             keys[i].numericKey = 0;
+            return;
+        }
+
+        CellDataType type = m_columnStore.getCellType(r, sortColumn);
+        keys[i].isEmpty = (type == CellDataType::Empty);
+
+        if (type == CellDataType::Double || type == CellDataType::Date) {
+            // Direct numeric read — no QVariant, no string conversion
+            keys[i].isNumeric = true;
+            auto* col = m_columnStore.getColumn(sortColumn);
+            auto* chunk = col ? col->getChunk(r) : nullptr;
+            if (chunk) {
+                int offset = r - chunk->baseRow;
+                int idx = chunk->denseIndex(offset);
+                keys[i].numericKey = chunk->values[idx];
+            }
+        } else if (type == CellDataType::Boolean) {
+            keys[i].isNumeric = true;
+            auto* col = m_columnStore.getColumn(sortColumn);
+            auto* chunk = col ? col->getChunk(r) : nullptr;
+            if (chunk) {
+                int offset = r - chunk->baseRow;
+                int idx = chunk->denseIndex(offset);
+                keys[i].numericKey = chunk->values[idx];
+            }
         } else {
-            keys[i].isEmpty = false;
+            // String/Formula/Error — need string key
+            QVariant val = CellProxy(&m_columnStore, r, sortColumn).getValue();
+            keys[i].isNumeric = false;
+            keys[i].stringKey = val.toString();
+            // Try numeric conversion for string cells containing numbers
             bool ok;
-            keys[i].numericKey = val.toString().toDouble(&ok);
-            keys[i].isNumeric = ok;
-            if (!ok) keys[i].stringKey = val.toString();
+            double d = keys[i].stringKey.toDouble(&ok);
+            if (ok) {
+                keys[i].isNumeric = true;
+                keys[i].numericKey = d;
+                keys[i].stringKey.clear();
+            }
         }
     };
 
