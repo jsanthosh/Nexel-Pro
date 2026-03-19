@@ -867,7 +867,6 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
     std::vector<CellSnapshot> before, after;
 
     if (isMassiveSelection) {
-        qDebug() << "[applyStyleChange] MASSIVE PATH - adding overlay";
         // FRONTEND FIRST: add style overlay → instant visual for ALL cells in region
         Spreadsheet::StyleOverlay overlay;
         overlay.minRow = minRow;
@@ -893,7 +892,6 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
             QModelIndex bottomRight = m_model->index(visRows - 1, visCols - 1);
             emit m_model->dataChanged(topLeft, bottomRight);
         }
-        // Force immediate synchronous repaint (not queued)
         viewport()->repaint();
 
         // BACKEND LATER: apply to actual cell styles in background chunks

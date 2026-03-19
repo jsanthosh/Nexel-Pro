@@ -718,10 +718,32 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         if (hasHyperlink) {
             fgColor = QColor("#0563C1"); // Excel-style hyperlink blue
         }
-        QVariant fgData = index.data(Qt::ForegroundRole);
-        if (!hasHyperlink && fgData.isValid()) {
-            QColor c = fgData.value<QColor>();
-            if (c.isValid() && c.rgb() != QColor(Qt::black).rgb()) fgColor = c;
+        // Check style overlays for font color (instant visual for bulk operations)
+        if (!hasHyperlink && m_spreadsheetView) {
+            auto sp = m_spreadsheetView->getSpreadsheet();
+            auto* mdl = m_spreadsheetView->getModel();
+            if (sp && !sp->getStyleOverlays().empty()) {
+                int logRow = mdl ? mdl->toLogicalRow(index.row()) : index.row();
+                for (const auto& ov : sp->getStyleOverlays()) {
+                    if (logRow >= ov.minRow && logRow <= ov.maxRow &&
+                        index.column() >= ov.minCol && index.column() <= ov.maxCol) {
+                        CellStyle tmpStyle;
+                        ov.modifier(tmpStyle);
+                        QColor ovFg(tmpStyle.foregroundColor);
+                        if (!ovFg.isValid() && !tmpStyle.foregroundColor.isEmpty())
+                            ovFg = sp->getDocumentTheme().resolveColor(tmpStyle.foregroundColor);
+                        if (ovFg.isValid() && ovFg != Qt::black && ovFg != QColor("#000000"))
+                            fgColor = ovFg;
+                    }
+                }
+            }
+        }
+        if (!hasHyperlink && fgColor == theme.textPrimary) {
+            QVariant fgData = index.data(Qt::ForegroundRole);
+            if (fgData.isValid()) {
+                QColor c = fgData.value<QColor>();
+                if (c.isValid() && c.rgb() != QColor(Qt::black).rgb()) fgColor = c;
+            }
         }
         painter->setPen(fgColor);
 

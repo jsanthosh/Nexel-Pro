@@ -510,59 +510,88 @@ void Column::applyPermutation(int startRow, const std::vector<int>& perm) {
         }
     }
 
-    // Phase 3: Rebuild chunks directly from flat arrays (no per-cell API calls)
+    // Phase 3: Write permuted data back to chunks.
+    // Two strategies depending on whether the sort range covers full chunks:
+    int endRow = startRow + n;
+
     for (auto& chunkPtr : m_chunks) {
         if (!chunkPtr) continue;
         auto* chunk = chunkPtr.get();
-        int chunkRelStart = chunk->baseRow - startRow;
-        if (chunkRelStart >= n) break;
+        int chunkEnd = chunk->baseRow + ColumnChunk::CHUNK_SIZE;
 
-        // Clear chunk data
-        std::memset(chunk->presence, 0, sizeof(chunk->presence));
-        chunk->types.clear();
-        chunk->values.clear();
-        if (chunk->styleIndices) chunk->styleIndices->clear();
-        if (chunk->formulas) chunk->formulas->clear();
-        chunk->populatedCount = 0;
+        // Skip chunks entirely outside the sort range
+        if (chunkEnd <= startRow || chunk->baseRow >= endRow) continue;
 
-        // Rebuild by scanning the permuted flat arrays
-        bool hasStyles = false;
-        int chunkEnd = std::min(chunkRelStart + ColumnChunk::CHUNK_SIZE, n);
-        for (int i = chunkRelStart; i < chunkEnd; ++i) {
-            if (i < 0) continue;
-            auto type = static_cast<CellDataType>(types[i]);
-            if (type == CellDataType::Empty) continue;
+        // Determine the overlap between sort range and this chunk
+        int overlapStart = std::max(startRow, chunk->baseRow);
+        int overlapEnd = std::min(endRow, chunkEnd);
+        int chunkRelOverlapStart = overlapStart - chunk->baseRow;
+        int chunkRelOverlapEnd = overlapEnd - chunk->baseRow;
+        bool fullChunkCovered = (chunkRelOverlapStart == 0 && chunkRelOverlapEnd == ColumnChunk::CHUNK_SIZE);
 
-            int offset = i - chunkRelStart;
-            // Set presence bit directly
-            chunk->presence[offset / 64] |= (1ULL << (offset % 64));
-            // Append to dense arrays (sequential, no denseIndex calc needed)
-            chunk->types.push_back(types[i]);
-            chunk->values.push_back(vals[i]);
-            chunk->populatedCount++;
+        if (fullChunkCovered) {
+            // FAST PATH: entire chunk is within sort range — rebuild from scratch
+            std::memset(chunk->presence, 0, sizeof(chunk->presence));
+            chunk->types.clear();
+            chunk->values.clear();
+            if (chunk->styleIndices) chunk->styleIndices->clear();
+            if (chunk->formulas) chunk->formulas->clear();
+            chunk->populatedCount = 0;
 
-            if (styles[i] != 0) hasStyles = true;
-            if (chunk->styleIndices)
-                chunk->styleIndices->push_back(styles[i]);
+            bool hasStyles = false;
+            int rangeStart = chunk->baseRow - startRow;
+            int rangeEnd = std::min(rangeStart + ColumnChunk::CHUNK_SIZE, n);
+            for (int i = rangeStart; i < rangeEnd; ++i) {
+                if (i < 0) continue;
+                auto type = static_cast<CellDataType>(types[i]);
+                if (type == CellDataType::Empty) continue;
 
-            if (type == CellDataType::Formula) {
-                auto fIt = formulaMap.find(i);
-                if (fIt != formulaMap.end()) {
-                    if (!chunk->formulas) chunk->formulas = std::make_unique<std::unordered_map<int, QString>>();
-                    (*chunk->formulas)[offset] = fIt->second;
+                int offset = i - rangeStart;
+                chunk->presence[offset / 64] |= (1ULL << (offset % 64));
+                chunk->types.push_back(types[i]);
+                chunk->values.push_back(vals[i]);
+                chunk->populatedCount++;
+                if (styles[i] != 0) hasStyles = true;
+                if (chunk->styleIndices) chunk->styleIndices->push_back(styles[i]);
+
+                if (type == CellDataType::Formula) {
+                    auto fIt = formulaMap.find(i);
+                    if (fIt != formulaMap.end()) {
+                        if (!chunk->formulas) chunk->formulas = std::make_unique<std::unordered_map<int, QString>>();
+                        (*chunk->formulas)[offset] = fIt->second;
+                    }
                 }
             }
-        }
+            if (hasStyles && !chunk->styleIndices) {
+                chunk->styleIndices = std::make_unique<std::vector<uint16_t>>();
+                for (int i = rangeStart; i < rangeEnd && i < n; ++i) {
+                    if (static_cast<CellDataType>(types[i]) != CellDataType::Empty)
+                        chunk->styleIndices->push_back(styles[i]);
+                }
+            }
+        } else {
+            // SAFE PATH: partial chunk overlap — use per-cell API to preserve other data
+            for (int offset = chunkRelOverlapStart; offset < chunkRelOverlapEnd; ++offset) {
+                if (chunk->hasData(offset)) chunk->removeCell(offset);
+            }
+            for (int offset = chunkRelOverlapStart; offset < chunkRelOverlapEnd; ++offset) {
+                int i = (chunk->baseRow + offset) - startRow;
+                if (i < 0 || i >= n) continue;
+                auto type = static_cast<CellDataType>(types[i]);
+                if (type == CellDataType::Empty) continue;
 
-        // Allocate style indices if needed
-        if (hasStyles && !chunk->styleIndices) {
-            chunk->styleIndices = std::make_unique<std::vector<uint16_t>>();
-            // Rebuild style indices from scratch
-            chunk->styleIndices->clear();
-            int idx = 0;
-            for (int i = chunkRelStart; i < chunkEnd && i < n; ++i) {
-                if (static_cast<CellDataType>(types[i]) != CellDataType::Empty) {
-                    chunk->styleIndices->push_back(styles[i]);
+                switch (type) {
+                    case CellDataType::Double: chunk->setNumeric(offset, vals[i], styles[i]); break;
+                    case CellDataType::Date:   chunk->setDate(offset, vals[i], styles[i]); break;
+                    case CellDataType::Boolean: chunk->setBoolean(offset, vals[i] != 0.0, styles[i]); break;
+                    case CellDataType::String: chunk->setString(offset, ColumnChunk::unpackId(vals[i]), styles[i]); break;
+                    case CellDataType::Formula: {
+                        auto fIt = formulaMap.find(i);
+                        chunk->setFormula(offset, fIt != formulaMap.end() ? fIt->second : QString(), styles[i]);
+                        break;
+                    }
+                    case CellDataType::Error: chunk->setError(offset, ColumnChunk::unpackId(vals[i]), styles[i]); break;
+                    default: break;
                 }
             }
         }
