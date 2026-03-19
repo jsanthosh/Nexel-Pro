@@ -140,6 +140,13 @@ std::shared_ptr<Spreadsheet> SpreadsheetView::getSpreadsheet() const {
     return m_spreadsheet;
 }
 
+int SpreadsheetView::logicalRow(int modelRow) const {
+    return (m_model && m_model->isVirtualMode()) ? m_model->toLogicalRow(modelRow) : modelRow;
+}
+int SpreadsheetView::logicalRow(const QModelIndex& idx) const {
+    return logicalRow(idx.row());
+}
+
 void SpreadsheetView::refreshVirtualScrollBar() {
     if (m_model && m_model->isVirtualMode()) {
         setupVirtualScrollBar();
@@ -362,10 +369,10 @@ void SpreadsheetView::setupHeaderContextMenus() {
         QSet<int> selRows;
         QModelIndexList selIdx = selectionModel()->selectedRows();
         if (selIdx.size() > 1) {
-            for (const auto& idx : selIdx) selRows.insert(idx.row());
+            for (const auto& idx : selIdx) selRows.insert(logicalRow(idx));
         } else {
             QModelIndexList allSel = selectionModel()->selectedIndexes();
-            for (const auto& idx : allSel) selRows.insert(idx.row());
+            for (const auto& idx : allSel) selRows.insert(logicalRow(idx));
         }
         if (selRows.isEmpty()) selRows.insert(clickedRow);
         int rowCount = selRows.size();
@@ -485,7 +492,7 @@ void SpreadsheetView::copy() {
     for (const auto& idx : selected) {
         int r = idx.row() - minRow;
         int c = idx.column() - minCol;
-        CellAddress addr(idx.row(), idx.column());
+        CellAddress addr(logicalRow(idx), idx.column());
         auto cell = m_spreadsheet->getCell(addr);
         m_internalClipboard[r][c].value = cell->getValue();
         m_internalClipboard[r][c].style = cell->getStyle();
@@ -520,7 +527,7 @@ void SpreadsheetView::paste() {
     QModelIndex current = currentIndex();
     if (!current.isValid() || !m_spreadsheet) return;
 
-    int startRow = current.row();
+    int startRow = logicalRow(current);
     int startCol = current.column();
 
     std::vector<CellSnapshot> before, after;
@@ -587,7 +594,7 @@ void SpreadsheetView::pasteSpecial() {
     PasteSpecialOptions opts = dlg.getOptions();
 
     QString data = QApplication::clipboard()->text();
-    int startRow = current.row();
+    int startRow = logicalRow(current);
     int startCol = current.column();
 
     std::vector<CellSnapshot> before, after;
@@ -767,7 +774,7 @@ void SpreadsheetView::deleteSelection() {
 
     m_model->setSuppressUndo(true);
     for (const auto& index : selected) {
-        CellAddress addr(index.row(), index.column());
+        CellAddress addr(logicalRow(index), index.column());
         before.push_back(m_spreadsheet->takeCellSnapshot(addr));
 
         auto cell = m_spreadsheet->getCell(addr);
@@ -948,7 +955,7 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
     } else {
         QModelIndexList selected = selectionModel()->selectedIndexes();
         for (const auto& index : selected) {
-            CellAddress addr(index.row(), index.column());
+            CellAddress addr(logicalRow(index), index.column());
             before.push_back(m_spreadsheet->takeCellSnapshot(addr));
 
             auto cell = m_spreadsheet->getCell(addr);
@@ -1162,7 +1169,7 @@ void SpreadsheetView::activateFormatPainter() {
     QModelIndex current = currentIndex();
     if (!current.isValid() || !m_spreadsheet) return;
 
-    CellAddress addr(current.row(), current.column());
+    CellAddress addr(logicalRow(current), current.column());
     auto cell = m_spreadsheet->getCell(addr);
     m_copiedStyle = cell->getStyle();
     m_formatPainterActive = true;
@@ -1493,7 +1500,7 @@ void SpreadsheetView::toggleAutoFilter() {
     if (!current.isValid()) return;
 
     // Detect data region from current cell
-    m_filterRange = detectDataRegion(current.row(), current.column());
+    m_filterRange = detectDataRegion(logicalRow(current), current.column());
     m_filterHeaderRow = m_filterRange.getStart().row;
     m_filterActive = true;
     m_columnFilters.clear();
@@ -1780,7 +1787,7 @@ void SpreadsheetView::clearAll() {
 
     std::vector<CellSnapshot> before, after;
     for (const auto& index : selected) {
-        CellAddress addr(index.row(), index.column());
+        CellAddress addr(logicalRow(index), index.column());
         before.push_back(m_spreadsheet->takeCellSnapshot(addr));
         auto cell = m_spreadsheet->getCell(addr);
         cell->clear();
@@ -1805,7 +1812,7 @@ void SpreadsheetView::clearFormats() {
 
     std::vector<CellSnapshot> before, after;
     for (const auto& index : selected) {
-        CellAddress addr(index.row(), index.column());
+        CellAddress addr(logicalRow(index), index.column());
         before.push_back(m_spreadsheet->takeCellSnapshot(addr));
         auto cell = m_spreadsheet->getCell(addr);
         cell->setStyle(CellStyle()); // Reset style only, keep value
@@ -1917,7 +1924,7 @@ void SpreadsheetView::applyBorderStyle(const QString& borderType, const QColor& 
 
     std::vector<CellSnapshot> before, after;
     for (const auto& idx : selected) {
-        CellAddress addr(idx.row(), idx.column());
+        CellAddress addr(logicalRow(idx), idx.column());
         before.push_back(m_spreadsheet->takeCellSnapshot(addr));
         auto cell = m_spreadsheet->getCell(addr);
         CellStyle style = cell->getStyle();
@@ -1982,7 +1989,7 @@ void SpreadsheetView::unmergeCells() {
     QModelIndex current = currentIndex();
     if (!current.isValid()) return;
 
-    auto* mr = m_spreadsheet->getMergedRegionAt(current.row(), current.column());
+    auto* mr = m_spreadsheet->getMergedRegionAt(logicalRow(current), current.column());
     if (!mr) return;
 
     int startRow = mr->range.getStart().row;
@@ -2044,7 +2051,7 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
     }
     if (m_spreadsheet) {
         QModelIndex cur = currentIndex();
-        if (cur.isValid() && m_spreadsheet->getMergedRegionAt(cur.row(), cur.column())) {
+        if (cur.isValid() && m_spreadsheet->getMergedRegionAt(logicalRow(cur), cur.column())) {
             menu.addAction("Unmerge Cells", this, &SpreadsheetView::unmergeCells);
         }
     }
@@ -2055,7 +2062,7 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
     if (m_spreadsheet) {
         QModelIndex cur = currentIndex();
         if (cur.isValid()) {
-            auto cell = m_spreadsheet->getCell(CellAddress(cur.row(), cur.column()));
+            auto cell = m_spreadsheet->getCell(CellAddress(logicalRow(cur), cur.column()));
             if (cell) {
                 QString fmt = cell->getStyle().numberFormat;
                 if (fmt == "Checkbox") {
@@ -2065,7 +2072,7 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
                         if (sel.isEmpty()) return;
                         std::vector<CellSnapshot> before, after;
                         for (const auto& idx : sel) {
-                            CellAddress addr(idx.row(), idx.column());
+                            CellAddress addr(logicalRow(idx), idx.column());
                             before.push_back(m_spreadsheet->takeCellSnapshot(addr));
                             auto c = m_spreadsheet->getCell(addr);
                             CellStyle st = c->getStyle();
@@ -2093,7 +2100,7 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
                         if (sel.isEmpty()) return;
                         std::vector<CellSnapshot> before, after;
                         for (const auto& idx : sel) {
-                            CellAddress addr(idx.row(), idx.column());
+                            CellAddress addr(logicalRow(idx), idx.column());
                             before.push_back(m_spreadsheet->takeCellSnapshot(addr));
                             auto c = m_spreadsheet->getCell(addr);
                             CellStyle st = c->getStyle();
@@ -2128,7 +2135,7 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
     if (m_spreadsheet) {
         QModelIndex cur = currentIndex();
         if (cur.isValid()) {
-            auto cell = m_spreadsheet->getCellIfExists(cur.row(), cur.column());
+            auto cell = m_spreadsheet->getCellIfExists(logicalRow(cur), cur.column());
             bool hasComment = cell && cell->hasComment();
             menu.addAction(hasComment ? "Edit Comment..." : "Insert Comment...",
                            this, &SpreadsheetView::insertOrEditComment);
@@ -2143,7 +2150,7 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
     if (m_spreadsheet) {
         QModelIndex cur = currentIndex();
         if (cur.isValid()) {
-            auto cell = m_spreadsheet->getCellIfExists(cur.row(), cur.column());
+            auto cell = m_spreadsheet->getCellIfExists(logicalRow(cur), cur.column());
             bool hasLink = cell && cell->hasHyperlink();
             menu.addAction(hasLink ? "Edit Hyperlink..." : "Insert Hyperlink...",
                            this, &SpreadsheetView::insertOrEditHyperlink);
@@ -2217,10 +2224,10 @@ void SpreadsheetView::insertEntireRow() {
     QSet<int> rows;
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty()) {
-        rows.insert(current.row());
+        rows.insert(logicalRow(current));
     } else {
         for (const auto& idx : selected) {
-            rows.insert(idx.row());
+            rows.insert(logicalRow(idx));
         }
     }
 
@@ -2317,10 +2324,10 @@ void SpreadsheetView::deleteEntireRow() {
     QSet<int> rows;
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty()) {
-        rows.insert(current.row());
+        rows.insert(logicalRow(current));
     } else {
         for (const auto& idx : selected) {
-            rows.insert(idx.row());
+            rows.insert(logicalRow(idx));
         }
     }
 
@@ -2581,7 +2588,7 @@ void SpreadsheetView::insertOrEditComment() {
     QModelIndex cur = currentIndex();
     if (!cur.isValid() || !m_spreadsheet) return;
 
-    auto cell = m_spreadsheet->getCell(CellAddress(cur.row(), cur.column()));
+    auto cell = m_spreadsheet->getCell(CellAddress(logicalRow(cur), cur.column()));
     QString existing = cell->getComment();
 
     bool ok = false;
@@ -2599,7 +2606,7 @@ void SpreadsheetView::deleteComment() {
     QModelIndex cur = currentIndex();
     if (!cur.isValid() || !m_spreadsheet) return;
 
-    auto cell = m_spreadsheet->getCellIfExists(cur.row(), cur.column());
+    auto cell = m_spreadsheet->getCellIfExists(logicalRow(cur), cur.column());
     if (cell && cell->hasComment()) {
         cell->setComment(QString());
         viewport()->update();
@@ -2612,7 +2619,7 @@ void SpreadsheetView::insertOrEditHyperlink() {
     QModelIndex cur = currentIndex();
     if (!cur.isValid() || !m_spreadsheet) return;
 
-    auto cell = m_spreadsheet->getCell(CellAddress(cur.row(), cur.column()));
+    auto cell = m_spreadsheet->getCell(CellAddress(logicalRow(cur), cur.column()));
     QString existingUrl = cell->getHyperlink();
     QString existingText = cell->getValue().toString();
 
@@ -2666,7 +2673,7 @@ void SpreadsheetView::removeHyperlink() {
     QModelIndex cur = currentIndex();
     if (!cur.isValid() || !m_spreadsheet) return;
 
-    auto cell = m_spreadsheet->getCellIfExists(cur.row(), cur.column());
+    auto cell = m_spreadsheet->getCellIfExists(logicalRow(cur), cur.column());
     if (cell && cell->hasHyperlink()) {
         cell->setHyperlink(QString());
         if (m_model) {
@@ -2693,7 +2700,7 @@ bool SpreadsheetView::viewportEvent(QEvent* event) {
         QHelpEvent* helpEvent = static_cast<QHelpEvent*>(event);
         QModelIndex index = indexAt(helpEvent->pos());
         if (index.isValid() && m_spreadsheet) {
-            auto cell = m_spreadsheet->getCellIfExists(index.row(), index.column());
+            auto cell = m_spreadsheet->getCellIfExists(logicalRow(index), index.column());
             if (cell) {
                 QStringList tips;
                 if (cell->hasComment()) tips << cell->getComment();
@@ -3148,11 +3155,11 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
             // Single cell: copy from cell above
             QModelIndex cur = currentIndex();
             if (cur.isValid() && cur.row() > 0) {
-                auto valAbove = m_spreadsheet->getCellValue(CellAddress(cur.row() - 1, cur.column()));
-                auto cellAbove = m_spreadsheet->getCell(CellAddress(cur.row() - 1, cur.column()));
+                auto valAbove = m_spreadsheet->getCellValue(CellAddress(logicalRow(cur) - 1, cur.column()));
+                auto cellAbove = m_spreadsheet->getCell(CellAddress(logicalRow(cur) - 1, cur.column()));
 
                 std::vector<CellSnapshot> before, after;
-                CellAddress addr(cur.row(), cur.column());
+                CellAddress addr(logicalRow(cur), cur.column());
                 before.push_back(m_spreadsheet->takeCellSnapshot(addr));
 
                 if (cellAbove->getType() == CellType::Formula) {
@@ -3182,7 +3189,7 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
                 int sourceRow = colMinRow[idx.column()];
                 if (idx.row() == sourceRow) continue; // Skip source cells
 
-                CellAddress addr(idx.row(), idx.column());
+                CellAddress addr(logicalRow(idx), idx.column());
                 before.push_back(m_spreadsheet->takeCellSnapshot(addr));
 
                 auto srcCell = m_spreadsheet->getCell(CellAddress(sourceRow, idx.column()));
@@ -3441,10 +3448,10 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         if (selected.size() <= 1) {
             QModelIndex cur = currentIndex();
             if (cur.isValid() && cur.column() > 0) {
-                auto valLeft = m_spreadsheet->getCellValue(CellAddress(cur.row(), cur.column() - 1));
-                auto cellLeft = m_spreadsheet->getCell(CellAddress(cur.row(), cur.column() - 1));
+                auto valLeft = m_spreadsheet->getCellValue(CellAddress(logicalRow(cur), cur.column() - 1));
+                auto cellLeft = m_spreadsheet->getCell(CellAddress(logicalRow(cur), cur.column() - 1));
 
-                CellAddress addr(cur.row(), cur.column());
+                CellAddress addr(logicalRow(cur), cur.column());
                 std::vector<CellSnapshot> before, after;
                 before.push_back(m_spreadsheet->takeCellSnapshot(addr));
 
@@ -3757,7 +3764,7 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
         QModelIndex idx = indexAt(event->pos());
         if (idx.isValid() && m_spreadsheet) {
             std::vector<CellSnapshot> before, after;
-            CellAddress addr(idx.row(), idx.column());
+            CellAddress addr(logicalRow(idx), idx.column());
             before.push_back(m_spreadsheet->takeCellSnapshot(addr));
 
             auto cell = m_spreadsheet->getCell(addr);
@@ -3780,9 +3787,9 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier) && m_spreadsheet) {
         QModelIndex idx = indexAt(event->pos());
         if (idx.isValid()) {
-            auto cell = m_spreadsheet->getCellIfExists(idx.row(), idx.column());
+            auto cell = m_spreadsheet->getCellIfExists(logicalRow(idx), idx.column());
             if (cell && cell->hasHyperlink()) {
-                openHyperlink(idx.row(), idx.column());
+                openHyperlink(logicalRow(idx), idx.column());
                 event->accept();
                 return;
             }
@@ -3793,7 +3800,7 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         QModelIndex idx = indexAt(event->pos());
         if (idx.isValid() && m_spreadsheet) {
-            auto cell = m_spreadsheet->getCellIfExists(idx.row(), idx.column());
+            auto cell = m_spreadsheet->getCellIfExists(logicalRow(idx), idx.column());
             if (cell) {
                 const QString& fmt = cell->getStyle().numberFormat;
                 if (fmt == "Checkbox") {
@@ -3803,7 +3810,7 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
                     int cy = cellRect.top() + (cellRect.height() - boxSize) / 2;
                     QRect hitArea(cx - 4, cy - 4, boxSize + 8, boxSize + 8);
                     if (hitArea.contains(event->pos())) {
-                        toggleCheckbox(idx.row(), idx.column());
+                        toggleCheckbox(logicalRow(idx), idx.column());
                         setCurrentIndex(idx);
                         event->accept();
                         return;
@@ -4365,7 +4372,7 @@ void SpreadsheetView::onVerticalSectionResized(int logicalIndex, int /*oldSize*/
         for (const auto& idx : selected) {
             if (idx.row() != logicalIndex) {
                 verticalHeader()->resizeSection(idx.row(), newSize);
-                if (m_spreadsheet) m_spreadsheet->setRowHeight(idx.row(), newSize);
+                if (m_spreadsheet) m_spreadsheet->setRowHeight(logicalRow(idx), newSize);
             }
         }
     }
@@ -4505,7 +4512,7 @@ void SpreadsheetView::insertCheckbox() {
 
     std::vector<CellSnapshot> before, after;
     for (const auto& idx : selection) {
-        CellAddress addr(idx.row(), idx.column());
+        CellAddress addr(logicalRow(idx), idx.column());
         before.push_back(m_spreadsheet->takeCellSnapshot(addr));
         auto cell = m_spreadsheet->getCell(addr);
         CellStyle style = cell->getStyle();
@@ -5019,7 +5026,7 @@ void SpreadsheetView::insertPicklist(const QStringList& options, const QStringLi
     // Set numberFormat to Picklist on all cells
     std::vector<CellSnapshot> before, after;
     for (const auto& idx : selection) {
-        CellAddress addr(idx.row(), idx.column());
+        CellAddress addr(logicalRow(idx), idx.column());
         before.push_back(m_spreadsheet->takeCellSnapshot(addr));
         auto cell = m_spreadsheet->getCell(addr);
         CellStyle style = cell->getStyle();
@@ -5069,11 +5076,11 @@ QStringList SpreadsheetView::resolvePicklistFromRange(const QString& listSourceR
 void SpreadsheetView::showPicklistPopup(const QModelIndex& index) {
     if (!m_spreadsheet || !index.isValid()) return;
 
-    auto cell = m_spreadsheet->getCellIfExists(index.row(), index.column());
+    auto cell = m_spreadsheet->getCellIfExists(logicalRow(index), index.column());
     if (!cell) return;
 
     auto* rule = const_cast<Spreadsheet::DataValidationRule*>(
-        m_spreadsheet->getValidationAt(index.row(), index.column()));
+        m_spreadsheet->getValidationAt(logicalRow(index), index.column()));
     QStringList options;
     if (rule) {
         if (!rule->listSourceRange.isEmpty()) {
@@ -5882,7 +5889,7 @@ void SpreadsheetView::tracePrecedents() {
     QModelIndex current = currentIndex();
     if (!current.isValid() || !m_spreadsheet) return;
 
-    m_traceCell = CellAddress(current.row(), current.column());
+    m_traceCell = CellAddress(logicalRow(current), current.column());
     const auto& depGraph = m_spreadsheet->getDependencyGraph();
     m_tracedCells = depGraph.getDependencies(m_traceCell);
     m_showPrecedents = true;
@@ -5894,7 +5901,7 @@ void SpreadsheetView::traceDependents() {
     QModelIndex current = currentIndex();
     if (!current.isValid() || !m_spreadsheet) return;
 
-    m_traceCell = CellAddress(current.row(), current.column());
+    m_traceCell = CellAddress(logicalRow(current), current.column());
     const auto& depGraph = m_spreadsheet->getDependencyGraph();
     m_tracedCells = depGraph.getDependents(m_traceCell);
     m_showDependents = true;

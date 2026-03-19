@@ -293,6 +293,10 @@ private:
     int m_formulaRefInsertPos = -1;
     int m_formulaRefInsertLen = 0;
 
+    // Translate model row to logical row (virtual mode safe)
+    int logicalRow(int modelRow) const;
+    int logicalRow(const QModelIndex& idx) const;
+
     void initializeView();
     void applyGridStylesheet();
     void setupConnections();
