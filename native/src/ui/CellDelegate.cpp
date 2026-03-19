@@ -544,11 +544,40 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
     const auto& theme = ThemeManager::instance().currentTheme();
     QColor defaultBg = theme.gridBackground;
     QColor bgColor = defaultBg;
-    QVariant bgData = index.data(Qt::BackgroundRole);
-    if (bgData.isValid()) {
-        QColor cellBg = bgData.value<QColor>();
-        if (cellBg.isValid() && cellBg.rgb() != QColor(Qt::white).rgb()) {
-            bgColor = cellBg;
+
+    // Check style overlays directly (instant visual for bulk formatting)
+    if (m_spreadsheetView) {
+        auto sp = m_spreadsheetView->getSpreadsheet();
+        auto* mdl = m_spreadsheetView->getModel();
+        if (sp && !sp->getStyleOverlays().empty()) {
+            int logRow = mdl ? mdl->toLogicalRow(index.row()) : index.row();
+            int col = index.column();
+            for (const auto& ov : sp->getStyleOverlays()) {
+                if (logRow >= ov.minRow && logRow <= ov.maxRow &&
+                    col >= ov.minCol && col <= ov.maxCol) {
+                    CellStyle tmpStyle;
+                    ov.modifier(tmpStyle);
+                    QColor ovBg(tmpStyle.backgroundColor);
+                    // Resolve theme colors (e.g. "theme:4:0" → actual hex)
+                    if (!ovBg.isValid() && !tmpStyle.backgroundColor.isEmpty()) {
+                        ovBg = sp->getDocumentTheme().resolveColor(tmpStyle.backgroundColor);
+                    }
+                    if (ovBg.isValid() && ovBg != Qt::white && ovBg != QColor("#FFFFFF")) {
+                        bgColor = ovBg;
+                    }
+                }
+            }
+        }
+    }
+
+    // Also check model data for non-overlay backgrounds
+    if (bgColor == defaultBg) {
+        QVariant bgData = index.data(Qt::BackgroundRole);
+        if (bgData.isValid()) {
+            QColor cellBg = bgData.value<QColor>();
+            if (cellBg.isValid() && cellBg.rgb() != QColor(Qt::white).rgb()) {
+                bgColor = cellBg;
+            }
         }
     }
 
@@ -556,9 +585,15 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         // Picklist/Checkbox cells: use theme bg when not part of a multi-select
         painter->fillRect(rect, defaultBg);
     } else if (isSelected && !hasFocus) {
-        // Multi-select: light blue tint over cell background
+        // Multi-select: paint bg color first, then semi-transparent selection tint
+        // so fill colors are visible even while selected
         painter->fillRect(rect, bgColor);
-        painter->fillRect(rect, ThemeManager::instance().currentTheme().selectionTint);
+        QColor tint = ThemeManager::instance().currentTheme().selectionTint;
+        if (bgColor != defaultBg) {
+            // Cell has a custom bg color — use very light tint so color shows through
+            tint.setAlpha(40);
+        }
+        painter->fillRect(rect, tint);
     } else {
         painter->fillRect(rect, bgColor);
     }

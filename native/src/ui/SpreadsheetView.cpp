@@ -818,7 +818,6 @@ void SpreadsheetView::selectAll() {
 void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier, const QList<int>& roles) {
     if (!m_spreadsheet) return;
 
-    // Use selection ranges (compact) instead of selectedIndexes() (one per cell — very slow for Select All)
     QItemSelection sel = selectionModel()->selection();
     if (sel.isEmpty()) return;
 
@@ -833,12 +832,107 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
         totalCells += (range.bottom() - range.top() + 1) * (range.right() - range.left() + 1);
     }
 
+    // In virtual mode, translate model rows to logical rows
+    if (m_model && m_model->isVirtualMode()) {
+        minRow = m_model->toLogicalRow(minRow);
+        maxRow = m_model->toLogicalRow(maxRow);
+    }
+
+    // Detect full-column or large selection:
+    // If selection spans all visible rows (full column click) OR >1000 cells,
+    // use the instant overlay path. In virtual mode, a column click = all model rows.
+    int modelRowCount = m_model ? m_model->rowCount() : 100;
+    bool isFullColumnOrRow = (maxRow - minRow + 1 >= modelRowCount - 1);
+    bool isLargeEnough = totalCells > 1000;
+    bool useFastPath = isFullColumnOrRow || totalCells > 5000;
+
+    // For full column selection in virtual mode, extend to ALL logical rows
+    if (isFullColumnOrRow && m_model && m_model->isVirtualMode()) {
+        minRow = 0;
+        maxRow = m_model->totalLogicalRows() - 1;
+    }
+
     static constexpr int LARGE_SELECTION_THRESHOLD = 5000;
-    bool isLargeSelection = totalCells > LARGE_SELECTION_THRESHOLD;
+    bool isLargeSelection = totalCells > LARGE_SELECTION_THRESHOLD && !useFastPath;
+    bool isMassiveSelection = useFastPath;
+
+    qDebug() << "[applyStyleChange] totalCells=" << totalCells
+             << "minRow=" << minRow << "maxRow=" << maxRow
+             << "minCol=" << minCol << "maxCol=" << maxCol
+             << "modelRowCount=" << modelRowCount
+             << "isFullCol=" << isFullColumnOrRow
+             << "useFast=" << useFastPath
+             << "isMassive=" << isMassiveSelection;
 
     std::vector<CellSnapshot> before, after;
 
-    if (isLargeSelection) {
+    if (isMassiveSelection) {
+        qDebug() << "[applyStyleChange] MASSIVE PATH - adding overlay";
+        // FRONTEND FIRST: add style overlay → instant visual for ALL cells in region
+        Spreadsheet::StyleOverlay overlay;
+        overlay.minRow = minRow;
+        overlay.maxRow = maxRow;
+        overlay.minCol = minCol;
+        overlay.maxCol = maxCol;
+        overlay.modifier = modifier;
+        m_spreadsheet->addStyleOverlay(overlay);
+
+        // Only update sheet default style if ALL columns are selected (true "select all")
+        int totalCols = m_model ? m_model->columnCount() : m_spreadsheet->getColumnCount();
+        if (minCol == 0 && maxCol >= totalCols - 1) {
+            CellStyle defaultStyle = m_spreadsheet->getDefaultCellStyle();
+            modifier(defaultStyle);
+            m_spreadsheet->setDefaultCellStyle(defaultStyle);
+        }
+
+        // Tell Qt that visible cell data changed → triggers immediate repaint
+        if (m_model) {
+            int visRows = m_model->rowCount();
+            int visCols = m_model->columnCount();
+            QModelIndex topLeft = m_model->index(0, 0);
+            QModelIndex bottomRight = m_model->index(visRows - 1, visCols - 1);
+            emit m_model->dataChanged(topLeft, bottomRight);
+        }
+        // Force immediate synchronous repaint (not queued)
+        viewport()->repaint();
+
+        // BACKEND LATER: apply to actual cell styles in background chunks
+        auto modifierCopy = modifier;
+        auto spreadsheet = m_spreadsheet;
+        int bgMinCol = minCol, bgMaxCol = maxCol;
+        int chunkStart = minRow;
+        int bgMaxRow = maxRow;
+        static constexpr int CHUNK_SIZE = 50000;
+
+        auto* timer = new QTimer(this);
+        timer->setInterval(0);
+        connect(timer, &QTimer::timeout, this, [=]() mutable {
+            if (chunkStart > bgMaxRow) {
+                // All done — remove overlay (backend now matches)
+                // Keep overlays — they provide visual style for cells that have no
+                // backend data (blank cells). Overlays are lightweight and persist
+                // until the user clears formatting or undoes the action.
+                timer->stop();
+                timer->deleteLater();
+                return;
+            }
+            int chunkEnd = std::min(chunkStart + CHUNK_SIZE - 1, bgMaxRow);
+            auto& store = spreadsheet->getColumnStore();
+            for (int col = bgMinCol; col <= bgMaxCol; ++col) {
+                store.scanColumnValues(col, chunkStart, chunkEnd, [&](int row, const QVariant&) {
+                    uint16_t styleIdx = store.getCellStyleIndex(row, col);
+                    CellStyle style = StyleTable::instance().get(styleIdx);
+                    modifierCopy(style);
+                    uint16_t newIdx = StyleTable::instance().intern(style);
+                    if (newIdx != styleIdx) {
+                        store.setCellStyle(row, col, newIdx);
+                    }
+                });
+            }
+            chunkStart = chunkEnd + 1;
+        });
+        timer->start();
+    } else if (isLargeSelection) {
         // Only apply to occupied cells within the selection bounds
         m_spreadsheet->forEachCell([&](int row, int col, const Cell&) {
             if (row < minRow || row > maxRow || col < minCol || col > maxCol) return;
@@ -912,14 +1006,39 @@ static QString selectionRangeStr(QItemSelectionModel* sel) {
 // Used for Excel-style toggle: if any cell doesn't match → apply to all; if all match → unapply all.
 bool SpreadsheetView::selectionAllMatch(std::function<bool(const CellStyle&)> predicate) const {
     if (!m_spreadsheet) return false;
-    QModelIndexList selected = selectionModel()->selectedIndexes();
-    if (selected.isEmpty()) return false;
-    for (const auto& idx : selected) {
-        auto cell = m_spreadsheet->getCellIfExists(idx.row(), idx.column());
-        CellStyle style = cell ? cell->getStyle() : CellStyle();
-        if (!predicate(style)) return false;
+
+    // Only check visible cells in viewport — fast and sufficient for toggle detection.
+    // Checking all 9M cells for toggle would hang the app.
+    QItemSelection sel = selectionModel()->selection();
+    if (sel.isEmpty()) return false;
+
+    // Check at most 50 visible cells
+    int checked = 0;
+    for (const auto& range : sel) {
+        for (int r = range.top(); r <= range.bottom() && checked < 50; ++r) {
+            for (int c = range.left(); c <= range.right() && checked < 50; ++c) {
+                int logicalRow = (m_model && m_model->isVirtualMode())
+                    ? m_model->toLogicalRow(r) : r;
+                auto cell = m_spreadsheet->getCellIfExists(logicalRow, c);
+                CellStyle style;
+                if (cell) {
+                    style = cell->getStyle();
+                } else if (m_spreadsheet->hasDefaultCellStyle()) {
+                    style = m_spreadsheet->getDefaultCellStyle();
+                }
+                // Also check style overlays
+                for (const auto& ov : m_spreadsheet->getStyleOverlays()) {
+                    if (logicalRow >= ov.minRow && logicalRow <= ov.maxRow &&
+                        c >= ov.minCol && c <= ov.maxCol) {
+                        ov.modifier(style);
+                    }
+                }
+                if (!predicate(style)) return false;
+                checked++;
+            }
+        }
     }
-    return true;
+    return checked > 0;
 }
 
 void SpreadsheetView::applyBold() {
@@ -954,7 +1073,8 @@ void SpreadsheetView::applyStrikethrough() {
 }
 
 void SpreadsheetView::applyFontFamily(const QString& family) {
-    applyStyleChange([&family](CellStyle& s) { s.fontName = family; }, {Qt::FontRole});
+    QString fam = family;  // copy for lambda capture
+    applyStyleChange([fam](CellStyle& s) { s.fontName = fam; }, {Qt::FontRole});
 }
 
 void SpreadsheetView::applyFontSize(int size) {
@@ -968,14 +1088,16 @@ void SpreadsheetView::applyForegroundColor(const QString& colorStr) {
     if (m_macroEngine && m_macroEngine->isRecording()) {
         m_macroEngine->recordAction(QString("sheet.setForegroundColor(\"%1\", \"%2\");").arg(selectionRangeStr(selectionModel()), colorStr));
     }
-    applyStyleChange([&colorStr](CellStyle& s) { s.foregroundColor = colorStr; }, {Qt::ForegroundRole});
+    QString color = colorStr;  // copy for lambda capture
+    applyStyleChange([color](CellStyle& s) { s.foregroundColor = color; }, {Qt::ForegroundRole});
 }
 
 void SpreadsheetView::applyBackgroundColor(const QString& colorStr) {
     if (m_macroEngine && m_macroEngine->isRecording()) {
         m_macroEngine->recordAction(QString("sheet.setBackgroundColor(\"%1\", \"%2\");").arg(selectionRangeStr(selectionModel()), colorStr));
     }
-    applyStyleChange([&colorStr](CellStyle& s) { s.backgroundColor = colorStr; }, {Qt::BackgroundRole});
+    QString color = colorStr;  // copy for lambda capture
+    applyStyleChange([color](CellStyle& s) { s.backgroundColor = color; }, {Qt::BackgroundRole});
 }
 
 void SpreadsheetView::applyThousandSeparator() {
@@ -1577,18 +1699,60 @@ void SpreadsheetView::applyFilters() {
 
     int dataStartRow = m_filterHeaderRow + 1;
     int dataEndRow = m_filterRange.getEnd().row;
+    int totalRows = dataEndRow - dataStartRow + 1;
 
-    for (int r = dataStartRow; r <= dataEndRow; ++r) {
-        bool visible = true;
+    // For large datasets (>50K rows), use bitmap-based filtering
+    // Avoids O(n) setRowHidden() calls that freeze the UI
+    if (totalRows > 50000) {
+        // Build a hidden-rows set from column filters using ColumnStore scanning
+        QSet<int> visibleRows;
+        bool firstFilter = true;
+
         for (const auto& [col, allowedValues] : m_columnFilters) {
-            auto val = m_spreadsheet->getCellValue(CellAddress(r, col));
-            QString text = val.toString();
-            if (!allowedValues.contains(text)) {
-                visible = false;
-                break;
+            QSet<int> colVisible;
+            m_spreadsheet->getColumnStore().scanColumnValues(col, dataStartRow, dataEndRow,
+                [&](int row, const QVariant& val) {
+                    if (allowedValues.contains(val.toString())) {
+                        colVisible.insert(row);
+                    }
+                });
+            // Also include rows with empty values if "(Blanks)" is allowed
+            if (allowedValues.contains(QString())) {
+                for (int r = dataStartRow; r <= dataEndRow; r++) {
+                    if (!m_spreadsheet->getColumnStore().hasCell(r, col)) {
+                        colVisible.insert(r);
+                    }
+                }
+            }
+            if (firstFilter) {
+                visibleRows = colVisible;
+                firstFilter = false;
+            } else {
+                visibleRows &= colVisible;  // AND logic
             }
         }
-        setRowHidden(r, !visible);
+
+        // Apply visibility in batch — only hide/show rows that changed
+        for (int r = dataStartRow; r <= dataEndRow; ++r) {
+            bool shouldBeVisible = m_columnFilters.empty() || visibleRows.contains(r);
+            if (isRowHidden(r) != !shouldBeVisible) {
+                setRowHidden(r, !shouldBeVisible);
+            }
+        }
+    } else {
+        // Small dataset: original per-row approach (fast enough)
+        for (int r = dataStartRow; r <= dataEndRow; ++r) {
+            bool visible = true;
+            for (const auto& [col, allowedValues] : m_columnFilters) {
+                auto val = m_spreadsheet->getCellValue(CellAddress(r, col));
+                QString text = val.toString();
+                if (!allowedValues.contains(text)) {
+                    visible = false;
+                    break;
+                }
+            }
+            setRowHidden(r, !visible);
+        }
     }
 
     viewport()->update();
@@ -2805,9 +2969,15 @@ void SpreadsheetView::navigateToLogicalRow(int logicalRow, int col) {
         // Check if target row is within current buffer window
         int modelRow = m_model->toModelRow(logicalRow);
         if (modelRow < 0 || modelRow >= m_model->rowCount()) {
-            // Row not in current window — jump window so target is centered
-            m_model->jumpToBase(std::max(0, logicalRow - SpreadsheetModel::WINDOW_SIZE / 2));
-            verticalScrollBar()->setValue(0);
+            // Row not in current window — recenter window (uses dataChanged, not reset)
+            int rh = verticalHeader()->defaultSectionSize();
+            if (rh <= 0) rh = 25;
+            m_recentering = true;
+            int shift = m_model->recenterWindow(logicalRow);
+            if (shift != 0) {
+                verticalScrollBar()->setValue(verticalScrollBar()->value() - shift * rh);
+            }
+            m_recentering = false;
             modelRow = m_model->toModelRow(logicalRow);
             // Update virtual scrollbar
             if (m_virtualScrollBar) {

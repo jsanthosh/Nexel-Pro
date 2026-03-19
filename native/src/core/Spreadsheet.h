@@ -167,6 +167,16 @@ public:
     const CellStyle& getDefaultCellStyle() const { return m_defaultCellStyle; }
     bool hasDefaultCellStyle() const { return m_hasDefaultStyle; }
 
+    // Style overlay: instant visual style changes before backend catches up.
+    // The model applies these during rendering — O(1) per cell, zero backend work.
+    struct StyleOverlay {
+        int minRow, maxRow, minCol, maxCol;
+        std::function<void(CellStyle&)> modifier;
+    };
+    void addStyleOverlay(const StyleOverlay& overlay) { m_styleOverlays.push_back(overlay); }
+    void clearStyleOverlays() { m_styleOverlays.clear(); }
+    const std::vector<StyleOverlay>& getStyleOverlays() const { return m_styleOverlays; }
+
     // Pivot table support
     void setPivotConfig(std::unique_ptr<PivotConfig> config);
     const PivotConfig* getPivotConfig() const;
@@ -296,6 +306,7 @@ private:
     DocumentTheme m_documentTheme = defaultDocumentTheme();
     CellStyle m_defaultCellStyle;
     bool m_hasDefaultStyle = false;
+    std::vector<StyleOverlay> m_styleOverlays;
     std::map<QString, NamedRange> m_namedRanges;
     std::unordered_map<CellKey, SparklineConfig, CellKeyHash> m_sparklines;
     std::unordered_map<CellKey, CellRange, CellKeyHash> m_spillRanges; // formula cell -> spill output range

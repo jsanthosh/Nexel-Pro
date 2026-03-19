@@ -1249,7 +1249,14 @@ void MainWindow::openFile(const QString& fileName) {
                 watcher->deleteLater();
                 finishXlsxOpen(result, fileName, timer.elapsed());
             });
-        watcher->setFuture(QtConcurrent::run(&XlsxService::importFromFile, fileName));
+        // Use streaming import for better memory efficiency on large XLSX files
+        watcher->setFuture(QtConcurrent::run([fileName]() {
+            return XlsxService::importFromFileStreaming(fileName, [](int sheetIdx, int rowsParsed) {
+                // Progress callback (runs on worker thread, can't update UI directly)
+                Q_UNUSED(sheetIdx);
+                Q_UNUSED(rowsParsed);
+            });
+        }));
     } else {
         // CSV/TXT: progressive loading — show first 100K rows instantly, load rest in background
         startProgressiveCsvLoad(fileName);

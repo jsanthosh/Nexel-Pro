@@ -220,10 +220,26 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
     // Use getCellIfExists to avoid creating Cell objects for empty cells
     auto cell = m_spreadsheet->getCellIfExists(logicalRow, col);
 
-    // Fast path for empty cells — only check table styling, skip everything else
+    // Check style overlays first (applies to ALL cells, empty or not)
+    const auto& overlays = m_spreadsheet->getStyleOverlays();
+
+    // Fast path for empty cells
     if (!cell) {
         switch (role) {
             case Qt::BackgroundRole: {
+                // Check overlays for empty cells
+                for (const auto& ov : overlays) {
+                    if (logicalRow >= ov.minRow && logicalRow <= ov.maxRow &&
+                        col >= ov.minCol && col <= ov.maxCol) {
+                        CellStyle style;
+                        ov.modifier(style);
+                        QColor bg(style.backgroundColor);
+                        if (!bg.isValid() && !style.backgroundColor.isEmpty())
+                            bg = m_spreadsheet->getDocumentTheme().resolveColor(style.backgroundColor);
+                        if (bg.isValid() && bg != QColor("#FFFFFF") && bg != Qt::white)
+                            return QVariant(bg);
+                    }
+                }
                 auto* table = m_spreadsheet->getTableAt(logicalRow, col);
                 if (table) {
                     int startRow = table->range.getStart().row;
@@ -237,6 +253,33 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                 return QVariant();
             }
             case Qt::FontRole: {
+                // Check overlays for empty cells
+                for (const auto& ov : overlays) {
+                    if (logicalRow >= ov.minRow && logicalRow <= ov.maxRow &&
+                        col >= ov.minCol && col <= ov.maxCol) {
+                        CellStyle style = m_spreadsheet->hasDefaultCellStyle()
+                            ? m_spreadsheet->getDefaultCellStyle() : CellStyle();
+                        ov.modifier(style);
+                        QFont font(style.fontName.isEmpty() ? "Arial" : style.fontName);
+                        font.setPointSize(style.fontSize > 0 ? style.fontSize : 11);
+                        font.setBold(style.bold);
+                        font.setItalic(style.italic);
+                        font.setUnderline(style.underline);
+                        font.setStrikeOut(style.strikethrough);
+                        return QVariant(font);
+                    }
+                }
+                // Check default style
+                if (m_spreadsheet->hasDefaultCellStyle()) {
+                    const auto& ds = m_spreadsheet->getDefaultCellStyle();
+                    QFont font(ds.fontName.isEmpty() ? "Arial" : ds.fontName);
+                    font.setPointSize(ds.fontSize > 0 ? ds.fontSize : 11);
+                    font.setBold(ds.bold);
+                    font.setItalic(ds.italic);
+                    font.setUnderline(ds.underline);
+                    font.setStrikeOut(ds.strikethrough);
+                    return QVariant(font);
+                }
                 auto* table = m_spreadsheet->getTableAt(logicalRow, col);
                 if (table && table->hasHeaderRow && logicalRow == table->range.getStart().row) {
                     QFont font("Arial", 11);
@@ -246,6 +289,19 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                 return QVariant();
             }
             case Qt::ForegroundRole: {
+                // Check overlays for empty cells
+                for (const auto& ov : overlays) {
+                    if (logicalRow >= ov.minRow && logicalRow <= ov.maxRow &&
+                        col >= ov.minCol && col <= ov.maxCol) {
+                        CellStyle style;
+                        ov.modifier(style);
+                        QColor fg(style.foregroundColor);
+                        if (!fg.isValid() && !style.foregroundColor.isEmpty())
+                            fg = m_spreadsheet->getDocumentTheme().resolveColor(style.foregroundColor);
+                        if (fg.isValid() && fg != QColor("#000000") && fg != Qt::black)
+                            return QVariant(fg);
+                    }
+                }
                 auto* table = m_spreadsheet->getTableAt(logicalRow, col);
                 if (table && table->hasHeaderRow && logicalRow == table->range.getStart().row)
                     return table->theme.headerFg;
@@ -312,8 +368,38 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             return m_spreadsheet->getCellValue(CellAddress(logicalRow, col));
         }
         case Qt::FontRole: {
+            // Check style overlays first (instant visual feedback for bulk operations)
+            const auto& overlays = m_spreadsheet->getStyleOverlays();
+            if (!overlays.empty()) {
+                for (const auto& ov : overlays) {
+                    if (logicalRow >= ov.minRow && logicalRow <= ov.maxRow &&
+                        col >= ov.minCol && col <= ov.maxCol) {
+                        // Apply overlay modifier to the effective style
+                        CellStyle style = hasCustomStyle ? baseStyle : m_spreadsheet->getDefaultCellStyle();
+                        ov.modifier(style);
+                        QFont font(style.fontName);
+                        font.setPointSize(style.fontSize);
+                        font.setBold(style.bold);
+                        font.setItalic(style.italic);
+                        font.setUnderline(style.underline);
+                        font.setStrikeOut(style.strikethrough);
+                        return QVariant(font);
+                    }
+                }
+            }
             // Fast path: cells with default style (vast majority) — return cached default font
             if (!hasCustomStyle && m_spreadsheet->getConditionalFormatting().getAllRules().empty()) {
+                // Check if default style has any formatting
+                if (m_spreadsheet->hasDefaultCellStyle()) {
+                    const auto& ds = m_spreadsheet->getDefaultCellStyle();
+                    QFont font(ds.fontName);
+                    font.setPointSize(ds.fontSize);
+                    font.setBold(ds.bold);
+                    font.setItalic(ds.italic);
+                    font.setUnderline(ds.underline);
+                    font.setStrikeOut(ds.strikethrough);
+                    return QVariant(font);
+                }
                 static const QFont s_defaultFont("Arial", 11);
                 return s_defaultFont;
             }
@@ -335,6 +421,21 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             return font;
         }
         case Qt::ForegroundRole: {
+            // Check style overlays for foreground color
+            const auto& fgOverlays = m_spreadsheet->getStyleOverlays();
+            if (!fgOverlays.empty()) {
+                for (const auto& ov : fgOverlays) {
+                    if (logicalRow >= ov.minRow && logicalRow <= ov.maxRow &&
+                        col >= ov.minCol && col <= ov.maxCol) {
+                        CellStyle style = hasCustomStyle ? baseStyle : CellStyle();
+                        ov.modifier(style);
+                        QColor fg(style.foregroundColor);
+                        if (fg.isValid() && fg != QColor("#000000") && fg != Qt::black) {
+                            return QVariant(fg);
+                        }
+                    }
+                }
+            }
             // Fast path: default style = black text
             if (!hasCustomStyle && m_spreadsheet->getConditionalFormatting().getAllRules().empty()) {
                 return QVariant(); // Default foreground (black)
@@ -353,6 +454,23 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             return fg.isValid() ? QVariant(fg) : QVariant();
         }
         case Qt::BackgroundRole: {
+            // Check style overlays for background color
+            const auto& bgOverlays = m_spreadsheet->getStyleOverlays();
+            if (!bgOverlays.empty()) {
+                for (const auto& ov : bgOverlays) {
+                    if (logicalRow >= ov.minRow && logicalRow <= ov.maxRow &&
+                        col >= ov.minCol && col <= ov.maxCol) {
+                        CellStyle style = hasCustomStyle ? baseStyle : CellStyle();
+                        ov.modifier(style);
+                        QColor bg(style.backgroundColor);
+                        if (!bg.isValid() && !style.backgroundColor.isEmpty())
+                            bg = m_spreadsheet->getDocumentTheme().resolveColor(style.backgroundColor);
+                        if (bg.isValid() && bg != QColor("#FFFFFF") && bg != Qt::white) {
+                            return QVariant(bg);
+                        }
+                    }
+                }
+            }
             // Check table first (common case for styled regions)
             auto* table = m_spreadsheet->getTableAt(logicalRow, col);
             if (table) {

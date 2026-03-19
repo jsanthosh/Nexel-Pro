@@ -1,5 +1,8 @@
 #include "AutoSaveService.h"
 #include "../ui/MainWindow.h"
+#include "../core/Spreadsheet.h"
+#include "../core/ColumnStore.h"
+#include "../core/StyleTable.h"
 #include "XlsxService.h"
 
 #include <QCryptographicHash>
@@ -8,6 +11,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QDebug>
+#include <QtConcurrent>
 
 AutoSaveService::AutoSaveService(QObject* parent)
     : QObject(parent) {
@@ -17,6 +21,12 @@ AutoSaveService::AutoSaveService(QObject* parent)
 
 AutoSaveService::~AutoSaveService() {
     m_timer.stop();
+    // Wait for any in-progress save to finish
+    if (m_saveThread) {
+        m_saveThread->quit();
+        m_saveThread->wait(5000);
+        delete m_saveThread;
+    }
 }
 
 void AutoSaveService::setMainWindow(MainWindow* mainWindow) {
@@ -45,15 +55,13 @@ bool AutoSaveService::isEnabled() const {
 
 QString AutoSaveService::getAutoSavePath(const QString& originalFilePath) {
     if (originalFilePath.isEmpty()) {
-        // Unsaved document — use temp directory
         QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
         return QDir(tempDir).filePath(".~nexel-unsaved-recovery.xlsx");
     }
 
-    // Generate hex hash of original path for uniqueness
     QByteArray hash = QCryptographicHash::hash(
         originalFilePath.toUtf8(), QCryptographicHash::Md5).toHex();
-    QString hashStr = QString::fromLatin1(hash.left(16));  // Use first 16 hex chars
+    QString hashStr = QString::fromLatin1(hash.left(16));
 
     QFileInfo fi(originalFilePath);
     QString dir = fi.absolutePath();
@@ -64,27 +72,17 @@ QString AutoSaveService::checkForRecovery(const QString& originalFilePath) {
     QString autoSavePath = getAutoSavePath(originalFilePath);
     QFileInfo autoSaveInfo(autoSavePath);
 
-    if (!autoSaveInfo.exists()) {
-        return QString();
-    }
+    if (!autoSaveInfo.exists()) return QString();
 
-    if (originalFilePath.isEmpty()) {
-        // Unsaved document — any auto-save file is a recovery candidate
-        return autoSavePath;
-    }
+    if (originalFilePath.isEmpty()) return autoSavePath;
 
     QFileInfo originalInfo(originalFilePath);
-    if (!originalInfo.exists()) {
-        // Original file doesn't exist but auto-save does — recovery candidate
-        return autoSavePath;
-    }
+    if (!originalInfo.exists()) return autoSavePath;
 
-    // Only offer recovery if auto-save is newer than the original
     if (autoSaveInfo.lastModified() > originalInfo.lastModified()) {
         return autoSavePath;
     }
 
-    // Auto-save is older, clean it up
     QFile::remove(autoSavePath);
     return QString();
 }
@@ -94,12 +92,7 @@ void AutoSaveService::cleanupAutoSave(const QString& originalFilePath) {
     if (QFile::exists(autoSavePath)) {
         QFile::remove(autoSavePath);
     }
-
-    // Also clean up the unsaved document recovery file
-    if (originalFilePath.isEmpty()) {
-        return;
-    }
-    // If original path is set, also try to clean up the unsaved recovery
+    if (originalFilePath.isEmpty()) return;
     QString unsavedPath = getAutoSavePath(QString());
     if (QFile::exists(unsavedPath)) {
         QFile::remove(unsavedPath);
@@ -109,14 +102,12 @@ void AutoSaveService::cleanupAutoSave(const QString& originalFilePath) {
 void AutoSaveService::onManualSave() {
     m_isDirty = false;
     cleanupAutoSave(m_currentFilePath);
-    // Restart timer from scratch after manual save
     if (m_enabled) {
         m_timer.start(m_intervalSeconds * 1000);
     }
 }
 
 void AutoSaveService::setCurrentFilePath(const QString& path) {
-    // Clean up auto-save for old path
     if (!m_currentFilePath.isEmpty()) {
         cleanupAutoSave(m_currentFilePath);
     }
@@ -125,43 +116,68 @@ void AutoSaveService::setCurrentFilePath(const QString& path) {
 
 void AutoSaveService::markDirty() {
     m_isDirty = true;
-    // Start the timer if not already running
     if (m_enabled && !m_timer.isActive()) {
         m_timer.start(m_intervalSeconds * 1000);
     }
 }
 
 void AutoSaveService::performAutoSave() {
-    if (!m_isDirty || !m_mainWindow) {
+    if (!m_isDirty || !m_mainWindow) return;
+
+    // Don't start another save if one is already running
+    if (m_saving.load()) {
+        qDebug() << "AutoSave: previous save still in progress, skipping";
         return;
     }
 
-    // Skip auto-save for large datasets (>500K rows) — synchronous XLSX export
-    // would freeze the UI for tens of seconds. TODO: implement async background save.
     const auto& sheets = m_mainWindow->getSheets();
-    if (!sheets.empty()) {
-        for (const auto& sheet : sheets) {
-            if (sheet && sheet->getRowCount() > 500000) {
-                qDebug() << "AutoSave: skipped (large dataset:" << sheet->getRowCount() << "rows)";
-                return;
-            }
+    if (sheets.empty()) return;
+
+    // Check if any sheet is large enough to need background save
+    bool isLarge = false;
+    for (const auto& sheet : sheets) {
+        if (sheet && sheet->getRowCount() > 100000) {
+            isLarge = true;
+            break;
         }
     }
 
     QString autoSavePath = getAutoSavePath(m_currentFilePath);
 
-    if (sheets.empty()) {
-        qWarning() << "AutoSave: No sheets to save";
+    if (!isLarge) {
+        // Small files: save synchronously (fast, <100ms)
+        std::vector<NexelChartExport> emptyCharts;
+        bool success = XlsxService::exportToFile(sheets, autoSavePath, emptyCharts);
+        if (success) {
+            m_isDirty = false;
+            qDebug() << "AutoSave: saved to" << autoSavePath;
+        }
         return;
     }
 
-    std::vector<NexelChartExport> emptyCharts;
-    bool success = XlsxService::exportToFile(sheets, autoSavePath, emptyCharts);
+    // Large files: save in background thread (zero UI blocking)
+    m_saving.store(true);
+    emit autoSaveStarted();
 
-    if (success) {
-        m_isDirty = false;
-        qDebug() << "AutoSave: saved to" << autoSavePath;
-    } else {
-        qWarning() << "AutoSave: failed to save to" << autoSavePath;
-    }
+    // Take a lightweight snapshot of sheet data on the main thread
+    // This is fast: just copies the shared_ptr (reference counted)
+    std::vector<std::shared_ptr<Spreadsheet>> sheetsCopy(sheets.begin(), sheets.end());
+    QString savePath = autoSavePath;
+
+    QtConcurrent::run([this, sheetsCopy = std::move(sheetsCopy), savePath]() {
+        std::vector<NexelChartExport> emptyCharts;
+        bool success = XlsxService::exportToFile(sheetsCopy, savePath, emptyCharts);
+
+        // Signal completion back to main thread
+        QMetaObject::invokeMethod(this, [this, success]() {
+            m_saving.store(false);
+            if (success) {
+                m_isDirty = false;
+                qDebug() << "AutoSave: background save completed";
+            } else {
+                qWarning() << "AutoSave: background save failed";
+            }
+            emit autoSaveFinished(success);
+        }, Qt::QueuedConnection);
+    });
 }

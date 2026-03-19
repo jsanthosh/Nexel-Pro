@@ -381,6 +381,26 @@ target_include_directories(benchmark_20m PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
 )
 
+# ============================================================================
+# Stress Test — loads real CSV, tests sort/filter/formula for crashes
+# Build with: cmake --build build --target stress_test
+# ============================================================================
+add_executable(stress_test EXCLUDE_FROM_ALL
+    benchmarks/stress_test.cpp
+    ${CORE_SOURCES}
+    ${DATABASE_SOURCES}
+    ${SERVICES_SOURCES}
+)
+target_link_libraries(stress_test
+    Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent
+    SQLite::SQLite3
+    Threads::Threads
+)
+target_include_directories(stress_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${SQLITE3_INCLUDE_DIR}
+)
+
 # Install
 install(TARGETS NativeSpreadsheet
     BUNDLE DESTINATION . COMPONENT Runtime
