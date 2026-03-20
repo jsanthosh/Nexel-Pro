@@ -383,6 +383,59 @@ private:
     // Web
     QVariant funcENCODEURL(const std::vector<QVariant>& args);
 
+    // === Batch 4 — Sprint 1 completion ===
+    // Logical (LAMBDA ecosystem)
+    QVariant funcLET(const std::vector<QVariant>& args);
+    QVariant funcLAMBDA(const std::vector<QVariant>& args);
+    QVariant funcMAP(const std::vector<QVariant>& args);
+    QVariant funcREDUCE(const std::vector<QVariant>& args);
+    QVariant funcSCAN(const std::vector<QVariant>& args);
+    QVariant funcMAKEARRAY(const std::vector<QVariant>& args);
+    QVariant funcBYROW(const std::vector<QVariant>& args);
+    QVariant funcBYCOL(const std::vector<QVariant>& args);
+    QVariant funcISOMITTED(const std::vector<QVariant>& args);
+    // Lookup
+    QVariant funcOFFSET(const std::vector<QVariant>& args);
+    QVariant funcINDIRECT(const std::vector<QVariant>& args);
+    QVariant funcLOOKUP(const std::vector<QVariant>& args);
+    QVariant funcAREAS(const std::vector<QVariant>& args);
+    // Statistical distributions
+    QVariant funcT_DIST(const std::vector<QVariant>& args);
+    QVariant funcT_INV(const std::vector<QVariant>& args);
+    QVariant funcT_DIST_2T(const std::vector<QVariant>& args);
+    QVariant funcT_INV_2T(const std::vector<QVariant>& args);
+    QVariant funcCHISQ_DIST(const std::vector<QVariant>& args);
+    QVariant funcF_DIST(const std::vector<QVariant>& args);
+    QVariant funcEXPON_DIST(const std::vector<QVariant>& args);
+    QVariant funcGAMMA_DIST(const std::vector<QVariant>& args);
+    QVariant funcWEIBULL_DIST(const std::vector<QVariant>& args);
+    QVariant funcSKEW(const std::vector<QVariant>& args);
+    QVariant funcKURT(const std::vector<QVariant>& args);
+    QVariant funcPROB(const std::vector<QVariant>& args);
+    QVariant funcCONFIDENCE_T(const std::vector<QVariant>& args);
+    // Engineering
+    QVariant funcBIN2HEX(const std::vector<QVariant>& args);
+    QVariant funcBIN2OCT(const std::vector<QVariant>& args);
+    QVariant funcHEX2BIN(const std::vector<QVariant>& args);
+    QVariant funcHEX2OCT(const std::vector<QVariant>& args);
+    QVariant funcOCT2BIN(const std::vector<QVariant>& args);
+    QVariant funcOCT2HEX(const std::vector<QVariant>& args);
+    QVariant funcBITAND(const std::vector<QVariant>& args);
+    QVariant funcBITOR(const std::vector<QVariant>& args);
+    QVariant funcBITXOR(const std::vector<QVariant>& args);
+    QVariant funcBITLSHIFT(const std::vector<QVariant>& args);
+    QVariant funcBITRSHIFT(const std::vector<QVariant>& args);
+    // Text
+    QVariant funcARRAYTOTEXT(const std::vector<QVariant>& args);
+    // Info
+    QVariant funcFORMULATEXT(const std::vector<QVariant>& args);
+    QVariant funcSHEET(const std::vector<QVariant>& args);
+    QVariant funcSHEETS(const std::vector<QVariant>& args);
+    // Math
+    QVariant funcAGGREGATE(const std::vector<QVariant>& args);
+    QVariant funcMMULT(const std::vector<QVariant>& args);
+    QVariant funcMUNIT(const std::vector<QVariant>& args);
+
     // AST-based evaluation (parse once, evaluate many — 10x faster recalc)
     QVariant evaluateAST(uint32_t nodeIndex);
     QVariant evaluateASTFunction(uint16_t funcId, const QVariantList& argNodeIndices);
