@@ -1067,8 +1067,9 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
     drawBorder(index.data(Qt::UserRole + 14), rect.right(), rect.top(), rect.right(), rect.bottom());   // right
 
     // --- Focus border: green rectangle for the current cell ---
+    // --- Focus cell border ---
     if (hasFocus) {
-        painter->setClipRect(rect.adjusted(-1, -1, 1, 1)); // expand clip to avoid top/left clipping
+        painter->setClipRect(rect.adjusted(-1, -1, 1, 1));
         QPen focusPen(ThemeManager::instance().currentTheme().focusBorderColor, 2, Qt::SolidLine);
         painter->setPen(focusPen);
         painter->drawRect(rect.adjusted(1, 1, -1, -1));

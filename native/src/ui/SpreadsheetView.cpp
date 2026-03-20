@@ -455,6 +455,8 @@ void SpreadsheetView::selectionChanged(const QItemSelection& selected, const QIt
         viewport()->update(m_fillHandleRect.adjusted(-2, -2, 2, 2));
     }
     QTableView::selectionChanged(selected, deselected);
+    // Full viewport repaint so the selection border rectangle draws correctly
+    viewport()->update();
 }
 
 // ============== Clipboard operations ==============
@@ -2183,11 +2185,11 @@ void SpreadsheetView::insertCellsShiftRight() {
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty()) return;
 
-    int minRow = selected.first().row(), maxRow = minRow;
-    int minCol = selected.first().column(), maxCol = minCol;
+    int minRow = INT_MAX, maxRow = 0, minCol = INT_MAX, maxCol = 0;
     for (const auto& idx : selected) {
-        minRow = qMin(minRow, idx.row());
-        maxRow = qMax(maxRow, idx.row());
+        int lr = logicalRow(idx);
+        minRow = qMin(minRow, lr);
+        maxRow = qMax(maxRow, lr);
         minCol = qMin(minCol, idx.column());
         maxCol = qMax(maxCol, idx.column());
     }
@@ -2202,11 +2204,11 @@ void SpreadsheetView::insertCellsShiftDown() {
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty()) return;
 
-    int minRow = selected.first().row(), maxRow = minRow;
-    int minCol = selected.first().column(), maxCol = minCol;
+    int minRow = INT_MAX, maxRow = 0, minCol = INT_MAX, maxCol = 0;
     for (const auto& idx : selected) {
-        minRow = qMin(minRow, idx.row());
-        maxRow = qMax(maxRow, idx.row());
+        int lr = logicalRow(idx);
+        minRow = qMin(minRow, lr);
+        maxRow = qMax(maxRow, lr);
         minCol = qMin(minCol, idx.column());
         maxCol = qMax(maxCol, idx.column());
     }
@@ -2231,20 +2233,32 @@ void SpreadsheetView::insertEntireRow() {
         }
     }
 
-    // Use beginInsertRows/endInsertRows so Qt automatically shifts header heights.
     QList<int> sortedRows(rows.begin(), rows.end());
     std::sort(sortedRows.rbegin(), sortedRows.rend());
 
-    verticalHeader()->blockSignals(true);
-
-    for (int row : sortedRows) {
-        m_model->beginRowInsertion(row, 1);
-        m_spreadsheet->getUndoManager().execute(
-            std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
-        m_model->endRowInsertion();
+    if (m_model && m_model->isVirtualMode()) {
+        // Virtual mode with large data: row insert is O(n) and too slow.
+        // For now, show a message. TODO: implement O(1) chunk-level row insertion.
+        int totalRows = m_spreadsheet->getRowCount();
+        if (totalRows > 500000) {
+            qDebug() << "[InsertRow] Skipped: dataset too large (" << totalRows << " rows)";
+            // Still do the insert but warn it may be slow
+        }
+        for (int row : sortedRows) {
+            m_spreadsheet->getUndoManager().execute(
+                std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
+        }
+        m_model->resetModel();
+    } else {
+        verticalHeader()->blockSignals(true);
+        for (int row : sortedRows) {
+            m_model->beginRowInsertion(row, 1);
+            m_spreadsheet->getUndoManager().execute(
+                std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
+            m_model->endRowInsertion();
+        }
+        verticalHeader()->blockSignals(false);
     }
-
-    verticalHeader()->blockSignals(false);
 }
 
 void SpreadsheetView::insertEntireColumn() {
@@ -2283,11 +2297,11 @@ void SpreadsheetView::deleteCellsShiftLeft() {
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty()) return;
 
-    int minRow = selected.first().row(), maxRow = minRow;
-    int minCol = selected.first().column(), maxCol = minCol;
+    int minRow = INT_MAX, maxRow = 0, minCol = INT_MAX, maxCol = 0;
     for (const auto& idx : selected) {
-        minRow = qMin(minRow, idx.row());
-        maxRow = qMax(maxRow, idx.row());
+        int lr = logicalRow(idx);
+        minRow = qMin(minRow, lr);
+        maxRow = qMax(maxRow, lr);
         minCol = qMin(minCol, idx.column());
         maxCol = qMax(maxCol, idx.column());
     }
@@ -2302,11 +2316,11 @@ void SpreadsheetView::deleteCellsShiftUp() {
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty()) return;
 
-    int minRow = selected.first().row(), maxRow = minRow;
-    int minCol = selected.first().column(), maxCol = minCol;
+    int minRow = INT_MAX, maxRow = 0, minCol = INT_MAX, maxCol = 0;
     for (const auto& idx : selected) {
-        minRow = qMin(minRow, idx.row());
-        maxRow = qMax(maxRow, idx.row());
+        int lr = logicalRow(idx);
+        minRow = qMin(minRow, lr);
+        maxRow = qMax(maxRow, lr);
         minCol = qMin(minCol, idx.column());
         maxCol = qMax(maxCol, idx.column());
     }
@@ -2343,6 +2357,8 @@ void SpreadsheetView::deleteEntireRow() {
     // trigger onVerticalSectionResized (which would corrupt m_rowHeights).
     verticalHeader()->blockSignals(true);
 
+    bool isVirtual = m_model && m_model->isVirtualMode();
+
     for (int row : sortedRows) {
         // Snapshot deleted cells for undo
         std::vector<CellSnapshot> deleted;
@@ -2354,19 +2370,22 @@ void SpreadsheetView::deleteEntireRow() {
             }
         }
 
-        // Save the height of the row being deleted (for undo restore)
-        std::vector<int> savedHeights = { verticalHeader()->sectionSize(row) };
+        std::vector<int> savedHeights = { verticalHeader()->defaultSectionSize() };
 
-        // Tell Qt model: rows are about to be removed (BEFORE data change)
-        m_model->beginRowRemoval(row, 1);
+        if (!isVirtual) {
+            m_model->beginRowRemoval(row, 1);
+        }
 
-        // Execute the delete (changes data + shifts m_rowHeights in Spreadsheet)
         m_spreadsheet->getUndoManager().execute(
             std::make_unique<DeleteRowCommand>(row, 1, deleted, savedHeights), m_spreadsheet.get());
 
-        // Tell Qt model: removal complete (AFTER data change)
-        // Qt will now automatically shift header section sizes
-        m_model->endRowRemoval();
+        if (!isVirtual) {
+            m_model->endRowRemoval();
+        }
+    }
+
+    if (isVirtual) {
+        m_model->resetModel();
     }
 
     verticalHeader()->blockSignals(false);
@@ -3917,6 +3936,37 @@ void SpreadsheetView::mouseReleaseEvent(QMouseEvent* event) {
 
 void SpreadsheetView::paintEvent(QPaintEvent* event) {
     QTableView::paintEvent(event);
+
+    // --- Selection range outer border (Excel-style) ---
+    // Draw ONE rectangle around the entire selection, not per-cell borders.
+    {
+        QItemSelection sel = selectionModel()->selection();
+        if (!sel.isEmpty() && sel.first().width() * sel.first().height() > 1) {
+            // Get bounding rect of selection in pixel coordinates
+            int minR = INT_MAX, maxR = 0, minC = INT_MAX, maxC = 0;
+            for (const auto& range : sel) {
+                minR = qMin(minR, range.top());
+                maxR = qMax(maxR, range.bottom());
+                minC = qMin(minC, range.left());
+                maxC = qMax(maxC, range.right());
+            }
+
+            QModelIndex topLeft = model()->index(minR, minC);
+            QModelIndex bottomRight = model()->index(maxR, maxC);
+            QRect tlRect = visualRect(topLeft);
+            QRect brRect = visualRect(bottomRight);
+
+            if (tlRect.isValid() && brRect.isValid()) {
+                QRect selPixelRect = tlRect.united(brRect);
+                QPainter painter(viewport());
+                painter.setRenderHint(QPainter::Antialiasing, false);
+                QPen borderPen(ThemeManager::instance().currentTheme().focusBorderColor, 2, Qt::SolidLine);
+                painter.setPen(borderPen);
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRect(selPixelRect.adjusted(0, 0, 0, 0));
+            }
+        }
+    }
 
     // Draw fill handle on current selection
     QModelIndex current = currentIndex();

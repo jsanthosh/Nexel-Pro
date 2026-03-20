@@ -1603,7 +1603,23 @@ void MainWindow::onSaveDocument() {
     QString ext = QFileInfo(m_currentFilePath).suffix().toLower();
 
     if (ext == "xlsx" || ext == "xls") {
-        // XLSX save — collect chart configs and run synchronously (typically small files)
+        // Warn if >1M rows (XLSX limit)
+        int maxRows = 0;
+        for (const auto& sheet : m_sheets) {
+            if (sheet) maxRows = qMax(maxRows, sheet->getRowCount());
+        }
+        if (maxRows > 1048576) {
+            auto reply = QMessageBox::warning(this, "Large Dataset",
+                QString("This document has %1 rows.\n\n"
+                        "XLSX format supports max 1,048,576 rows.\n"
+                        "Only the first 1M rows will be saved.\n\n"
+                        "Use Save As to save as CSV instead?")
+                    .arg(QLocale().toString(maxRows)),
+                QMessageBox::Ok | QMessageBox::Cancel);
+            if (reply == QMessageBox::Cancel) return;
+        }
+
+        // Collect chart configs
         std::vector<NexelChartExport> chartExports;
         for (auto* chart : m_charts) {
             NexelChartExport ce;
@@ -1623,15 +1639,49 @@ void MainWindow::onSaveDocument() {
             ce.height = chart->height();
             chartExports.push_back(ce);
         }
-        bool success = XlsxService::exportToFile(m_sheets, m_currentFilePath, chartExports);
-        if (success) {
-            m_dirty = false;
-            updateWindowTitle();
+
+        // Check if large dataset — run async to avoid UI freeze
+        bool isLarge = false;
+        for (const auto& sheet : m_sheets) {
+            if (sheet && sheet->getRowCount() > 100000) { isLarge = true; break; }
+        }
+
+        if (isLarge) {
+            // Background XLSX save for large files
+            statusBar()->showMessage("Saving XLSX (background)...");
             m_toolbar->setSaveEnabled(false);
-            statusBar()->showMessage("Saved: " + m_currentFilePath);
-            if (m_autoSave) m_autoSave->onManualSave();
+
+            auto sheets = m_sheets;
+            QString path = m_currentFilePath;
+            auto* watcher = new QFutureWatcher<bool>(this);
+            connect(watcher, &QFutureWatcher<bool>::finished, this, [this, watcher, path]() {
+                bool success = watcher->result();
+                watcher->deleteLater();
+                if (success) {
+                    m_dirty = false;
+                    updateWindowTitle();
+                    statusBar()->showMessage("Saved: " + path);
+                    if (m_autoSave) m_autoSave->onManualSave();
+                } else {
+                    m_toolbar->setSaveEnabled(true);
+                    QMessageBox::warning(this, "Save Failed", "Could not save file.");
+                }
+            });
+            watcher->setFuture(QtConcurrent::run([sheets, path, chartExports]() {
+                return XlsxService::exportToFile(sheets, path, chartExports);
+            }));
         } else {
-            QMessageBox::warning(this, "Save Failed", "Could not save file.");
+            // Small files: save synchronously (fast)
+            bool success = XlsxService::exportToFile(m_sheets, m_currentFilePath, chartExports);
+            if (success) {
+                m_dirty = false;
+                updateWindowTitle();
+                m_toolbar->setSaveEnabled(false);
+                statusBar()->showMessage("Saved: " + m_currentFilePath);
+                if (m_autoSave) m_autoSave->onManualSave();
+            } else {
+                QMessageBox::warning(this, "Save Failed", "Could not save file.");
+            }
         }
     } else {
         // CSV save — run in background thread to avoid UI freeze on large files
@@ -1669,10 +1719,37 @@ void MainWindow::onSaveAs() {
     if (fileName.isEmpty()) return;
 
     QString ext = QFileInfo(fileName).suffix().toLower();
+
+    // Warn if saving >1M rows as XLSX (Excel's limit is 1,048,576 rows)
+    if (ext == "xlsx") {
+        int maxRows = 0;
+        for (const auto& sheet : m_sheets) {
+            if (sheet) maxRows = qMax(maxRows, sheet->getRowCount());
+        }
+        if (maxRows > 1048576) {
+            auto reply = QMessageBox::warning(this, "Large Dataset",
+                QString("This document has %1 rows.\n\n"
+                        "XLSX format supports max 1,048,576 rows (Excel limit).\n"
+                        "Only the first 1M rows will be saved.\n\n"
+                        "Save as CSV instead to keep all rows?")
+                    .arg(QLocale().toString(maxRows)),
+                QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+            if (reply == QMessageBox::Yes) {
+                // Switch to CSV
+                fileName = QFileDialog::getSaveFileName(this, "Save as CSV", "",
+                    "CSV Files (*.csv);;All Files (*)");
+                if (fileName.isEmpty()) return;
+                ext = QFileInfo(fileName).suffix().toLower();
+            } else if (reply == QMessageBox::Cancel) {
+                return;
+            }
+            // No = proceed with XLSX (truncated to 1M rows)
+        }
+    }
+
     bool success = false;
 
     if (ext == "xlsx") {
-        // Collect chart configs for saving
         std::vector<NexelChartExport> chartExports;
         for (auto* chart : m_charts) {
             NexelChartExport ce;
@@ -1692,6 +1769,38 @@ void MainWindow::onSaveAs() {
             ce.height = chart->height();
             chartExports.push_back(ce);
         }
+
+        // Large files: background save
+        bool isLarge = false;
+        for (const auto& sheet : m_sheets) {
+            if (sheet && sheet->getRowCount() > 100000) { isLarge = true; break; }
+        }
+
+        if (isLarge) {
+            statusBar()->showMessage("Saving XLSX (background)...");
+            auto sheets = m_sheets;
+            auto* watcher = new QFutureWatcher<bool>(this);
+            connect(watcher, &QFutureWatcher<bool>::finished, this, [this, watcher, fileName]() {
+                bool ok = watcher->result();
+                watcher->deleteLater();
+                if (ok) {
+                    if (m_autoSave) m_autoSave->setCurrentFilePath(fileName);
+                    m_currentFilePath = fileName;
+                    m_dirty = false;
+                    updateWindowTitle();
+                    m_toolbar->setSaveEnabled(false);
+                    statusBar()->showMessage("Saved: " + fileName);
+                    if (m_autoSave) m_autoSave->onManualSave();
+                } else {
+                    QMessageBox::warning(this, "Save Failed", "Could not save file.");
+                }
+            });
+            watcher->setFuture(QtConcurrent::run([sheets, fileName, chartExports]() {
+                return XlsxService::exportToFile(sheets, fileName, chartExports);
+            }));
+            return;
+        }
+
         success = XlsxService::exportToFile(m_sheets, fileName, chartExports);
     } else {
         auto spreadsheet = m_spreadsheetView->getSpreadsheet();
@@ -1918,17 +2027,64 @@ void MainWindow::onFindNext() {
     if (!sheet) return;
 
     int maxRow = sheet->getMaxRow();
-    int maxCol = sheet->getMaxColumn();
-    if (maxRow < 0 || maxCol < 0) {
+    if (maxRow < 0) {
         m_findReplaceDialog->setStatus("No data to search.");
         return;
     }
 
+    // For large datasets: use cached search results (parallel search, done once)
+    bool isLarge = maxRow > 100000;
+
+    if (isLarge && (m_findCache.isEmpty() || m_findCacheQuery != searchText ||
+                    m_findCacheCase != matchCase || m_findCacheWhole != wholeCell)) {
+        // Run parallel search in background
+        m_findReplaceDialog->setStatus("Searching...");
+        QApplication::processEvents();
+
+        m_findCache.clear();
+        auto results = sheet->searchAllCells(searchText, matchCase, wholeCell);
+        for (const auto& addr : results) {
+            m_findCache.append(addr);
+        }
+        m_findCacheQuery = searchText;
+        m_findCacheCase = matchCase;
+        m_findCacheWhole = wholeCell;
+        m_findCacheIdx = -1;
+        m_findReplaceDialog->setStatus(QString("%1 matches found").arg(m_findCache.size()));
+    }
+
+    if (isLarge) {
+        if (m_findCache.isEmpty()) {
+            m_findReplaceDialog->setStatus("Not found.");
+            return;
+        }
+        m_findCacheIdx = (m_findCacheIdx + 1) % m_findCache.size();
+        CellAddress addr = m_findCache[m_findCacheIdx];
+        auto* mdl = m_spreadsheetView->getModel();
+        if (mdl) {
+            int modelRow = mdl->toModelRow(addr.row);
+            if (modelRow < 0) {
+                // Row not in current window — recenter
+                mdl->jumpToBase(std::max(0, addr.row - SpreadsheetModel::WINDOW_SIZE / 2));
+                modelRow = mdl->toModelRow(addr.row);
+            }
+            if (modelRow >= 0) {
+                QModelIndex idx = mdl->index(modelRow, addr.col);
+                m_spreadsheetView->setCurrentIndex(idx);
+                m_spreadsheetView->scrollTo(idx);
+            }
+        }
+        m_findReplaceDialog->setStatus(QString("Found %1 of %2: %3")
+            .arg(m_findCacheIdx + 1).arg(m_findCache.size()).arg(addr.toString()));
+        return;
+    }
+
+    // Small datasets: original sequential search
     QModelIndex current = m_spreadsheetView->currentIndex();
     int startRow = current.isValid() ? current.row() : 0;
     int startCol = current.isValid() ? current.column() + 1 : 0;
+    int maxCol = sheet->getMaxColumn();
 
-    // Search forward: row by row, column by column
     for (int r = startRow; r <= maxRow; ++r) {
         int cStart = (r == startRow) ? startCol : 0;
         for (int c = cStart; c <= maxCol; ++c) {
@@ -1943,7 +2099,6 @@ void MainWindow::onFindNext() {
         }
     }
 
-    // Wrap around from top
     for (int r = 0; r <= startRow; ++r) {
         int cEnd = (r == startRow) ? startCol - 1 : maxCol;
         for (int c = 0; c <= cEnd; ++c) {

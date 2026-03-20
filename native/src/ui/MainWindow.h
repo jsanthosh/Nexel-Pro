@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QDragEnterEvent>
+#include "../core/CellRange.h"
 #include <QDropEvent>
 #include <QCloseEvent>
 #include <QKeyEvent>
@@ -158,6 +159,12 @@ private:
     QTabBar* m_sheetTabBar;
     QToolButton* m_addSheetBtn;
     FindReplaceDialog* m_findReplaceDialog = nullptr;
+    // Search cache for large datasets (avoid re-scanning 9M cells on each Find Next)
+    QVector<CellAddress> m_findCache;
+    QString m_findCacheQuery;
+    bool m_findCacheCase = false;
+    bool m_findCacheWhole = false;
+    int m_findCacheIdx = -1;
     ChatPanel* m_chatPanel = nullptr;
     QDockWidget* m_chatDock = nullptr;
     ChartPropertiesPanel* m_chartPropsPanel = nullptr;
