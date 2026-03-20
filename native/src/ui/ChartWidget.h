@@ -23,7 +23,53 @@ enum class ChartType {
     Area,
     Donut,
     Column,
-    Histogram
+    Histogram,
+    Combo,      // Column + Line on dual axes
+    Waterfall
+};
+
+// Trendline types
+enum class TrendlineType {
+    None, Linear, Exponential, Logarithmic, Polynomial, Power, MovingAverage
+};
+
+// Data label display options
+enum class DataLabelPosition {
+    None, Center, Above, Below, Left, Right, InsideEnd, OutsideEnd, BestFit
+};
+
+// Legend position
+enum class LegendPosition {
+    Right, Top, Bottom, Left, None
+};
+
+// Axis formatting
+struct AxisConfig {
+    double minValue = 0;
+    double maxValue = 0;
+    bool autoMin = true;
+    bool autoMax = true;
+    double majorUnit = 0;     // 0 = auto
+    double minorUnit = 0;
+    bool logScale = false;
+    bool reverseOrder = false;
+    QString numberFormat = "General";
+    QString displayUnits = "";  // "", "Thousands", "Millions", "Billions"
+    bool showMajorGridlines = true;
+    bool showMinorGridlines = false;
+};
+
+// Trendline configuration
+struct TrendlineConfig {
+    TrendlineType type = TrendlineType::None;
+    int polynomialOrder = 2;      // 2-6 for polynomial
+    int movingAveragePeriod = 2;
+    bool displayEquation = false;
+    bool displayRSquared = false;
+    double forecastForward = 0;
+    double forecastBackward = 0;
+    QColor color = QColor(Qt::black);
+    int lineWidth = 1;
 };
 
 // Chart rendering backend
@@ -63,6 +109,34 @@ struct ChartConfig {
 
     // X-axis category labels from data range (for Data2App JSON conversion)
     QStringList categoryLabels;
+
+    // === Advanced customization (Sprint 4) ===
+
+    // Legend position
+    LegendPosition legendPosition = LegendPosition::Right;
+
+    // Data labels
+    DataLabelPosition dataLabelPosition = DataLabelPosition::None;
+    bool dataLabelShowValue = true;
+    bool dataLabelShowCategory = false;
+    bool dataLabelShowPercentage = false;
+    bool dataLabelShowSeriesName = false;
+    QString dataLabelNumberFormat = "General";
+
+    // Axis formatting
+    AxisConfig xAxisConfig;
+    AxisConfig yAxisConfig;
+
+    // Trendlines (per-series)
+    QVector<TrendlineConfig> trendlines;  // one per series (empty = no trendline)
+
+    // Series formatting
+    double barGapWidth = 1.5;    // gap between bars (ratio of bar width)
+    double barOverlap = 0.0;    // overlap between series bars (-1 to 1)
+
+    // Combo chart: which series use secondary axis
+    QVector<bool> useSecondaryAxis;  // per-series flag
+    AxisConfig y2AxisConfig;          // secondary Y axis
 };
 
 class ChartWidget : public QWidget {
@@ -150,6 +224,8 @@ private:
     void drawPieChart(QPainter& p, const QRect& plotArea);
     void drawAreaChart(QPainter& p, const QRect& plotArea);
     void drawDonutChart(QPainter& p, const QRect& plotArea);
+    void drawTrendlines(QPainter& p, const QRect& plotArea);
+    void drawDataLabels(QPainter& p, const QRect& plotArea);
 
     // Data helpers
     void computeAxisRange(double& minVal, double& maxVal, double& step) const;

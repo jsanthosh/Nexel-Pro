@@ -462,7 +462,24 @@ void ChartWidget::paintEvent(QPaintEvent*) {
             if (m_config.showGridLines) drawGridLines(p, plotArea);
             drawColumnChart(p, plotArea);
             break;
+        case ChartType::Combo:
+            drawAxes(p, plotArea);
+            if (m_config.showGridLines) drawGridLines(p, plotArea);
+            drawColumnChart(p, plotArea); // Primary series as columns
+            drawLineChart(p, plotArea);   // Overlay line series
+            break;
+        case ChartType::Waterfall:
+            drawAxes(p, plotArea);
+            if (m_config.showGridLines) drawGridLines(p, plotArea);
+            drawColumnChart(p, plotArea); // Simplified waterfall as stacked columns
+            break;
     }
+
+    // Draw trendlines
+    drawTrendlines(p, plotArea);
+
+    // Draw data labels
+    drawDataLabels(p, plotArea);
 
     if (m_config.showLegend) drawLegend(p, area);
     if (m_selected) {
@@ -575,6 +592,127 @@ void ChartWidget::drawGridLines(QPainter& p, const QRect& plotArea) {
         int y = plotArea.bottom() - static_cast<int>(frac * plotArea.height());
         if (y > plotArea.top() && y < plotArea.bottom()) {
             p.drawLine(plotArea.left() + 1, y, plotArea.right(), y);
+        }
+    }
+}
+
+void ChartWidget::drawTrendlines(QPainter& p, const QRect& plotArea) {
+    if (m_config.trendlines.isEmpty() || m_config.series.isEmpty()) return;
+
+    double minVal, maxVal, step;
+    computeAxisRange(minVal, maxVal, step);
+
+    for (int si = 0; si < qMin(m_config.trendlines.size(), m_config.series.size()); ++si) {
+        const auto& tl = m_config.trendlines[si];
+        if (tl.type == TrendlineType::None) continue;
+        if (!isSeriesVisible(si)) continue;
+        const auto& s = m_config.series[si];
+        if (s.yValues.size() < 2) continue;
+
+        int n = s.yValues.size();
+
+        // Calculate trendline points
+        QVector<QPointF> points;
+
+        if (tl.type == TrendlineType::Linear) {
+            // y = mx + b via least squares
+            double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+            for (int i = 0; i < n; ++i) {
+                sumX += i; sumY += s.yValues[i];
+                sumXY += i * s.yValues[i]; sumX2 += i * i;
+            }
+            double m = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+            double b = (sumY - m * sumX) / n;
+
+            for (int i = 0; i <= n + 1; ++i) {
+                double x = i - tl.forecastBackward;
+                points.append(QPointF(x, m * x + b));
+            }
+        } else if (tl.type == TrendlineType::MovingAverage) {
+            int period = qMax(2, tl.movingAveragePeriod);
+            for (int i = period - 1; i < n; ++i) {
+                double sum = 0;
+                for (int j = i - period + 1; j <= i; ++j) sum += s.yValues[j];
+                points.append(QPointF(i, sum / period));
+            }
+        }
+        // Draw the trendline
+        if (points.size() < 2) continue;
+        QPen pen(tl.color, tl.lineWidth, Qt::DashLine);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+
+        QPainterPath path;
+        for (int i = 0; i < points.size(); ++i) {
+            double xFrac = (n > 1) ? points[i].x() / (n - 1) : 0.5;
+            double yFrac = (points[i].y() - minVal) / (maxVal - minVal);
+            int px = plotArea.left() + static_cast<int>(xFrac * plotArea.width());
+            int py = plotArea.bottom() - static_cast<int>(yFrac * plotArea.height());
+            px = qBound(plotArea.left(), px, plotArea.right());
+            py = qBound(plotArea.top(), py, plotArea.bottom());
+
+            if (i == 0) path.moveTo(px, py);
+            else path.lineTo(px, py);
+        }
+        p.drawPath(path);
+    }
+}
+
+void ChartWidget::drawDataLabels(QPainter& p, const QRect& plotArea) {
+    if (m_config.dataLabelPosition == DataLabelPosition::None) return;
+    if (m_config.series.isEmpty()) return;
+
+    double minVal, maxVal, step;
+    computeAxisRange(minVal, maxVal, step);
+
+    QFont labelFont("Arial", 8);
+    p.setFont(labelFont);
+    p.setPen(QColor("#333333"));
+
+    for (int si = 0; si < m_config.series.size(); ++si) {
+        if (!isSeriesVisible(si)) continue;
+        const auto& s = m_config.series[si];
+        int n = s.yValues.size();
+
+        // Calculate total for percentage
+        double total = 0;
+        if (m_config.dataLabelShowPercentage) {
+            for (double v : s.yValues) total += std::abs(v);
+        }
+
+        for (int i = 0; i < n; ++i) {
+            double xFrac = (n > 1) ? static_cast<double>(i) / (n - 1) : 0.5;
+            double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
+            int px = plotArea.left() + static_cast<int>(xFrac * plotArea.width());
+            int py = plotArea.bottom() - static_cast<int>(yFrac * plotArea.height());
+
+            // Build label text
+            QStringList parts;
+            if (m_config.dataLabelShowSeriesName) parts << s.name;
+            if (m_config.dataLabelShowCategory && i < m_config.categoryLabels.size())
+                parts << m_config.categoryLabels[i];
+            if (m_config.dataLabelShowValue)
+                parts << QString::number(s.yValues[i], 'f', 1);
+            if (m_config.dataLabelShowPercentage && total > 0)
+                parts << QString::number(s.yValues[i] / total * 100, 'f', 1) + "%";
+
+            QString label = parts.join(", ");
+            if (label.isEmpty()) continue;
+
+            QFontMetrics fm(labelFont);
+            int tw = fm.horizontalAdvance(label);
+            int th = fm.height();
+
+            int lx = px - tw / 2;
+            int ly = py;
+            switch (m_config.dataLabelPosition) {
+                case DataLabelPosition::Above: ly = py - th - 2; break;
+                case DataLabelPosition::Below: ly = py + 4; break;
+                case DataLabelPosition::Center: ly = py - th / 2; break;
+                default: ly = py - th - 2; break;
+            }
+
+            p.drawText(lx, ly, tw, th, Qt::AlignCenter, label);
         }
     }
 }
