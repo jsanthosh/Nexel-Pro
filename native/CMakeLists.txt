@@ -68,6 +68,7 @@ set(CORE_SOURCES
     src/core/Spreadsheet.h
     src/core/FormulaEngine.cpp
     src/core/FormulaEngine.h
+    src/core/FormulaFunctions.cpp
     src/core/FormulaMetadata.h
     src/core/CellRange.cpp
     src/core/CellRange.h
@@ -399,6 +400,25 @@ target_link_libraries(stress_test
 target_include_directories(stress_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SQLITE3_INCLUDE_DIR}
+)
+
+# ============================================================================
+# Comprehensive Test Suite
+# Build: cmake --build build --target test_all
+# ============================================================================
+add_executable(test_all EXCLUDE_FROM_ALL
+    tests/test_all.cpp
+    ${CORE_SOURCES}
+    ${DATABASE_SOURCES}
+    ${SERVICES_SOURCES}
+)
+target_link_libraries(test_all
+    Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent
+    SQLite::SQLite3
+    Threads::Threads
+)
+target_include_directories(test_all PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # Install

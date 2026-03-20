@@ -639,6 +639,97 @@ QVariant FormulaEngine::evaluateFunction(const QString& fn, const std::vector<QV
     if (fn == "UNIQUE") return funcUNIQUE(args);
     if (fn == "SEQUENCE") return funcSEQUENCE(args);
 
+    // === Extended functions (FormulaFunctions.cpp) ===
+    // Math & Trig
+    if (fn == "PI") return funcPI(args);
+    if (fn == "SIGN") return funcSIGN(args);
+    if (fn == "TRUNC") return funcTRUNC(args);
+    if (fn == "PRODUCT") return funcPRODUCT(args);
+    if (fn == "QUOTIENT") return funcQUOTIENT(args);
+    if (fn == "MROUND") return funcMROUND(args);
+    if (fn == "CEILING.MATH") return funcCEILING_MATH(args);
+    if (fn == "FLOOR.MATH") return funcFLOOR_MATH(args);
+    if (fn == "LOG10") return funcLOG10(args);
+    if (fn == "SIN") return funcSIN(args);
+    if (fn == "COS") return funcCOS(args);
+    if (fn == "TAN") return funcTAN(args);
+    if (fn == "ASIN") return funcASIN(args);
+    if (fn == "ACOS") return funcACOS(args);
+    if (fn == "ATAN") return funcATAN(args);
+    if (fn == "ATAN2") return funcATAN2(args);
+    if (fn == "RADIANS") return funcRADIANS(args);
+    if (fn == "DEGREES") return funcDEGREES(args);
+    if (fn == "FACT") return funcFACT(args);
+    if (fn == "COMBIN") return funcCOMBIN(args);
+    if (fn == "PERMUT") return funcPERMUT(args);
+    if (fn == "GCD") return funcGCD(args);
+    if (fn == "LCM") return funcLCM(args);
+    if (fn == "EVEN") return funcEVEN(args);
+    if (fn == "ODD") return funcODD(args);
+    if (fn == "SUMSQ") return funcSUMSQ(args);
+    // Lookup & Reference
+    if (fn == "ROW") return funcROW(args);
+    if (fn == "COLUMN") return funcCOLUMN(args);
+    if (fn == "ROWS") return funcROWS(args);
+    if (fn == "COLUMNS") return funcCOLUMNS(args);
+    if (fn == "ADDRESS") return funcADDRESS(args);
+    if (fn == "TRANSPOSE") return funcTRANSPOSE(args);
+    // Text
+    if (fn == "CHAR") return funcCHAR(args);
+    if (fn == "CODE") return funcCODE(args);
+    if (fn == "CLEAN") return funcCLEAN(args);
+    if (fn == "REPLACE" || fn == "REPLACEB") return funcREPLACE(args);
+    if (fn == "FIXED") return funcFIXED(args);
+    if (fn == "T") return funcT(args);
+    if (fn == "N") return funcN(args);
+    if (fn == "NUMBERVALUE") return funcNUMBERVALUE(args);
+    if (fn == "UNICODE") return funcUNICODE(args);
+    if (fn == "UNICHAR") return funcUNICHAR(args);
+    if (fn == "TEXTBEFORE") return funcTEXTBEFORE(args);
+    if (fn == "TEXTAFTER") return funcTEXTAFTER(args);
+    // Logical
+    if (fn == "XOR") return funcXOR(args);
+    if (fn == "IFNA") return funcIFNA(args);
+    if (fn == "TRUE") return funcTRUE(args);
+    if (fn == "FALSE") return funcFALSE(args);
+    // Date & Time
+    if (fn == "TIME") return funcTIME(args);
+    if (fn == "TIMEVALUE") return funcTIMEVALUE(args);
+    if (fn == "DAYS") return funcDAYS(args);
+    if (fn == "ISOWEEKNUM") return funcISOWEEKNUM(args);
+    if (fn == "WEEKNUM") return funcWEEKNUM(args);
+    if (fn == "WORKDAY") return funcWORKDAY(args);
+    // Financial
+    if (fn == "PMT") return funcPMT(args);
+    if (fn == "FV") return funcFV(args);
+    if (fn == "PV") return funcPV(args);
+    if (fn == "NPV") return funcNPV(args);
+    if (fn == "NPER") return funcNPER(args);
+    if (fn == "IRR") return funcIRR(args);
+    if (fn == "EFFECT") return funcEFFECT(args);
+    if (fn == "NOMINAL") return funcNOMINAL(args);
+    if (fn == "IPMT") return funcIPMT(args);
+    if (fn == "PPMT") return funcPPMT(args);
+    if (fn == "SLN") return funcSLN(args);
+    // Information
+    if (fn == "ISERR") return funcISERR(args);
+    if (fn == "ISNA") return funcISNA(args);
+    if (fn == "ISLOGICAL") return funcISLOGICAL(args);
+    if (fn == "ISNONTEXT") return funcISNONTEXT(args);
+    if (fn == "ISEVEN") return funcISEVEN(args);
+    if (fn == "ISODD") return funcISODD(args);
+    if (fn == "TYPE") return funcTYPE(args);
+    if (fn == "NA") return funcNA(args);
+    if (fn == "ERROR.TYPE") return funcERROR_TYPE(args);
+    // Statistical
+    if (fn == "AVERAGEA") return funcAVERAGEA(args);
+    if (fn == "MAXA") return funcMAXA(args);
+    if (fn == "MINA") return funcMINA(args);
+    if (fn == "CORREL") return funcCORREL(args);
+    if (fn == "SLOPE") return funcSLOPE(args);
+    if (fn == "INTERCEPT") return funcINTERCEPT(args);
+    if (fn == "FORECAST" || fn == "FORECAST.LINEAR") return funcFORECAST(args);
+
     m_lastError = "Unknown function: " + fn;
     return QVariant("#NAME?");
 }

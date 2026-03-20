@@ -175,6 +175,104 @@ private:
     QVariant funcUNIQUE(const std::vector<QVariant>& args);
     QVariant funcSEQUENCE(const std::vector<QVariant>& args);
 
+    // === Extended functions (FormulaFunctions.cpp) ===
+    // Math & Trig
+    QVariant funcPI(const std::vector<QVariant>& args);
+    QVariant funcSIGN(const std::vector<QVariant>& args);
+    QVariant funcTRUNC(const std::vector<QVariant>& args);
+    QVariant funcPRODUCT(const std::vector<QVariant>& args);
+    QVariant funcQUOTIENT(const std::vector<QVariant>& args);
+    QVariant funcMROUND(const std::vector<QVariant>& args);
+    QVariant funcCEILING_MATH(const std::vector<QVariant>& args);
+    QVariant funcFLOOR_MATH(const std::vector<QVariant>& args);
+    QVariant funcLOG10(const std::vector<QVariant>& args);
+    QVariant funcSIN(const std::vector<QVariant>& args);
+    QVariant funcCOS(const std::vector<QVariant>& args);
+    QVariant funcTAN(const std::vector<QVariant>& args);
+    QVariant funcASIN(const std::vector<QVariant>& args);
+    QVariant funcACOS(const std::vector<QVariant>& args);
+    QVariant funcATAN(const std::vector<QVariant>& args);
+    QVariant funcATAN2(const std::vector<QVariant>& args);
+    QVariant funcRADIANS(const std::vector<QVariant>& args);
+    QVariant funcDEGREES(const std::vector<QVariant>& args);
+    QVariant funcFACT(const std::vector<QVariant>& args);
+    QVariant funcCOMBIN(const std::vector<QVariant>& args);
+    QVariant funcPERMUT(const std::vector<QVariant>& args);
+    QVariant funcGCD(const std::vector<QVariant>& args);
+    QVariant funcLCM(const std::vector<QVariant>& args);
+    QVariant funcEVEN(const std::vector<QVariant>& args);
+    QVariant funcODD(const std::vector<QVariant>& args);
+    QVariant funcSUMSQ(const std::vector<QVariant>& args);
+
+    // Lookup & Reference
+    QVariant funcROW(const std::vector<QVariant>& args);
+    QVariant funcCOLUMN(const std::vector<QVariant>& args);
+    QVariant funcROWS(const std::vector<QVariant>& args);
+    QVariant funcCOLUMNS(const std::vector<QVariant>& args);
+    QVariant funcADDRESS(const std::vector<QVariant>& args);
+    QVariant funcTRANSPOSE(const std::vector<QVariant>& args);
+
+    // Text
+    QVariant funcCHAR(const std::vector<QVariant>& args);
+    QVariant funcCODE(const std::vector<QVariant>& args);
+    QVariant funcCLEAN(const std::vector<QVariant>& args);
+    QVariant funcREPLACE(const std::vector<QVariant>& args);
+    QVariant funcFIXED(const std::vector<QVariant>& args);
+    QVariant funcT(const std::vector<QVariant>& args);
+    QVariant funcN(const std::vector<QVariant>& args);
+    QVariant funcNUMBERVALUE(const std::vector<QVariant>& args);
+    QVariant funcUNICODE(const std::vector<QVariant>& args);
+    QVariant funcUNICHAR(const std::vector<QVariant>& args);
+    QVariant funcTEXTBEFORE(const std::vector<QVariant>& args);
+    QVariant funcTEXTAFTER(const std::vector<QVariant>& args);
+
+    // Logical
+    QVariant funcXOR(const std::vector<QVariant>& args);
+    QVariant funcIFNA(const std::vector<QVariant>& args);
+    QVariant funcTRUE(const std::vector<QVariant>& args);
+    QVariant funcFALSE(const std::vector<QVariant>& args);
+
+    // Date & Time
+    QVariant funcTIME(const std::vector<QVariant>& args);
+    QVariant funcTIMEVALUE(const std::vector<QVariant>& args);
+    QVariant funcDAYS(const std::vector<QVariant>& args);
+    QVariant funcISOWEEKNUM(const std::vector<QVariant>& args);
+    QVariant funcWEEKNUM(const std::vector<QVariant>& args);
+    QVariant funcWORKDAY(const std::vector<QVariant>& args);
+
+    // Financial
+    QVariant funcPMT(const std::vector<QVariant>& args);
+    QVariant funcFV(const std::vector<QVariant>& args);
+    QVariant funcPV(const std::vector<QVariant>& args);
+    QVariant funcNPV(const std::vector<QVariant>& args);
+    QVariant funcNPER(const std::vector<QVariant>& args);
+    QVariant funcIRR(const std::vector<QVariant>& args);
+    QVariant funcEFFECT(const std::vector<QVariant>& args);
+    QVariant funcNOMINAL(const std::vector<QVariant>& args);
+    QVariant funcIPMT(const std::vector<QVariant>& args);
+    QVariant funcPPMT(const std::vector<QVariant>& args);
+    QVariant funcSLN(const std::vector<QVariant>& args);
+
+    // Information
+    QVariant funcISERR(const std::vector<QVariant>& args);
+    QVariant funcISNA(const std::vector<QVariant>& args);
+    QVariant funcISLOGICAL(const std::vector<QVariant>& args);
+    QVariant funcISNONTEXT(const std::vector<QVariant>& args);
+    QVariant funcISEVEN(const std::vector<QVariant>& args);
+    QVariant funcISODD(const std::vector<QVariant>& args);
+    QVariant funcTYPE(const std::vector<QVariant>& args);
+    QVariant funcNA(const std::vector<QVariant>& args);
+    QVariant funcERROR_TYPE(const std::vector<QVariant>& args);
+
+    // Statistical
+    QVariant funcAVERAGEA(const std::vector<QVariant>& args);
+    QVariant funcMAXA(const std::vector<QVariant>& args);
+    QVariant funcMINA(const std::vector<QVariant>& args);
+    QVariant funcCORREL(const std::vector<QVariant>& args);
+    QVariant funcSLOPE(const std::vector<QVariant>& args);
+    QVariant funcINTERCEPT(const std::vector<QVariant>& args);
+    QVariant funcFORECAST(const std::vector<QVariant>& args);
+
     // AST-based evaluation (parse once, evaluate many — 10x faster recalc)
     QVariant evaluateAST(uint32_t nodeIndex);
     QVariant evaluateASTFunction(uint16_t funcId, const QVariantList& argNodeIndices);
