@@ -2234,8 +2234,31 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
 
     menu.addSeparator();
 
-    menu.addAction("Sort Ascending", this, &SpreadsheetView::sortAscending);
-    menu.addAction("Sort Descending", this, &SpreadsheetView::sortDescending);
+    // Sort submenu
+    QMenu* sortMenu = menu.addMenu("Sort");
+    sortMenu->addAction("Sort A to Z", this, &SpreadsheetView::sortAscending);
+    sortMenu->addAction("Sort Z to A", this, &SpreadsheetView::sortDescending);
+
+    menu.addSeparator();
+
+    // Define Name
+    menu.addAction("Define Name...", [this]() {
+        QModelIndex cur = currentIndex();
+        if (!cur.isValid() || !m_spreadsheet) return;
+        QString addr = CellAddress(logicalRow(cur), cur.column()).toString();
+        bool ok;
+        QString name = QInputDialog::getText(this, "Define Name",
+            QString("Name for %1:").arg(addr), QLineEdit::Normal, "", &ok);
+        if (ok && !name.isEmpty()) {
+            CellRange range(CellAddress(logicalRow(cur), cur.column()),
+                           CellAddress(logicalRow(cur), cur.column()));
+            m_spreadsheet->addNamedRange(name, range);
+        }
+    });
+
+    // Hyperlink
+    menu.addAction("Hyperlink...", this, &SpreadsheetView::insertOrEditHyperlink,
+                   QKeySequence(Qt::CTRL | Qt::Key_K));
 
     menu.exec(viewport()->mapToGlobal(pos));
 }

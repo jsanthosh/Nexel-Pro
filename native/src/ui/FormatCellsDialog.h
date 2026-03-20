@@ -30,8 +30,11 @@ private:
     void createNumberTab(QWidget* tab);
     void createFontTab(QWidget* tab);
     void createAlignmentTab(QWidget* tab);
+    void createBorderTab(QWidget* tab);
     void createFillTab(QWidget* tab);
+    void createProtectionTab(QWidget* tab);
     void updatePreview();
+    void updateBorderPreview();
     void loadStyle(const CellStyle& style);
     void pickColor(const QString& title, QString& colorStr, QPushButton* btn);
 
@@ -61,9 +64,28 @@ private:
     QComboBox* m_hAlignCombo = nullptr;
     QComboBox* m_vAlignCombo = nullptr;
 
+    // Border tab
+    QListWidget* m_borderStyleList = nullptr;
+    QPushButton* m_borderColorBtn = nullptr;
+    QString m_borderColorStr = "#000000";
+    int m_selectedBorderStyle = 1;  // index into line styles
+    QPushButton* m_borderPresetNone = nullptr;
+    QPushButton* m_borderPresetOutline = nullptr;
+    QPushButton* m_borderPresetInside = nullptr;
+    // Per-edge toggle buttons
+    QPushButton* m_borderTop = nullptr;
+    QPushButton* m_borderBottom = nullptr;
+    QPushButton* m_borderLeft = nullptr;
+    QPushButton* m_borderRight = nullptr;
+    QWidget* m_borderPreviewWidget = nullptr;
+
     // Fill tab
     QPushButton* m_fillColorBtn = nullptr;
     QString m_fillColorStr;
+
+    // Protection tab
+    QCheckBox* m_lockedCheck = nullptr;
+    QCheckBox* m_hiddenCheck = nullptr;
 };
 
 #endif // FORMATCELLSDIALOG_H

@@ -238,9 +238,17 @@ FormatCellsDialog::FormatCellsDialog(const CellStyle& style, QWidget* parent)
     createAlignmentTab(alignTab);
     tabs->addTab(alignTab, "Alignment");
 
+    QWidget* borderTab = new QWidget();
+    createBorderTab(borderTab);
+    tabs->addTab(borderTab, "Border");
+
     QWidget* fillTab = new QWidget();
     createFillTab(fillTab);
     tabs->addTab(fillTab, "Fill");
+
+    QWidget* protTab = new QWidget();
+    createProtectionTab(protTab);
+    tabs->addTab(protTab, "Protection");
 
     mainLayout->addWidget(tabs);
 
@@ -532,4 +540,177 @@ void FormatCellsDialog::updatePreview() {
 
     QString formatted = NumberFormat::format(sample, opts);
     m_previewLabel->setText(formatted);
+}
+
+// ============================================================================
+// Border Tab (Excel-style: presets + line style + per-edge toggles)
+// ============================================================================
+void FormatCellsDialog::createBorderTab(QWidget* tab) {
+    QHBoxLayout* mainLayout = new QHBoxLayout(tab);
+
+    // Left side: Line style + color
+    QVBoxLayout* lineLayout = new QVBoxLayout();
+    lineLayout->addWidget(new QLabel("Line"));
+
+    // Style list
+    m_borderStyleList = new QListWidget();
+    m_borderStyleList->setFixedWidth(120);
+    m_borderStyleList->setFixedHeight(180);
+    QStringList styles = {"None", "Hair", "Thin", "Thin Dashed", "Thin Dash-Dot",
+                          "Thin Dash-Dot-Dot", "Medium", "Medium Dashed",
+                          "Medium Dash-Dot", "Medium Dash-Dot-Dot",
+                          "Thick", "Double", "Slant Dash-Dot"};
+    m_borderStyleList->addItems(styles);
+    m_borderStyleList->setCurrentRow(2); // Default: Thin
+    lineLayout->addWidget(new QLabel("Style:"));
+    lineLayout->addWidget(m_borderStyleList);
+
+    // Color button
+    m_borderColorBtn = new QPushButton();
+    m_borderColorBtn->setFixedSize(100, 26);
+    m_borderColorBtn->setStyleSheet(QString("QPushButton { background: %1; border: 1px solid #ccc; border-radius: 4px; }").arg(m_borderColorStr));
+    connect(m_borderColorBtn, &QPushButton::clicked, this, [this]() {
+        QColor color = QColorDialog::getColor(QColor(m_borderColorStr), this, "Border Color");
+        if (color.isValid()) {
+            m_borderColorStr = color.name();
+            m_borderColorBtn->setStyleSheet(QString("QPushButton { background: %1; border: 1px solid #ccc; border-radius: 4px; }").arg(m_borderColorStr));
+        }
+    });
+    lineLayout->addWidget(new QLabel("Color:"));
+    lineLayout->addWidget(m_borderColorBtn);
+    lineLayout->addStretch();
+    mainLayout->addLayout(lineLayout);
+
+    // Right side: Presets + Edge buttons + Preview
+    QVBoxLayout* rightLayout = new QVBoxLayout();
+
+    // Presets
+    rightLayout->addWidget(new QLabel("Presets"));
+    QHBoxLayout* presetLayout = new QHBoxLayout();
+    m_borderPresetNone = new QPushButton("None");
+    m_borderPresetOutline = new QPushButton("Outline");
+    m_borderPresetInside = new QPushButton("Inside");
+    for (auto* btn : {m_borderPresetNone, m_borderPresetOutline, m_borderPresetInside}) {
+        btn->setFixedSize(70, 30);
+        btn->setStyleSheet("QPushButton { border: 1px solid #ccc; border-radius: 4px; font-size: 11px; }"
+                          "QPushButton:hover { background: #e8f0fe; }");
+        presetLayout->addWidget(btn);
+    }
+    presetLayout->addStretch();
+    rightLayout->addLayout(presetLayout);
+
+    // Preset actions
+    connect(m_borderPresetNone, &QPushButton::clicked, this, [this]() {
+        m_style.borderTop = m_style.borderBottom = m_style.borderLeft = m_style.borderRight = BorderStyle();
+        updateBorderPreview();
+    });
+    connect(m_borderPresetOutline, &QPushButton::clicked, this, [this]() {
+        int penStyle = m_borderStyleList->currentRow();
+        BorderStyle bs; bs.enabled = true; bs.width = (penStyle >= 6 && penStyle <= 9) ? 2 : 1;
+        bs.color = m_borderColorStr; bs.penStyle = penStyle;
+        m_style.borderTop = m_style.borderBottom = m_style.borderLeft = m_style.borderRight = bs;
+        updateBorderPreview();
+    });
+    connect(m_borderPresetInside, &QPushButton::clicked, this, [this]() {
+        // Inside borders only (for multi-cell selection — simplified: applies to all edges)
+        int penStyle = m_borderStyleList->currentRow();
+        BorderStyle bs; bs.enabled = true; bs.width = 1;
+        bs.color = m_borderColorStr; bs.penStyle = penStyle;
+        m_style.borderTop = m_style.borderBottom = m_style.borderLeft = m_style.borderRight = bs;
+        updateBorderPreview();
+    });
+
+    rightLayout->addSpacing(10);
+
+    // Edge toggle buttons
+    rightLayout->addWidget(new QLabel("Border"));
+    QGridLayout* edgeGrid = new QGridLayout();
+
+    auto makeEdgeBtn = [](const QString& label) -> QPushButton* {
+        auto* btn = new QPushButton(label);
+        btn->setFixedSize(30, 30);
+        btn->setCheckable(true);
+        btn->setStyleSheet("QPushButton { border: 1px solid #ccc; border-radius: 4px; font-size: 11px; }"
+                          "QPushButton:checked { background: #d0e8ff; border-color: #4285f4; }");
+        return btn;
+    };
+
+    m_borderTop = makeEdgeBtn("T");
+    m_borderBottom = makeEdgeBtn("B");
+    m_borderLeft = makeEdgeBtn("L");
+    m_borderRight = makeEdgeBtn("R");
+
+    edgeGrid->addWidget(m_borderTop, 0, 1);
+    edgeGrid->addWidget(m_borderLeft, 1, 0);
+    edgeGrid->addWidget(m_borderRight, 1, 2);
+    edgeGrid->addWidget(m_borderBottom, 2, 1);
+
+    // Center: preview area
+    m_borderPreviewWidget = new QWidget();
+    m_borderPreviewWidget->setFixedSize(80, 50);
+    m_borderPreviewWidget->setStyleSheet("background: white; border: 1px solid #e0e0e0;");
+    edgeGrid->addWidget(m_borderPreviewWidget, 1, 1);
+
+    rightLayout->addLayout(edgeGrid);
+
+    // Connect edge buttons
+    auto toggleEdge = [this](QPushButton* btn, BorderStyle& bs) {
+        connect(btn, &QPushButton::toggled, this, [this, &bs, btn](bool checked) {
+            bs.enabled = checked;
+            if (checked) {
+                bs.color = m_borderColorStr;
+                bs.width = 1;
+                bs.penStyle = m_borderStyleList->currentRow();
+            }
+            updateBorderPreview();
+        });
+    };
+    toggleEdge(m_borderTop, m_style.borderTop);
+    toggleEdge(m_borderBottom, m_style.borderBottom);
+    toggleEdge(m_borderLeft, m_style.borderLeft);
+    toggleEdge(m_borderRight, m_style.borderRight);
+
+    rightLayout->addStretch();
+    mainLayout->addLayout(rightLayout);
+}
+
+void FormatCellsDialog::updateBorderPreview() {
+    // Update toggle button states to match style
+    if (m_borderTop) m_borderTop->setChecked(m_style.borderTop.enabled);
+    if (m_borderBottom) m_borderBottom->setChecked(m_style.borderBottom.enabled);
+    if (m_borderLeft) m_borderLeft->setChecked(m_style.borderLeft.enabled);
+    if (m_borderRight) m_borderRight->setChecked(m_style.borderRight.enabled);
+}
+
+// ============================================================================
+// Protection Tab
+// ============================================================================
+void FormatCellsDialog::createProtectionTab(QWidget* tab) {
+    QVBoxLayout* layout = new QVBoxLayout(tab);
+
+    m_lockedCheck = new QCheckBox("Locked");
+    m_lockedCheck->setChecked(true); // Default: locked
+    layout->addWidget(m_lockedCheck);
+
+    QLabel* lockDesc = new QLabel(
+        "Locking cells or hiding formulas has no effect until you protect\n"
+        "the worksheet (Data menu → Protect Sheet).");
+    lockDesc->setStyleSheet("color: #666; font-size: 11px;");
+    lockDesc->setWordWrap(true);
+    layout->addWidget(lockDesc);
+
+    layout->addSpacing(20);
+
+    m_hiddenCheck = new QCheckBox("Hidden");
+    m_hiddenCheck->setChecked(false);
+    layout->addWidget(m_hiddenCheck);
+
+    QLabel* hideDesc = new QLabel(
+        "Hides the formula in the formula bar when the cell is selected.\n"
+        "The value is still displayed in the cell.");
+    hideDesc->setStyleSheet("color: #666; font-size: 11px;");
+    hideDesc->setWordWrap(true);
+    layout->addWidget(hideDesc);
+
+    layout->addStretch();
 }
