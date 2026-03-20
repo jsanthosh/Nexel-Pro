@@ -332,6 +332,57 @@ private:
     QVariant funcISFORMULA(const std::vector<QVariant>& args);
     QVariant funcISREF(const std::vector<QVariant>& args);
 
+    // === Batch 3 (FormulaFunctions3.cpp) ===
+    // Dynamic Array
+    QVariant funcTEXTSPLIT(const std::vector<QVariant>& args);
+    QVariant funcWRAPROWS(const std::vector<QVariant>& args);
+    QVariant funcWRAPCOLS(const std::vector<QVariant>& args);
+    QVariant funcTOROW(const std::vector<QVariant>& args);
+    QVariant funcTOCOL(const std::vector<QVariant>& args);
+    QVariant funcCHOOSECOLS(const std::vector<QVariant>& args);
+    QVariant funcCHOOSEROWS(const std::vector<QVariant>& args);
+    QVariant funcEXPAND(const std::vector<QVariant>& args);
+    QVariant funcRANDARRAY(const std::vector<QVariant>& args);
+    // Statistical distributions
+    QVariant funcNORM_DIST(const std::vector<QVariant>& args);
+    QVariant funcNORM_INV(const std::vector<QVariant>& args);
+    QVariant funcNORM_S_DIST(const std::vector<QVariant>& args);
+    QVariant funcNORM_S_INV(const std::vector<QVariant>& args);
+    QVariant funcBINOM_DIST(const std::vector<QVariant>& args);
+    QVariant funcPOISSON_DIST(const std::vector<QVariant>& args);
+    QVariant funcCONFIDENCE_NORM(const std::vector<QVariant>& args);
+    QVariant funcMODE_SNGL(const std::vector<QVariant>& args);
+    // Financial
+    QVariant funcMIRR(const std::vector<QVariant>& args);
+    QVariant funcDB(const std::vector<QVariant>& args);
+    QVariant funcDDB(const std::vector<QVariant>& args);
+    QVariant funcSYD(const std::vector<QVariant>& args);
+    QVariant funcDOLLARDE(const std::vector<QVariant>& args);
+    QVariant funcDOLLARFR(const std::vector<QVariant>& args);
+    // Engineering
+    QVariant funcBIN2DEC(const std::vector<QVariant>& args);
+    QVariant funcDEC2BIN(const std::vector<QVariant>& args);
+    QVariant funcHEX2DEC(const std::vector<QVariant>& args);
+    QVariant funcDEC2HEX(const std::vector<QVariant>& args);
+    QVariant funcOCT2DEC(const std::vector<QVariant>& args);
+    QVariant funcDEC2OCT(const std::vector<QVariant>& args);
+    QVariant funcCONVERT(const std::vector<QVariant>& args);
+    QVariant funcDELTA(const std::vector<QVariant>& args);
+    QVariant funcGESTEP(const std::vector<QVariant>& args);
+    // Database
+    QVariant funcDSUM(const std::vector<QVariant>& args);
+    QVariant funcDAVERAGE(const std::vector<QVariant>& args);
+    QVariant funcDCOUNT(const std::vector<QVariant>& args);
+    QVariant funcDCOUNTA(const std::vector<QVariant>& args);
+    QVariant funcDMIN(const std::vector<QVariant>& args);
+    QVariant funcDMAX(const std::vector<QVariant>& args);
+    QVariant funcDGET(const std::vector<QVariant>& args);
+    QVariant funcDPRODUCT(const std::vector<QVariant>& args);
+    QVariant funcDSTDEV(const std::vector<QVariant>& args);
+    QVariant funcDVAR(const std::vector<QVariant>& args);
+    // Web
+    QVariant funcENCODEURL(const std::vector<QVariant>& args);
+
     // AST-based evaluation (parse once, evaluate many — 10x faster recalc)
     QVariant evaluateAST(uint32_t nodeIndex);
     QVariant evaluateASTFunction(uint16_t funcId, const QVariantList& argNodeIndices);
