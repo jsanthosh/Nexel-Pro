@@ -69,6 +69,7 @@ set(CORE_SOURCES
     src/core/FormulaEngine.cpp
     src/core/FormulaEngine.h
     src/core/FormulaFunctions.cpp
+    src/core/FormulaFunctions2.cpp
     src/core/FormulaMetadata.h
     src/core/CellRange.cpp
     src/core/CellRange.h
