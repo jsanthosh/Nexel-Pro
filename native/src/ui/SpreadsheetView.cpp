@@ -328,11 +328,8 @@ void SpreadsheetView::setupHeaderContextMenus() {
     connect(horizontalHeader(), &QHeaderView::customContextMenuRequested,
             this, [this](const QPoint& pos) {
         QMenu menu;
-        menu.addAction("Autofit Column Width", this, &SpreadsheetView::autofitSelectedColumns);
-        menu.addSeparator();
         int clickedCol = horizontalHeader()->logicalIndexAt(pos);
 
-        // Determine selected column range
         QSet<int> selCols;
         QModelIndexList selIdx = selectionModel()->selectedColumns();
         if (selIdx.size() > 1) {
@@ -343,17 +340,50 @@ void SpreadsheetView::setupHeaderContextMenus() {
         }
         if (selCols.isEmpty()) selCols.insert(clickedCol);
         int colCount = selCols.size();
-        int minCol = *std::min_element(selCols.begin(), selCols.end());
 
+        // Cut / Copy / Paste
+        menu.addAction("Cut", this, &SpreadsheetView::cut, QKeySequence::Cut);
+        menu.addAction("Copy", this, &SpreadsheetView::copy, QKeySequence::Copy);
+        menu.addAction("Paste", this, &SpreadsheetView::paste, QKeySequence::Paste);
+        menu.addSeparator();
+
+        // Insert / Delete
         QString insertLabel = colCount > 1 ? QString("Insert %1 Columns").arg(colCount) : "Insert Column";
         QString deleteLabel = colCount > 1 ? QString("Delete %1 Columns").arg(colCount) : "Delete Column";
+        menu.addAction(insertLabel, [this]() { insertEntireColumn(); });
+        menu.addAction(deleteLabel, [this]() { deleteEntireColumn(); });
+        menu.addAction("Clear Contents", this, &SpreadsheetView::clearContent);
+        menu.addSeparator();
 
-        menu.addAction(insertLabel, [this]() {
-            insertEntireColumn();
+        // Column Width
+        menu.addAction("Column Width...", [this, clickedCol]() {
+            bool ok;
+            int width = QInputDialog::getInt(this, "Column Width",
+                "Column width (pixels):", horizontalHeader()->sectionSize(clickedCol),
+                10, 1000, 1, &ok);
+            if (ok) {
+                for (int c = 0; c < model()->columnCount(); ++c) {
+                    if (selectionModel()->isColumnSelected(c, QModelIndex()))
+                        setColumnWidth(c, width);
+                }
+                if (!selectionModel()->isColumnSelected(clickedCol, QModelIndex()))
+                    setColumnWidth(clickedCol, width);
+            }
         });
-        menu.addAction(deleteLabel, [this]() {
-            deleteEntireColumn();
+        menu.addAction("AutoFit Column Width", this, &SpreadsheetView::autofitSelectedColumns);
+        menu.addSeparator();
+
+        // Hide / Unhide
+        menu.addAction("Hide", [this, selCols]() {
+            for (int c : selCols) setColumnHidden(c, true);
         });
+        menu.addAction("Unhide", [this, clickedCol]() {
+            // Unhide columns around the clicked position
+            for (int c = qMax(0, clickedCol - 1); c <= qMin(model()->columnCount() - 1, clickedCol + 1); ++c) {
+                if (isColumnHidden(c)) setColumnHidden(c, false);
+            }
+        });
+
         menu.exec(horizontalHeader()->mapToGlobal(pos));
     });
 
@@ -361,11 +391,8 @@ void SpreadsheetView::setupHeaderContextMenus() {
     connect(verticalHeader(), &QHeaderView::customContextMenuRequested,
             this, [this](const QPoint& pos) {
         QMenu menu;
-        menu.addAction("Autofit Row Height", this, &SpreadsheetView::autofitSelectedRows);
-        menu.addSeparator();
         int clickedRow = verticalHeader()->logicalIndexAt(pos);
 
-        // Determine selected row range
         QSet<int> selRows;
         QModelIndexList selIdx = selectionModel()->selectedRows();
         if (selIdx.size() > 1) {
@@ -376,17 +403,52 @@ void SpreadsheetView::setupHeaderContextMenus() {
         }
         if (selRows.isEmpty()) selRows.insert(clickedRow);
         int rowCount = selRows.size();
-        int minRow = *std::min_element(selRows.begin(), selRows.end());
 
+        // Cut / Copy / Paste
+        menu.addAction("Cut", this, &SpreadsheetView::cut, QKeySequence::Cut);
+        menu.addAction("Copy", this, &SpreadsheetView::copy, QKeySequence::Copy);
+        menu.addAction("Paste", this, &SpreadsheetView::paste, QKeySequence::Paste);
+        menu.addSeparator();
+
+        // Insert / Delete
         QString insertLabel = rowCount > 1 ? QString("Insert %1 Rows").arg(rowCount) : "Insert Row";
         QString deleteLabel = rowCount > 1 ? QString("Delete %1 Rows").arg(rowCount) : "Delete Row";
+        menu.addAction(insertLabel, [this]() { insertEntireRow(); });
+        menu.addAction(deleteLabel, [this]() { deleteEntireRow(); });
+        menu.addAction("Clear Contents", this, &SpreadsheetView::clearContent);
+        menu.addSeparator();
 
-        menu.addAction(insertLabel, [this]() {
-            insertEntireRow();
+        // Row Height
+        menu.addAction("Row Height...", [this, clickedRow]() {
+            bool ok;
+            int height = QInputDialog::getInt(this, "Row Height",
+                "Row height (pixels):", verticalHeader()->sectionSize(clickedRow),
+                5, 500, 1, &ok);
+            if (ok) {
+                for (int r = 0; r < model()->rowCount(); ++r) {
+                    if (selectionModel()->isRowSelected(r, QModelIndex()))
+                        setRowHeight(r, height);
+                }
+                if (!selectionModel()->isRowSelected(clickedRow, QModelIndex()))
+                    setRowHeight(clickedRow, height);
+            }
         });
-        menu.addAction(deleteLabel, [this]() {
-            deleteEntireRow();
+        menu.addAction("AutoFit Row Height", this, &SpreadsheetView::autofitSelectedRows);
+        menu.addSeparator();
+
+        // Hide / Unhide
+        menu.addAction("Hide", [this, selRows]() {
+            for (int r : selRows) {
+                int modelRow = m_model ? m_model->toModelRow(r) : r;
+                if (modelRow >= 0) setRowHidden(modelRow, true);
+            }
         });
+        menu.addAction("Unhide", [this, clickedRow]() {
+            for (int r = qMax(0, clickedRow - 1); r <= qMin(model()->rowCount() - 1, clickedRow + 1); ++r) {
+                if (isRowHidden(r)) setRowHidden(r, false);
+            }
+        });
+
         menu.exec(verticalHeader()->mapToGlobal(pos));
     });
 }

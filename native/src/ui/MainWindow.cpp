@@ -900,7 +900,21 @@ void MainWindow::createToolBar() {}
 
 void MainWindow::createStatusBar() {
     statusBar()->showMessage("Ready");
-    // Status bar stylesheet is set by global theme stylesheet
+
+    // Permanent stats widgets on the right side (Excel-style)
+    QString statStyle = "QLabel { color: #555; font-size: 11px; padding: 0 8px; }";
+
+    m_statusAvgLabel = new QLabel("");
+    m_statusAvgLabel->setStyleSheet(statStyle);
+    statusBar()->addPermanentWidget(m_statusAvgLabel);
+
+    m_statusCountLabel = new QLabel("");
+    m_statusCountLabel->setStyleSheet(statStyle);
+    statusBar()->addPermanentWidget(m_statusCountLabel);
+
+    m_statusSumLabel = new QLabel("");
+    m_statusSumLabel->setStyleSheet(statStyle);
+    statusBar()->addPermanentWidget(m_statusSumLabel);
 }
 
 void MainWindow::onThemeChanged() {
@@ -2450,17 +2464,20 @@ void MainWindow::updateStatusBarSummary() {
         }
     }
 
+    // Update permanent stats widgets (Excel-style, always visible on right)
     if (numericCount > 0) {
         double avg = sum / numericCount;
-        statusBar()->showMessage(
-            QString("Average: %1   Count: %2   Sum: %3")
-                .arg(QString::number(avg, 'f', 2))
-                .arg(nonEmptyCount)
-                .arg(QString::number(sum, 'f', 2)));
+        if (m_statusAvgLabel) m_statusAvgLabel->setText(QString("Average: %1").arg(QString::number(avg, 'f', 2)));
+        if (m_statusCountLabel) m_statusCountLabel->setText(QString("Count: %1").arg(nonEmptyCount));
+        if (m_statusSumLabel) m_statusSumLabel->setText(QString("Sum: %1").arg(QString::number(sum, 'f', 2)));
     } else if (nonEmptyCount > 0) {
-        statusBar()->showMessage(QString("Count: %1").arg(nonEmptyCount));
+        if (m_statusAvgLabel) m_statusAvgLabel->setText("");
+        if (m_statusCountLabel) m_statusCountLabel->setText(QString("Count: %1").arg(nonEmptyCount));
+        if (m_statusSumLabel) m_statusSumLabel->setText("");
     } else {
-        statusBar()->showMessage("Ready");
+        if (m_statusAvgLabel) m_statusAvgLabel->setText("");
+        if (m_statusCountLabel) m_statusCountLabel->setText("");
+        if (m_statusSumLabel) m_statusSumLabel->setText("");
     }
 }
 

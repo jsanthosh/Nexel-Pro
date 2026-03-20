@@ -171,6 +171,11 @@ private:
     QDockWidget* m_chartPropsDock = nullptr;
     QString m_currentFilePath;  // Track the file path for Ctrl+S
 
+    // Status bar permanent stats (Excel-style Sum/Average/Count)
+    QLabel* m_statusAvgLabel = nullptr;
+    QLabel* m_statusCountLabel = nullptr;
+    QLabel* m_statusSumLabel = nullptr;
+
     // Multi-sheet storage
     std::vector<std::shared_ptr<Spreadsheet>> m_sheets;
     int m_activeSheetIndex = 0;
