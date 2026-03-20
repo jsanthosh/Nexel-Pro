@@ -2,6 +2,7 @@
 #define SPREADSHEETMODEL_H
 
 #include <QAbstractTableModel>
+#include <QColor>
 #include <memory>
 
 class Spreadsheet;
@@ -111,6 +112,11 @@ private:
     bool m_suppressUndo = false;
     bool m_highlightInvalid = false;
     bool m_showFormulas = false;
+
+    // Format-driven color cache (for red negative numbers, custom format colors)
+    mutable QColor m_lastFormatColor;
+    mutable int m_lastFormatColorRow = -1;
+    mutable int m_lastFormatColorCol = -1;
 
     // Virtual windowing state
     int m_windowBase = 0;    // logical row at model row 0

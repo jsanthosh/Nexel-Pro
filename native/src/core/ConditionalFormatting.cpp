@@ -72,6 +72,20 @@ bool ConditionalFormat::matches(const QVariant& cellValue, const FormulaEvaluato
                 return !result.toString().isEmpty() && result.toString().toLower() != "false";
             }
             return false;
+        case ConditionType::TopN:
+        case ConditionType::TopNPercent:
+        case ConditionType::BottomN:
+        case ConditionType::BottomNPercent:
+        case ConditionType::AboveAverage:
+        case ConditionType::BelowAverage:
+            // These require range-level evaluation (handled in getEffectiveStyle)
+            return false;
+        case ConditionType::DuplicateValues:
+        case ConditionType::UniqueValues:
+            // Requires scanning the range for duplicates
+            return false;
+        case ConditionType::DateOccurring:
+            return false;
         default:
             return false;
     }

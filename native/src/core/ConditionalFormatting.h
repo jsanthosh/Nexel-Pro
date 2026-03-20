@@ -21,6 +21,17 @@ enum class ConditionType {
     Between,
     CellContains,
     Formula,
+    // Top/Bottom rules
+    TopN,              // Top N items
+    TopNPercent,       // Top N percent
+    BottomN,           // Bottom N items
+    BottomNPercent,    // Bottom N percent
+    AboveAverage,
+    BelowAverage,
+    DuplicateValues,
+    UniqueValues,
+    // Date rules
+    DateOccurring,     // This week, last month, etc.
     // Visual formatting types
     DataBar,
     ColorScale2,

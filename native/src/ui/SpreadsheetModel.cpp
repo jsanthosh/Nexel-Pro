@@ -345,7 +345,14 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                 opts.useThousandsSeparator = baseStyle.useThousandsSeparator;
                 opts.currencyCode = baseStyle.currencyCode;
                 opts.dateFormatId = baseStyle.dateFormatId;
-                return NumberFormat::format(value.toString(), opts);
+                FormatResult fr = NumberFormat::formatFull(value.toString(), opts);
+                // Store format-driven color for ForegroundRole to pick up
+                if (fr.hasColor) {
+                    m_lastFormatColor = fr.color;
+                    m_lastFormatColorRow = logicalRow;
+                    m_lastFormatColorCol = col;
+                }
+                return fr.text;
             }
             return value;
         }
@@ -421,6 +428,15 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             return font;
         }
         case Qt::ForegroundRole: {
+            // Check format-driven color (e.g., red negative numbers from custom format)
+            if (m_lastFormatColorRow == logicalRow && m_lastFormatColorCol == col &&
+                m_lastFormatColor.isValid()) {
+                QColor fc = m_lastFormatColor;
+                m_lastFormatColor = QColor(); // Reset after use
+                m_lastFormatColorRow = -1;
+                return QVariant(fc);
+            }
+
             // Check style overlays for foreground color
             const auto& fgOverlays = m_spreadsheet->getStyleOverlays();
             if (!fgOverlays.empty()) {

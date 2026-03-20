@@ -130,6 +130,14 @@ struct ChartConfig {
     // Trendlines (per-series)
     QVector<TrendlineConfig> trendlines;  // one per series (empty = no trendline)
 
+    // Stacking mode (for Column, Bar, Area charts)
+    bool stacked = false;           // Stacked series
+    bool percentStacked = false;    // 100% stacked
+
+    // Line chart options
+    bool smoothLines = false;       // Smooth vs straight
+    bool showMarkers = true;        // Show data point markers
+
     // Series formatting
     double barGapWidth = 1.5;    // gap between bars (ratio of bar width)
     double barOverlap = 0.0;    // overlap between series bars (-1 to 1)
