@@ -120,11 +120,11 @@ void ChartPropertiesPanel::createLayout() {
     headerIcon->setStyleSheet("QLabel { font-size: 16px; }");
     headerLayout->addWidget(headerIcon);
 
-    QLabel* headerTitle = new QLabel("Chart Properties");
-    headerTitle->setStyleSheet(
+    m_headerTitle = new QLabel("Format Chart Area");
+    m_headerTitle->setStyleSheet(
         "QLabel { color: white; font-size: 13px; font-weight: 600; "
         "letter-spacing: 0.3px; margin-left: 4px; }");
-    headerLayout->addWidget(headerTitle);
+    headerLayout->addWidget(m_headerTitle);
     headerLayout->addStretch();
 
     QPushButton* closeBtn = new QPushButton("\xC3\x97"); // multiplication sign
@@ -137,6 +137,31 @@ void ChartPropertiesPanel::createLayout() {
     headerLayout->addWidget(closeBtn);
 
     outerLayout->addWidget(header);
+
+    // Element selector dropdown (Excel-style: "Chart Elements" at top)
+    m_elementCombo = new QComboBox();
+    m_elementCombo->setFixedHeight(32);
+    m_elementCombo->setStyleSheet(
+        "QComboBox { background: white; border: 1px solid #E4E7EC; border-radius: 6px; "
+        "padding: 4px 10px; font-size: 12px; font-weight: 600; color: #344054; }"
+        "QComboBox::drop-down { border: none; width: 20px; }"
+        "QComboBox::down-arrow { image: none; border-left: 4px solid transparent; "
+        "border-right: 4px solid transparent; border-top: 5px solid #667085; }");
+    m_elementCombo->addItems({
+        "Chart Area", "Plot Area", "Chart Title",
+        "Value Axis (Y)", "Category Axis (X)",
+        "Legend", "Data Labels", "Major Gridlines", "Trendline"
+    });
+    connect(m_elementCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ChartPropertiesPanel::onElementChanged);
+
+    QWidget* elemWidget = new QWidget();
+    elemWidget->setStyleSheet("background: #F0F2F5;");
+    QHBoxLayout* elemLayout = new QHBoxLayout(elemWidget);
+    elemLayout->setContentsMargins(10, 6, 10, 6);
+    elemLayout->addWidget(new QLabel("Element:"));
+    elemLayout->addWidget(m_elementCombo, 1);
+    outerLayout->addWidget(elemWidget);
 
     // Scroll area for content
     m_scrollArea = new QScrollArea();
@@ -350,12 +375,12 @@ void ChartPropertiesPanel::createLayout() {
     // ===== Data Labels =====
     contentLayout->addWidget(createSectionHeader("DATA LABELS"));
     contentLayout->addSpacing(8);
-    m_dataLabelCombo = new QComboBox();
-    m_dataLabelCombo->addItems({"None", "Center", "Above", "Below", "Inside End", "Outside End"});
-    m_dataLabelCombo->setFixedHeight(30);
-    m_dataLabelCombo->setStyleSheet(m_themeCombo->styleSheet());
-    contentLayout->addWidget(m_dataLabelCombo);
-    connect(m_dataLabelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+    m_dataLabelPosCombo = new QComboBox();
+    m_dataLabelPosCombo->addItems({"None", "Center", "Above", "Below", "Inside End", "Outside End"});
+    m_dataLabelPosCombo->setFixedHeight(30);
+    m_dataLabelPosCombo->setStyleSheet(m_themeCombo->styleSheet());
+    contentLayout->addWidget(m_dataLabelPosCombo);
+    connect(m_dataLabelPosCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ChartPropertiesPanel::onPropertyChanged);
 
     m_labelShowValue = new QCheckBox("Show Value");
@@ -379,19 +404,19 @@ void ChartPropertiesPanel::createLayout() {
     contentLayout->addSpacing(8);
     auto* axisGrid = new QGridLayout();
     axisGrid->setSpacing(6);
-    m_yAxisMin = makeEdit("Auto");
-    m_yAxisMax = makeEdit("Auto");
+    m_axisMin = makeEdit("Auto");
+    m_axisMax = makeEdit("Auto");
     axisGrid->addWidget(new QLabel("Min:"), 0, 0);
-    axisGrid->addWidget(m_yAxisMin, 0, 1);
+    axisGrid->addWidget(m_axisMin, 0, 1);
     axisGrid->addWidget(new QLabel("Max:"), 1, 0);
-    axisGrid->addWidget(m_yAxisMax, 1, 1);
+    axisGrid->addWidget(m_axisMax, 1, 1);
     contentLayout->addLayout(axisGrid);
-    m_yAxisLog = new QCheckBox("Logarithmic Scale");
-    m_yAxisLog->setStyleSheet(m_legendCheck->styleSheet());
-    contentLayout->addWidget(m_yAxisLog);
-    connect(m_yAxisMin, &QLineEdit::editingFinished, this, &ChartPropertiesPanel::onPropertyChanged);
-    connect(m_yAxisMax, &QLineEdit::editingFinished, this, &ChartPropertiesPanel::onPropertyChanged);
-    connect(m_yAxisLog, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
+    m_axisLogScale = new QCheckBox("Logarithmic Scale");
+    m_axisLogScale->setStyleSheet(m_legendCheck->styleSheet());
+    contentLayout->addWidget(m_axisLogScale);
+    connect(m_axisMin, &QLineEdit::editingFinished, this, &ChartPropertiesPanel::onPropertyChanged);
+    connect(m_axisMax, &QLineEdit::editingFinished, this, &ChartPropertiesPanel::onPropertyChanged);
+    connect(m_axisLogScale, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
 
     contentLayout->addSpacing(14);
 
@@ -421,18 +446,18 @@ void ChartPropertiesPanel::createLayout() {
     // ===== Trendline =====
     contentLayout->addWidget(createSectionHeader("TRENDLINE"));
     contentLayout->addSpacing(8);
-    m_trendlineCombo = new QComboBox();
-    m_trendlineCombo->addItems({"None", "Linear", "Exponential", "Logarithmic", "Polynomial", "Power", "Moving Average"});
-    m_trendlineCombo->setFixedHeight(30);
-    m_trendlineCombo->setStyleSheet(m_themeCombo->styleSheet());
-    contentLayout->addWidget(m_trendlineCombo);
+    m_trendlineTypeCombo = new QComboBox();
+    m_trendlineTypeCombo->addItems({"None", "Linear", "Exponential", "Logarithmic", "Polynomial", "Power", "Moving Average"});
+    m_trendlineTypeCombo->setFixedHeight(30);
+    m_trendlineTypeCombo->setStyleSheet(m_themeCombo->styleSheet());
+    contentLayout->addWidget(m_trendlineTypeCombo);
     m_trendShowEq = new QCheckBox("Display Equation");
     m_trendShowEq->setStyleSheet(m_legendCheck->styleSheet());
     m_trendShowR2 = new QCheckBox("Display R² Value");
     m_trendShowR2->setStyleSheet(m_legendCheck->styleSheet());
     contentLayout->addWidget(m_trendShowEq);
     contentLayout->addWidget(m_trendShowR2);
-    connect(m_trendlineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+    connect(m_trendlineTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ChartPropertiesPanel::onPropertyChanged);
     connect(m_trendShowEq, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
     connect(m_trendShowR2, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
@@ -448,7 +473,10 @@ void ChartPropertiesPanel::createLayout() {
 void ChartPropertiesPanel::setChart(ChartWidget* chart) {
     m_chart = chart;
     m_updating = true;
+    rebuildElementDropdown();
     updateFromChart();
+    m_currentElement = ChartElement::ChartArea;
+    showElementOptions(m_currentElement);
     m_updating = false;
 }
 
@@ -467,21 +495,21 @@ void ChartPropertiesPanel::updateFromChart() {
 
     // Deep customization
     if (m_legendPosCombo) m_legendPosCombo->setCurrentIndex(static_cast<int>(cfg.legendPosition));
-    if (m_dataLabelCombo) m_dataLabelCombo->setCurrentIndex(static_cast<int>(cfg.dataLabelPosition));
+    if (m_dataLabelPosCombo) m_dataLabelPosCombo->setCurrentIndex(static_cast<int>(cfg.dataLabelPosition));
     if (m_labelShowValue) m_labelShowValue->setChecked(cfg.dataLabelShowValue);
     if (m_labelShowCategory) m_labelShowCategory->setChecked(cfg.dataLabelShowCategory);
     if (m_labelShowPercent) m_labelShowPercent->setChecked(cfg.dataLabelShowPercentage);
-    if (m_yAxisMin) m_yAxisMin->setText(cfg.yAxisConfig.autoMin ? "Auto" : QString::number(cfg.yAxisConfig.minValue));
-    if (m_yAxisMax) m_yAxisMax->setText(cfg.yAxisConfig.autoMax ? "Auto" : QString::number(cfg.yAxisConfig.maxValue));
-    if (m_yAxisLog) m_yAxisLog->setChecked(cfg.yAxisConfig.logScale);
+    if (m_axisMin) m_axisMin->setText(cfg.yAxisConfig.autoMin ? "Auto" : QString::number(cfg.yAxisConfig.minValue));
+    if (m_axisMax) m_axisMax->setText(cfg.yAxisConfig.autoMax ? "Auto" : QString::number(cfg.yAxisConfig.maxValue));
+    if (m_axisLogScale) m_axisLogScale->setChecked(cfg.yAxisConfig.logScale);
     if (m_stackedCheck) m_stackedCheck->setChecked(cfg.stacked);
     if (m_percentStackedCheck) m_percentStackedCheck->setChecked(cfg.percentStacked);
     if (m_smoothLinesCheck) m_smoothLinesCheck->setChecked(cfg.smoothLines);
     if (m_showMarkersCheck) m_showMarkersCheck->setChecked(cfg.showMarkers);
-    if (m_trendlineCombo) {
+    if (m_trendlineTypeCombo) {
         int trendIdx = 0;
         if (!cfg.trendlines.isEmpty()) trendIdx = static_cast<int>(cfg.trendlines[0].type);
-        m_trendlineCombo->setCurrentIndex(trendIdx);
+        m_trendlineTypeCombo->setCurrentIndex(trendIdx);
     }
     if (m_trendShowEq && !cfg.trendlines.isEmpty()) m_trendShowEq->setChecked(cfg.trendlines[0].displayEquation);
     if (m_trendShowR2 && !cfg.trendlines.isEmpty()) m_trendShowR2->setChecked(cfg.trendlines[0].displayRSquared);
@@ -563,27 +591,27 @@ void ChartPropertiesPanel::applyToChart() {
 
     // Deep customization
     if (m_legendPosCombo) cfg.legendPosition = static_cast<LegendPosition>(m_legendPosCombo->currentIndex());
-    if (m_dataLabelCombo) cfg.dataLabelPosition = static_cast<DataLabelPosition>(m_dataLabelCombo->currentIndex());
+    if (m_dataLabelPosCombo) cfg.dataLabelPosition = static_cast<DataLabelPosition>(m_dataLabelPosCombo->currentIndex());
     if (m_labelShowValue) cfg.dataLabelShowValue = m_labelShowValue->isChecked();
     if (m_labelShowCategory) cfg.dataLabelShowCategory = m_labelShowCategory->isChecked();
     if (m_labelShowPercent) cfg.dataLabelShowPercentage = m_labelShowPercent->isChecked();
-    if (m_yAxisMin) {
-        QString minText = m_yAxisMin->text().trimmed();
+    if (m_axisMin) {
+        QString minText = m_axisMin->text().trimmed();
         if (minText.toLower() == "auto" || minText.isEmpty()) cfg.yAxisConfig.autoMin = true;
         else { cfg.yAxisConfig.autoMin = false; cfg.yAxisConfig.minValue = minText.toDouble(); }
     }
-    if (m_yAxisMax) {
-        QString maxText = m_yAxisMax->text().trimmed();
+    if (m_axisMax) {
+        QString maxText = m_axisMax->text().trimmed();
         if (maxText.toLower() == "auto" || maxText.isEmpty()) cfg.yAxisConfig.autoMax = true;
         else { cfg.yAxisConfig.autoMax = false; cfg.yAxisConfig.maxValue = maxText.toDouble(); }
     }
-    if (m_yAxisLog) cfg.yAxisConfig.logScale = m_yAxisLog->isChecked();
+    if (m_axisLogScale) cfg.yAxisConfig.logScale = m_axisLogScale->isChecked();
     if (m_stackedCheck) cfg.stacked = m_stackedCheck->isChecked();
     if (m_percentStackedCheck) cfg.percentStacked = m_percentStackedCheck->isChecked();
     if (m_smoothLinesCheck) cfg.smoothLines = m_smoothLinesCheck->isChecked();
     if (m_showMarkersCheck) cfg.showMarkers = m_showMarkersCheck->isChecked();
-    if (m_trendlineCombo) {
-        int trendIdx = m_trendlineCombo->currentIndex();
+    if (m_trendlineTypeCombo) {
+        int trendIdx = m_trendlineTypeCombo->currentIndex();
         auto trendType = static_cast<TrendlineType>(trendIdx);
         if (trendType != TrendlineType::None) {
             cfg.trendlines.resize(qMax(cfg.trendlines.size(), cfg.series.size()));
@@ -675,4 +703,133 @@ void ChartPropertiesPanel::onSeriesColorClicked() {
         // Update button icon
         btn->setIcon(makeColorSwatch(newColor, 20));
     }
+}
+
+void ChartPropertiesPanel::onElementChanged(int index) {
+    if (m_updating || !m_chart) return;
+
+    // Map combo index to element
+    static const ChartElement elements[] = {
+        ChartElement::ChartArea, ChartElement::PlotArea, ChartElement::Title,
+        ChartElement::ValueAxis, ChartElement::CategoryAxis,
+        ChartElement::Legend, ChartElement::DataLabels,
+        ChartElement::MajorGridlines, ChartElement::Trendline
+    };
+    if (index < 0 || index >= 9) return;
+    m_currentElement = elements[index];
+    showElementOptions(m_currentElement);
+}
+
+void ChartPropertiesPanel::showElementOptions(ChartElement element) {
+    if (!m_chart) return;
+
+    ChartType chartType = m_chart->config().type;
+    bool isCartesian = (chartType != ChartType::Pie && chartType != ChartType::Donut);
+    bool isLine = (chartType == ChartType::Line || chartType == ChartType::Scatter);
+    bool isBarCol = (chartType == ChartType::Column || chartType == ChartType::Bar ||
+                     chartType == ChartType::Histogram);
+
+    // Update header title
+    static const char* elementNames[] = {
+        "Chart Area", "Plot Area", "Chart Title",
+        "X Axis Title", "Y Axis Title", "Legend",
+        "Data Series", "Data Labels", "Value Axis",
+        "Category Axis", "Major Gridlines", "Trendline"
+    };
+    int ei = static_cast<int>(element);
+    if (ei < 12 && m_headerTitle)
+        m_headerTitle->setText(QString("Format %1").arg(elementNames[ei]));
+
+    // Show/hide sections based on element + chart type
+    // Find widgets by searching the scroll content
+    auto showSection = [this](const QString& sectionTitle, bool visible) {
+        if (!m_scrollArea || !m_scrollArea->widget()) return;
+        auto children = m_scrollArea->widget()->findChildren<QLabel*>();
+        for (auto* label : children) {
+            if (label->text() == sectionTitle) {
+                // Hide/show this label and the next few widgets until next section
+                label->setVisible(visible);
+                // Also hide spacing and controls after this header
+                QWidget* parent = label->parentWidget();
+                if (parent && parent != m_scrollArea->widget()) {
+                    parent->setVisible(visible);
+                }
+            }
+        }
+    };
+
+    // Default: hide everything, then show relevant sections
+    bool showChartType = (element == ChartElement::ChartArea);
+    bool showTitleLabels = (element == ChartElement::ChartArea || element == ChartElement::Title ||
+                            element == ChartElement::XAxisTitle || element == ChartElement::YAxisTitle);
+    bool showStyle = (element == ChartElement::ChartArea);
+    bool showData = (element == ChartElement::ChartArea || element == ChartElement::DataSeries);
+    bool showSeriesColors = (element == ChartElement::ChartArea || element == ChartElement::DataSeries);
+    bool showLegend = (element == ChartElement::Legend || element == ChartElement::ChartArea);
+    bool showDataLabels = (element == ChartElement::DataLabels || element == ChartElement::DataSeries);
+    bool showAxis = (element == ChartElement::ValueAxis || element == ChartElement::CategoryAxis) && isCartesian;
+    bool showChartOpts = (element == ChartElement::ChartArea || element == ChartElement::DataSeries);
+    bool showTrendline = (element == ChartElement::Trendline || element == ChartElement::DataSeries) && isCartesian;
+
+    // Apply visibility — using object names on checkboxes and combos
+    if (m_stackedCheck) m_stackedCheck->parentWidget()->setVisible(showChartOpts && isBarCol);
+    if (m_percentStackedCheck) m_percentStackedCheck->setVisible(showChartOpts && isBarCol);
+    if (m_smoothLinesCheck) m_smoothLinesCheck->setVisible(showChartOpts && isLine);
+    if (m_showMarkersCheck) m_showMarkersCheck->setVisible(showChartOpts && isLine);
+
+    if (m_legendPosCombo) m_legendPosCombo->parentWidget()->setVisible(showLegend);
+    if (m_dataLabelPosCombo) m_dataLabelPosCombo->parentWidget()->setVisible(showDataLabels);
+    if (m_labelShowValue) m_labelShowValue->setVisible(showDataLabels);
+    if (m_labelShowCategory) m_labelShowCategory->setVisible(showDataLabels);
+    if (m_labelShowPercent) {
+        // Percentage only for pie/donut
+        bool isPie = (chartType == ChartType::Pie || chartType == ChartType::Donut);
+        m_labelShowPercent->setVisible(showDataLabels && isPie);
+    }
+
+    if (m_axisMin) m_axisMin->parentWidget()->setVisible(showAxis);
+    if (m_axisMax) m_axisMax->setVisible(showAxis);
+    if (m_axisLogScale) m_axisLogScale->setVisible(showAxis);
+
+    if (m_trendlineTypeCombo) m_trendlineTypeCombo->parentWidget()->setVisible(showTrendline);
+    if (m_trendShowEq) m_trendShowEq->setVisible(showTrendline);
+    if (m_trendShowR2) m_trendShowR2->setVisible(showTrendline);
+
+    // Add series items to dropdown when in series context
+    if (element == ChartElement::DataSeries && m_elementCombo) {
+        // Could add individual series entries here
+    }
+}
+
+void ChartPropertiesPanel::rebuildElementDropdown() {
+    if (!m_elementCombo || !m_chart) return;
+    m_updating = true;
+
+    m_elementCombo->clear();
+    m_elementCombo->addItem("Chart Area");
+    m_elementCombo->addItem("Plot Area");
+
+    const auto& cfg = m_chart->config();
+    if (!cfg.title.isEmpty()) m_elementCombo->addItem("Chart Title");
+
+    bool isCartesian = (cfg.type != ChartType::Pie && cfg.type != ChartType::Donut);
+    if (isCartesian) {
+        m_elementCombo->addItem("Value Axis (Y)");
+        m_elementCombo->addItem("Category Axis (X)");
+    }
+
+    if (cfg.showLegend) m_elementCombo->addItem("Legend");
+
+    // Add series entries
+    for (int i = 0; i < cfg.series.size(); ++i) {
+        m_elementCombo->addItem(QString("Series \"%1\"").arg(cfg.series[i].name));
+    }
+
+    m_elementCombo->addItem("Data Labels");
+    if (isCartesian) {
+        m_elementCombo->addItem("Major Gridlines");
+        m_elementCombo->addItem("Trendline");
+    }
+
+    m_updating = false;
 }
