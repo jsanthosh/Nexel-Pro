@@ -436,6 +436,59 @@ private:
     QVariant funcMMULT(const std::vector<QVariant>& args);
     QVariant funcMUNIT(const std::vector<QVariant>& args);
 
+    // === Batch 5 — Sprint 1 100% completion ===
+    QVariant funcASINH(const std::vector<QVariant>& args);
+    QVariant funcACOSH(const std::vector<QVariant>& args);
+    QVariant funcATANH(const std::vector<QVariant>& args);
+    QVariant funcPERMUTATIONA(const std::vector<QVariant>& args);
+    QVariant funcSUMX2MY2(const std::vector<QVariant>& args);
+    QVariant funcSUMX2PY2(const std::vector<QVariant>& args);
+    QVariant funcSUMXMY2(const std::vector<QVariant>& args);
+    QVariant funcCOVARIANCE_S(const std::vector<QVariant>& args);
+    QVariant funcCOVARIANCE_P(const std::vector<QVariant>& args);
+    QVariant funcSTEYX(const std::vector<QVariant>& args);
+    QVariant funcSTANDARDIZE(const std::vector<QVariant>& args);
+    QVariant funcFISHER(const std::vector<QVariant>& args);
+    QVariant funcFISHERINV(const std::vector<QVariant>& args);
+    QVariant funcPERCENTRANK_INC(const std::vector<QVariant>& args);
+    QVariant funcPERCENTRANK_EXC(const std::vector<QVariant>& args);
+    QVariant funcQUARTILE_EXC(const std::vector<QVariant>& args);
+    QVariant funcVARA(const std::vector<QVariant>& args);
+    QVariant funcSTDEVA(const std::vector<QVariant>& args);
+    QVariant funcVARPA(const std::vector<QVariant>& args);
+    QVariant funcSTDEVPA(const std::vector<QVariant>& args);
+    QVariant funcZ_TEST(const std::vector<QVariant>& args);
+    QVariant funcT_TEST(const std::vector<QVariant>& args);
+    QVariant funcF_TEST(const std::vector<QVariant>& args);
+    QVariant funcCHISQ_TEST(const std::vector<QVariant>& args);
+    QVariant funcERF(const std::vector<QVariant>& args);
+    QVariant funcERFC(const std::vector<QVariant>& args);
+    QVariant funcCOMPLEX(const std::vector<QVariant>& args);
+    QVariant funcIMAGINARY(const std::vector<QVariant>& args);
+    QVariant funcIMREAL(const std::vector<QVariant>& args);
+    QVariant funcBETA_DIST(const std::vector<QVariant>& args);
+    QVariant funcBETA_INV(const std::vector<QVariant>& args);
+    QVariant funcGAMMA_INV(const std::vector<QVariant>& args);
+    QVariant funcCHISQ_INV(const std::vector<QVariant>& args);
+    QVariant funcF_INV(const std::vector<QVariant>& args);
+    QVariant funcBINOM_INV(const std::vector<QVariant>& args);
+    QVariant funcLOGNORM_DIST(const std::vector<QVariant>& args);
+    QVariant funcLOGNORM_INV(const std::vector<QVariant>& args);
+    QVariant funcNEGBINOM_DIST(const std::vector<QVariant>& args);
+    QVariant funcHYPGEOM_DIST(const std::vector<QVariant>& args);
+    // Legacy aliases
+    QVariant funcNORMINV(const std::vector<QVariant>& args);
+    QVariant funcNORMDIST(const std::vector<QVariant>& args);
+    QVariant funcTDIST(const std::vector<QVariant>& args);
+    QVariant funcTINV(const std::vector<QVariant>& args);
+    QVariant funcFDIST(const std::vector<QVariant>& args);
+    QVariant funcFINV(const std::vector<QVariant>& args);
+    QVariant funcBETADIST(const std::vector<QVariant>& args);
+    QVariant funcBETAINV(const std::vector<QVariant>& args);
+    QVariant funcCHIINV(const std::vector<QVariant>& args);
+    QVariant funcLOGINV(const std::vector<QVariant>& args);
+    QVariant funcCRITBINOM(const std::vector<QVariant>& args);
+
     // AST-based evaluation (parse once, evaluate many — 10x faster recalc)
     QVariant evaluateAST(uint32_t nodeIndex);
     QVariant evaluateASTFunction(uint16_t funcId, const QVariantList& argNodeIndices);
