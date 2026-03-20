@@ -274,6 +274,10 @@ QVariant FormulaEngine::funcCOLUMNS(const std::vector<QVariant>& args) {
         CellRange r = args[0].value<CellRange>();
         return r.getColumnCount();
     }
+    // Check last range arg from evaluation (for non-lazy ranges)
+    if (!m_lastRangeArgs.empty()) {
+        return m_lastRangeArgs.back().getColumnCount();
+    }
     return 1;
 }
 

@@ -1100,29 +1100,37 @@ QVariant FormulaEngine::funcSUMIF(const std::vector<QVariant>& args) {
 
 // ---- Date functions ----
 
+// Excel date serial number system: days since 1899-12-30
+static const QDate s_excelEpoch(1899, 12, 30);
+static double toExcelSerial(const QDate& d) { return s_excelEpoch.daysTo(d); }
+static double toExcelSerialDT(const QDateTime& dt) {
+    return s_excelEpoch.daysTo(dt.date()) + (dt.time().msecsSinceStartOfDay() / 86400000.0);
+}
+static QDate fromExcelSerial(double serial) { return s_excelEpoch.addDays(static_cast<int>(serial)); }
+
 QVariant FormulaEngine::funcNOW(const std::vector<QVariant>&) {
-    return QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    return toExcelSerialDT(QDateTime::currentDateTime());
 }
 
 QVariant FormulaEngine::funcTODAY(const std::vector<QVariant>&) {
-    return QDate::currentDate().toString("yyyy-MM-dd");
+    return toExcelSerial(QDate::currentDate());
 }
 
 QVariant FormulaEngine::funcYEAR(const std::vector<QVariant>& args) {
     if (args.empty()) return QVariant("#VALUE!");
-    QDate date = QDate::fromString(toString(args[0]), "yyyy-MM-dd");
+    QDate date = parseDate(args[0]);
     return date.isValid() ? QVariant(date.year()) : QVariant("#VALUE!");
 }
 
 QVariant FormulaEngine::funcMONTH(const std::vector<QVariant>& args) {
     if (args.empty()) return QVariant("#VALUE!");
-    QDate date = QDate::fromString(toString(args[0]), "yyyy-MM-dd");
+    QDate date = parseDate(args[0]);
     return date.isValid() ? QVariant(date.month()) : QVariant("#VALUE!");
 }
 
 QVariant FormulaEngine::funcDAY(const std::vector<QVariant>& args) {
     if (args.empty()) return QVariant("#VALUE!");
-    QDate date = QDate::fromString(toString(args[0]), "yyyy-MM-dd");
+    QDate date = parseDate(args[0]);
     return date.isValid() ? QVariant(date.day()) : QVariant("#VALUE!");
 }
 
@@ -1212,6 +1220,20 @@ std::vector<std::vector<QVariant>> FormulaEngine::getRangeValues2D(const CellRan
 }
 
 QDate FormulaEngine::parseDate(const QVariant& value) {
+    // If numeric, treat as Excel serial number
+    if (value.typeId() == QMetaType::Double || value.typeId() == QMetaType::Int) {
+        double serial = value.toDouble();
+        if (serial > 0 && serial < 3000000) {
+            return fromExcelSerial(serial);
+        }
+    }
+    // Try numeric string
+    bool ok;
+    double serial = value.toString().toDouble(&ok);
+    if (ok && serial > 1 && serial < 3000000) {
+        return fromExcelSerial(serial);
+    }
+    // Try date string formats
     QString str = toString(value);
     QDate d = QDate::fromString(str, "yyyy-MM-dd");
     if (d.isValid()) return d;
@@ -1714,28 +1736,31 @@ QVariant FormulaEngine::funcDATE(const std::vector<QVariant>& args) {
     int month = static_cast<int>(toNumber(args[1]));
     int day = static_cast<int>(toNumber(args[2]));
     QDate date(year, month, day);
-    return date.isValid() ? QVariant(date.toString("yyyy-MM-dd")) : QVariant("#VALUE!");
+    return date.isValid() ? QVariant(toExcelSerial(date)) : QVariant("#VALUE!");
 }
 
 QVariant FormulaEngine::funcHOUR(const std::vector<QVariant>& args) {
     if (args.empty()) return QVariant("#VALUE!");
-    QDateTime dt = QDateTime::fromString(toString(args[0]), "yyyy-MM-dd hh:mm:ss");
-    if (!dt.isValid()) dt = QDateTime::fromString(toString(args[0]), "hh:mm:ss");
-    return dt.isValid() ? QVariant(dt.time().hour()) : QVariant("#VALUE!");
+    double serial = toNumber(args[0]);
+    double timePart = serial - std::floor(serial); // fractional part = time
+    int totalSeconds = static_cast<int>(timePart * 86400 + 0.5);
+    return (totalSeconds / 3600) % 24;
 }
 
 QVariant FormulaEngine::funcMINUTE(const std::vector<QVariant>& args) {
     if (args.empty()) return QVariant("#VALUE!");
-    QDateTime dt = QDateTime::fromString(toString(args[0]), "yyyy-MM-dd hh:mm:ss");
-    if (!dt.isValid()) dt = QDateTime::fromString(toString(args[0]), "hh:mm:ss");
-    return dt.isValid() ? QVariant(dt.time().minute()) : QVariant("#VALUE!");
+    double serial = toNumber(args[0]);
+    double timePart = serial - std::floor(serial);
+    int totalSeconds = static_cast<int>(timePart * 86400 + 0.5);
+    return (totalSeconds / 60) % 60;
 }
 
 QVariant FormulaEngine::funcSECOND(const std::vector<QVariant>& args) {
     if (args.empty()) return QVariant("#VALUE!");
-    QDateTime dt = QDateTime::fromString(toString(args[0]), "yyyy-MM-dd hh:mm:ss");
-    if (!dt.isValid()) dt = QDateTime::fromString(toString(args[0]), "hh:mm:ss");
-    return dt.isValid() ? QVariant(dt.time().second()) : QVariant("#VALUE!");
+    double serial = toNumber(args[0]);
+    double timePart = serial - std::floor(serial);
+    int totalSeconds = static_cast<int>(timePart * 86400 + 0.5);
+    return totalSeconds % 60;
 }
 
 QVariant FormulaEngine::funcDATEDIF(const std::vector<QVariant>& args) {
