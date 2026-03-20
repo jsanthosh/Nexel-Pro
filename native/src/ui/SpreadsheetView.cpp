@@ -3165,6 +3165,102 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
+    // ===== Ctrl/Cmd+E: Flash Fill (pattern detection from examples) =====
+    if (ctrl && event->key() == Qt::Key_E) {
+        if (!m_spreadsheet) { QTableView::keyPressEvent(event); return; }
+
+        QModelIndex cur = currentIndex();
+        if (!cur.isValid()) { event->accept(); return; }
+
+        int col = cur.column();
+        int row = logicalRow(cur);
+
+        // Find the first example (the cell with data in this column)
+        // Look upward from current row to find the first non-empty cell
+        int exampleRow = -1;
+        QString exampleOutput;
+        for (int r = row - 1; r >= 0; --r) {
+            auto val = m_spreadsheet->getCellValue(CellAddress(r, col));
+            if (val.isValid() && !val.toString().isEmpty()) {
+                exampleRow = r;
+                exampleOutput = val.toString();
+                break;
+            }
+        }
+
+        if (exampleRow < 0) { event->accept(); return; }
+
+        // Find the source column (typically the column to the left)
+        int srcCol = col - 1;
+        if (srcCol < 0) { event->accept(); return; }
+
+        QString srcValue = m_spreadsheet->getCellValue(CellAddress(exampleRow, srcCol)).toString();
+        if (srcValue.isEmpty()) { event->accept(); return; }
+
+        // Detect pattern: what transformation was applied from srcValue → exampleOutput?
+        // Common patterns: extract part, change case, concatenate
+
+        // Pattern 1: Extract substring
+        int startPos = srcValue.indexOf(exampleOutput, 0, Qt::CaseInsensitive);
+        bool isExtract = (startPos >= 0 && exampleOutput.length() < srcValue.length());
+
+        // Pattern 2: Case change
+        bool isUpper = (exampleOutput == srcValue.toUpper());
+        bool isLower = (exampleOutput == srcValue.toLower());
+        bool isProper = false;
+        {
+            QString proper = srcValue.toLower();
+            bool capitalize = true;
+            for (int i = 0; i < proper.length(); ++i) {
+                if (capitalize && proper[i].isLetter()) {
+                    proper[i] = proper[i].toUpper();
+                    capitalize = false;
+                }
+                if (proper[i] == ' ' || proper[i] == '-') capitalize = true;
+            }
+            isProper = (exampleOutput == proper);
+        }
+
+        // Pattern 3: Take first N characters or last N characters
+        bool isLeft = srcValue.startsWith(exampleOutput, Qt::CaseInsensitive);
+        bool isRight = srcValue.endsWith(exampleOutput, Qt::CaseInsensitive);
+
+        // Apply pattern to remaining rows
+        int maxRow = m_spreadsheet->getMaxRow();
+        int applied = 0;
+        for (int r = row; r <= maxRow; ++r) {
+            QString src = m_spreadsheet->getCellValue(CellAddress(r, srcCol)).toString();
+            if (src.isEmpty()) continue;
+
+            QString result;
+            if (isUpper) result = src.toUpper();
+            else if (isLower) result = src.toLower();
+            else if (isProper) {
+                result = src.toLower();
+                bool cap = true;
+                for (int i = 0; i < result.length(); ++i) {
+                    if (cap && result[i].isLetter()) { result[i] = result[i].toUpper(); cap = false; }
+                    if (result[i] == ' ' || result[i] == '-') cap = true;
+                }
+            } else if (isLeft) result = src.left(exampleOutput.length());
+            else if (isRight) result = src.right(exampleOutput.length());
+            else if (isExtract && startPos >= 0) {
+                result = src.mid(startPos, exampleOutput.length());
+            } else {
+                continue; // Can't detect pattern
+            }
+
+            m_spreadsheet->setCellValue(CellAddress(r, col), QVariant(result));
+            applied++;
+            if (applied > 100000) break; // Safety limit
+        }
+
+        if (m_model) m_model->resetModel();
+        qDebug() << "[Flash Fill]" << applied << "cells filled";
+        event->accept();
+        return;
+    }
+
     // ===== Ctrl/Cmd+D: Fill Down (copy value from cell above into selection) =====
     if (ctrl && event->key() == Qt::Key_D) {
         if (!m_spreadsheet) { QTableView::keyPressEvent(event); return; }
@@ -3964,6 +4060,74 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
                 painter.setPen(borderPen);
                 painter.setBrush(Qt::NoBrush);
                 painter.drawRect(selPixelRect.adjusted(0, 0, 0, 0));
+            }
+        }
+    }
+
+    // --- Formula reference highlighting (Excel-style colored borders) ---
+    if (m_formulaEditMode && m_spreadsheet && state() == QAbstractItemView::EditingState) {
+        // Parse cell references from the formula being edited
+        QWidget* editor = indexWidget(currentIndex());
+        if (!editor) editor = viewport()->findChild<QLineEdit*>();
+        if (editor) {
+            QString text = qobject_cast<QLineEdit*>(editor) ?
+                qobject_cast<QLineEdit*>(editor)->text() : QString();
+            if (text.startsWith("=")) {
+                // Colors for referenced ranges (Excel uses these colors)
+                static const QColor refColors[] = {
+                    QColor(0, 0, 255),      // Blue
+                    QColor(255, 0, 0),      // Red
+                    QColor(128, 0, 128),    // Purple
+                    QColor(0, 128, 0),      // Green
+                    QColor(255, 128, 0),    // Orange
+                    QColor(0, 128, 128),    // Teal
+                    QColor(128, 0, 0),      // Maroon
+                    QColor(0, 0, 128),      // Navy
+                };
+                int colorIdx = 0;
+
+                // Find all cell references in the formula
+                static QRegularExpression refRe(
+                    "\\$?[A-Z]{1,3}\\$?\\d+(?::\\$?[A-Z]{1,3}\\$?\\d+)?",
+                    QRegularExpression::CaseInsensitiveOption);
+                auto it = refRe.globalMatch(text);
+                QPainter refPainter(viewport());
+                refPainter.setRenderHint(QPainter::Antialiasing, false);
+
+                while (it.hasNext()) {
+                    auto match = it.next();
+                    QString ref = match.captured();
+                    QColor color = refColors[colorIdx % 8];
+                    colorIdx++;
+
+                    // Parse the reference
+                    CellRange range(ref);
+                    if (!range.isValid()) continue;
+
+                    int startRow = range.getStart().row;
+                    int startCol = range.getStart().col;
+                    int endRow = range.getEnd().row;
+                    int endCol = range.getEnd().col;
+
+                    // Convert to model rows
+                    int modelStartRow = m_model ? m_model->toModelRow(startRow) : startRow;
+                    int modelEndRow = m_model ? m_model->toModelRow(endRow) : endRow;
+                    if (modelStartRow < 0 || modelEndRow < 0) continue;
+
+                    QModelIndex tl = model()->index(modelStartRow, startCol);
+                    QModelIndex br = model()->index(modelEndRow, endCol);
+                    QRect tlRect = visualRect(tl);
+                    QRect brRect = visualRect(br);
+                    if (!tlRect.isValid() || !brRect.isValid()) continue;
+
+                    QRect refRect = tlRect.united(brRect);
+
+                    // Draw colored border + light fill
+                    QPen pen(color, 2);
+                    refPainter.setPen(pen);
+                    refPainter.setBrush(QColor(color.red(), color.green(), color.blue(), 30));
+                    refPainter.drawRect(refRect);
+                }
             }
         }
     }
