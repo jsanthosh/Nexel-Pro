@@ -105,8 +105,26 @@ MainWindow::MainWindow(QWidget* parent)
     QToolBar* toolbar2 = m_toolbar->createSecondaryToolbar(this);
     addToolBar(toolbar2);
 
+    // Name Box + Formula Bar in a horizontal row
+    m_nameBox = new QLineEdit();
+    m_nameBox->setFixedWidth(120);
+    m_nameBox->setFixedHeight(26);
+    m_nameBox->setAlignment(Qt::AlignCenter);
+    m_nameBox->setStyleSheet(
+        "QLineEdit { border: 1px solid #D0D5DD; border-radius: 4px; "
+        "padding: 2px 6px; font-size: 12px; font-weight: 600; color: #1D2939; "
+        "background: white; }"
+        "QLineEdit:focus { border-color: #4285f4; }");
+    m_nameBox->setText("A1");
+
     m_formulaBar = new FormulaBar(this);
-    layout->addWidget(m_formulaBar);
+
+    QHBoxLayout* formulaRow = new QHBoxLayout();
+    formulaRow->setContentsMargins(0, 0, 0, 0);
+    formulaRow->setSpacing(4);
+    formulaRow->addWidget(m_nameBox);
+    formulaRow->addWidget(m_formulaBar, 1);
+    layout->addLayout(formulaRow);
 
     m_spreadsheetView = new SpreadsheetView(this);
     m_spreadsheetView->setSpreadsheet(m_sheets[0]);
@@ -918,7 +936,7 @@ void MainWindow::createStatusBar() {
     statusBar()->showMessage("Ready");
 
     // Permanent stats widgets on the right side (Excel-style)
-    QString statStyle = "QLabel { color: #555; font-size: 11px; padding: 0 8px; }";
+    QString statStyle = "QLabel { color: #344054; font-size: 12px; padding: 0 12px; }";
 
     m_statusAvgLabel = new QLabel("");
     m_statusAvgLabel->setStyleSheet(statStyle);
@@ -1124,6 +1142,71 @@ void MainWindow::connectSignals() {
     // Selection change also updates status bar summary
     connect(m_spreadsheetView->selectionModel(), &QItemSelectionModel::selectionChanged,
             this, [this]() { updateStatusBarSummary(); });
+
+    // Name Box: update when current cell changes
+    connect(m_spreadsheetView->selectionModel(), &QItemSelectionModel::currentChanged,
+        this, [this](const QModelIndex& current) {
+            if (!current.isValid() || !m_nameBox) return;
+            int row = current.row() + 1;
+            int col = current.column();
+            QString colStr;
+            while (col >= 0) {
+                colStr.prepend(QChar('A' + col % 26));
+                col = col / 26 - 1;
+            }
+            m_nameBox->setText(colStr + QString::number(row));
+        });
+
+    // Name Box: navigate on Enter
+    connect(m_nameBox, &QLineEdit::returnPressed, this, [this]() {
+        QString text = m_nameBox->text().trimmed().toUpper();
+        if (text.isEmpty()) return;
+
+        // Try as named range first
+        auto* named = m_sheets[m_activeSheetIndex]->getNamedRange(text);
+        if (named) {
+            QModelIndex topLeft = m_spreadsheetView->model()->index(
+                named->range.getStart().row, named->range.getStart().col);
+            QModelIndex bottomRight = m_spreadsheetView->model()->index(
+                named->range.getEnd().row, named->range.getEnd().col);
+            m_spreadsheetView->selectionModel()->select(
+                QItemSelection(topLeft, bottomRight),
+                QItemSelectionModel::ClearAndSelect);
+            m_spreadsheetView->setCurrentIndex(topLeft);
+            m_spreadsheetView->scrollTo(topLeft);
+            m_spreadsheetView->setFocus();
+            return;
+        }
+
+        // Try as range (e.g., "A1:D10")
+        if (text.contains(':')) {
+            QStringList parts = text.split(':');
+            if (parts.size() == 2) {
+                CellAddress start = CellAddress::fromString(parts[0]);
+                CellAddress end = CellAddress::fromString(parts[1]);
+                if (start.row >= 0 && end.row >= 0) {
+                    QModelIndex topLeft = m_spreadsheetView->model()->index(start.row, start.col);
+                    QModelIndex bottomRight = m_spreadsheetView->model()->index(end.row, end.col);
+                    m_spreadsheetView->selectionModel()->select(
+                        QItemSelection(topLeft, bottomRight),
+                        QItemSelectionModel::ClearAndSelect);
+                    m_spreadsheetView->setCurrentIndex(topLeft);
+                    m_spreadsheetView->scrollTo(topLeft);
+                    m_spreadsheetView->setFocus();
+                }
+            }
+            return;
+        }
+
+        // Try as cell reference (e.g., "A1" or "B10")
+        CellAddress addr = CellAddress::fromString(text);
+        if (addr.row >= 0 && addr.col >= 0) {
+            QModelIndex idx = m_spreadsheetView->model()->index(addr.row, addr.col);
+            m_spreadsheetView->setCurrentIndex(idx);
+            m_spreadsheetView->scrollTo(idx);
+            m_spreadsheetView->setFocus();
+        }
+    });
 
     // Formula bar -> cell reference insertion
     connect(m_formulaBar, &FormulaBar::formulaEditModeChanged,
@@ -2544,14 +2627,15 @@ void MainWindow::updateStatusBarSummary() {
     }
 
     // Update permanent stats widgets (Excel-style, always visible on right)
+    QLocale locale = QLocale::system();
     if (numericCount > 0) {
         double avg = sum / numericCount;
-        if (m_statusAvgLabel) m_statusAvgLabel->setText(QString("Average: %1").arg(QString::number(avg, 'f', 2)));
-        if (m_statusCountLabel) m_statusCountLabel->setText(QString("Count: %1").arg(nonEmptyCount));
-        if (m_statusSumLabel) m_statusSumLabel->setText(QString("Sum: %1").arg(QString::number(sum, 'f', 2)));
+        if (m_statusAvgLabel) m_statusAvgLabel->setText(QString("Average: %1").arg(locale.toString(avg, 'f', 2)));
+        if (m_statusCountLabel) m_statusCountLabel->setText(QString("Count: %1").arg(locale.toString(nonEmptyCount)));
+        if (m_statusSumLabel) m_statusSumLabel->setText(QString("Sum: %1").arg(locale.toString(sum, 'f', 2)));
     } else if (nonEmptyCount > 0) {
         if (m_statusAvgLabel) m_statusAvgLabel->setText("");
-        if (m_statusCountLabel) m_statusCountLabel->setText(QString("Count: %1").arg(nonEmptyCount));
+        if (m_statusCountLabel) m_statusCountLabel->setText(QString("Count: %1").arg(locale.toString(nonEmptyCount)));
         if (m_statusSumLabel) m_statusSumLabel->setText("");
     } else {
         if (m_statusAvgLabel) m_statusAvgLabel->setText("");

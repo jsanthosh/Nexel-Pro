@@ -601,7 +601,7 @@ QString ThemeManager::dialogStylesheet() {
     return QString(
         "QDialog { background: %1; }"
         "QGroupBox { font-weight: 600; font-size: 12px; border: 1px solid %2; "
-        "border-radius: 10px; margin-top: 10px; padding: 20px 14px 14px 14px; background: %6; }"
+        "border-radius: 6px; margin-top: 10px; padding: 14px 14px 12px 14px; background: %6; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 8px; "
         "color: %3; font-size: 12px; }"
         "QLineEdit { border: 1px solid %2; border-radius: 6px; padding: 6px 10px; "
@@ -623,6 +623,11 @@ QString ThemeManager::dialogStylesheet() {
         "border-left: 3px solid %3; }"
         "QListWidget::item:hover:!selected { background-color: %1; }"
         "QLabel { color: %11; font-size: 12px; }"
+        "QPushButton { padding: 6px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; }"
+        "QPushButton[primary='true'], QPushButton:default { background: %3; color: white; border: none; }"
+        "QPushButton[primary='true']:hover, QPushButton:default:hover { background: %12; }"
+        "QPushButton[secondary='true'] { background: #F0F2F5; color: #344054; border: 1px solid #D0D5DD; }"
+        "QPushButton[secondary='true']:hover { background: #E4E7EC; }"
     ).arg(
         t.dialogBackground.name(),    // %1
         t.dialogGroupBoxBorder.name(), // %2
@@ -635,6 +640,7 @@ QString ThemeManager::dialogStylesheet() {
         placeholderColor               // %9
     ).arg(
         arrowColor,                    // %10
-        labelColor                     // %11
+        labelColor,                    // %11
+        t.accentDarker.name()          // %12
     );
 }

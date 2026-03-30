@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QSettings>
 #include <QLabel>
+#include <QLineEdit>
 #include <memory>
 #include <vector>
 #include <atomic>
@@ -157,6 +158,7 @@ private:
 
     SpreadsheetView* m_spreadsheetView;
     FormulaBar* m_formulaBar;
+    QLineEdit* m_nameBox = nullptr;
     Toolbar* m_toolbar;
     QWidget* m_bottomBar;
     QTabBar* m_sheetTabBar;

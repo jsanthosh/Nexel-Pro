@@ -581,12 +581,15 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         }
     }
 
-    if (isPicklistOrCheckbox && !(isSelected && !hasFocus)) {
+    bool isFocusCell = (option.state & QStyle::State_HasFocus);
+
+    if (isPicklistOrCheckbox && !(isSelected && !isFocusCell)) {
         // Picklist/Checkbox cells: use theme bg when not part of a multi-select
         painter->fillRect(rect, defaultBg);
-    } else if (isSelected && !hasFocus) {
-        // Multi-select: paint bg color first, then semi-transparent selection tint
-        // so fill colors are visible even while selected
+    } else if (isSelected && !isFocusCell) {
+        // Multi-select (non-focus cells): paint bg color first, then semi-transparent
+        // selection tint so fill colors are visible even while selected.
+        // The active/focus cell keeps its original background (white/clear) — Excel behavior.
         painter->fillRect(rect, bgColor);
         QColor tint = ThemeManager::instance().currentTheme().selectionTint;
         if (bgColor != defaultBg) {
@@ -595,6 +598,7 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
         }
         painter->fillRect(rect, tint);
     } else {
+        // Active/focus cell or unselected cell: paint original background, no tint
         painter->fillRect(rect, bgColor);
     }
 

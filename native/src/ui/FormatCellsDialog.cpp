@@ -80,9 +80,11 @@ void FormatCellsDialog::pickColor(const QString& title, QString& colorStr, QPush
 
     QColor currentColor = dt.resolveAnyColor(colorStr);
 
+    const auto& theme = ThemeManager::instance().currentTheme();
     QMenu menu(this);
     menu.setStyleSheet(
-        "QMenu { background: #FFFFFF; border: 1px solid #E0E0E0; padding: 0px; border-radius: 6px; }");
+        QString("QMenu { background: #FFFFFF; border: 1px solid %1; padding: 0px; border-radius: 6px; }")
+            .arg(theme.dialogGroupBoxBorder.name()));
 
     QWidget* container = new QWidget(&menu);
     QVBoxLayout* layout = new QVBoxLayout(container);
@@ -91,7 +93,7 @@ void FormatCellsDialog::pickColor(const QString& title, QString& colorStr, QPush
 
     // Theme Colors header
     QLabel* themeLabel = new QLabel("Theme Colors", container);
-    themeLabel->setStyleSheet("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #666; padding-bottom: 4px;");
+    themeLabel->setStyleSheet(QString("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #667085; padding-bottom: 4px;"));
     layout->addWidget(themeLabel);
 
     QString pickedStr;
@@ -121,13 +123,13 @@ void FormatCellsDialog::pickColor(const QString& title, QString& colorStr, QPush
     layout->addSpacing(6);
     QFrame* sep1 = new QFrame(container);
     sep1->setFrameShape(QFrame::HLine);
-    sep1->setStyleSheet("background: #E8E8E8; max-height: 1px;");
+    sep1->setStyleSheet(QString("background: %1; max-height: 1px;").arg(theme.dialogGroupBoxBorder.name()));
     layout->addWidget(sep1);
     layout->addSpacing(4);
 
     // Standard Colors
     QLabel* stdLabel = new QLabel("Standard Colors", container);
-    stdLabel->setStyleSheet("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #666; padding-bottom: 4px;");
+    stdLabel->setStyleSheet(QString("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #667085; padding-bottom: 4px;"));
     layout->addWidget(stdLabel);
     QHBoxLayout* stdRow = new QHBoxLayout();
     stdRow->setSpacing(3);
@@ -165,7 +167,7 @@ void FormatCellsDialog::pickColor(const QString& title, QString& colorStr, QPush
     layout->addSpacing(6);
     QFrame* sep2 = new QFrame(container);
     sep2->setFrameShape(QFrame::HLine);
-    sep2->setStyleSheet("background: #E8E8E8; max-height: 1px;");
+    sep2->setStyleSheet(QString("background: %1; max-height: 1px;").arg(theme.dialogGroupBoxBorder.name()));
     layout->addWidget(sep2);
     layout->addSpacing(4);
 
@@ -285,7 +287,8 @@ void FormatCellsDialog::createNumberTab(QWidget* tab) {
     QGroupBox* previewBox = new QGroupBox("Preview");
     QVBoxLayout* previewLayout = new QVBoxLayout(previewBox);
     m_previewLabel = new QLabel("General");
-    m_previewLabel->setStyleSheet("QLabel { padding: 8px; background: white; border: 1px solid #ccc; }");
+    m_previewLabel->setStyleSheet(QString("QLabel { padding: 8px; background: white; border: 1px solid %1; }")
+        .arg(ThemeManager::instance().currentTheme().dialogGroupBoxBorder.name()));
     previewLayout->addWidget(m_previewLabel);
     optionsLayout->addWidget(previewBox);
 
@@ -576,12 +579,14 @@ void FormatCellsDialog::createBorderTab(QWidget* tab) {
     // Color button
     m_borderColorBtn = new QPushButton();
     m_borderColorBtn->setFixedSize(100, 26);
-    m_borderColorBtn->setStyleSheet(QString("QPushButton { background: %1; border: 1px solid #ccc; border-radius: 4px; }").arg(m_borderColorStr));
+    m_borderColorBtn->setStyleSheet(QString("QPushButton { background: %1; border: 1px solid %2; border-radius: 4px; }")
+        .arg(m_borderColorStr, ThemeManager::instance().currentTheme().dialogGroupBoxBorder.name()));
     connect(m_borderColorBtn, &QPushButton::clicked, this, [this]() {
         QColor color = QColorDialog::getColor(QColor(m_borderColorStr), this, "Border Color");
         if (color.isValid()) {
             m_borderColorStr = color.name();
-            m_borderColorBtn->setStyleSheet(QString("QPushButton { background: %1; border: 1px solid #ccc; border-radius: 4px; }").arg(m_borderColorStr));
+            m_borderColorBtn->setStyleSheet(QString("QPushButton { background: %1; border: 1px solid %2; border-radius: 4px; }")
+                .arg(m_borderColorStr, ThemeManager::instance().currentTheme().dialogGroupBoxBorder.name()));
         }
     });
     lineLayout->addWidget(new QLabel("Color:"));
@@ -600,8 +605,7 @@ void FormatCellsDialog::createBorderTab(QWidget* tab) {
     m_borderPresetInside = new QPushButton("Inside");
     for (auto* btn : {m_borderPresetNone, m_borderPresetOutline, m_borderPresetInside}) {
         btn->setFixedSize(70, 30);
-        btn->setStyleSheet("QPushButton { border: 1px solid #ccc; border-radius: 4px; font-size: 11px; }"
-                          "QPushButton:hover { background: #e8f0fe; }");
+        btn->setProperty("secondary", true);
         presetLayout->addWidget(btn);
     }
     presetLayout->addStretch();
@@ -634,12 +638,15 @@ void FormatCellsDialog::createBorderTab(QWidget* tab) {
     rightLayout->addWidget(new QLabel("Border"));
     QGridLayout* edgeGrid = new QGridLayout();
 
-    auto makeEdgeBtn = [](const QString& label) -> QPushButton* {
+    const auto& edgeTheme = ThemeManager::instance().currentTheme();
+    auto makeEdgeBtn = [&edgeTheme](const QString& label) -> QPushButton* {
         auto* btn = new QPushButton(label);
         btn->setFixedSize(30, 30);
         btn->setCheckable(true);
-        btn->setStyleSheet("QPushButton { border: 1px solid #ccc; border-radius: 4px; font-size: 11px; }"
-                          "QPushButton:checked { background: #d0e8ff; border-color: #4285f4; }");
+        btn->setStyleSheet(QString(
+            "QPushButton { border: 1px solid %1; border-radius: 4px; font-size: 11px; }"
+            "QPushButton:checked { background: %2; border-color: %3; }")
+            .arg(edgeTheme.dialogGroupBoxBorder.name(), edgeTheme.accentLight.name(), edgeTheme.accentDark.name()));
         return btn;
     };
 
@@ -656,7 +663,8 @@ void FormatCellsDialog::createBorderTab(QWidget* tab) {
     // Center: preview area
     m_borderPreviewWidget = new QWidget();
     m_borderPreviewWidget->setFixedSize(80, 50);
-    m_borderPreviewWidget->setStyleSheet("background: white; border: 1px solid #e0e0e0;");
+    m_borderPreviewWidget->setStyleSheet(QString("background: white; border: 1px solid %1;")
+        .arg(ThemeManager::instance().currentTheme().dialogGroupBoxBorder.name()));
     edgeGrid->addWidget(m_borderPreviewWidget, 1, 1);
 
     rightLayout->addLayout(edgeGrid);
@@ -703,7 +711,7 @@ void FormatCellsDialog::createProtectionTab(QWidget* tab) {
     QLabel* lockDesc = new QLabel(
         "Locking cells or hiding formulas has no effect until you protect\n"
         "the worksheet (Data menu → Protect Sheet).");
-    lockDesc->setStyleSheet("color: #666; font-size: 11px;");
+    lockDesc->setStyleSheet("color: #667085; font-size: 11px;");
     lockDesc->setWordWrap(true);
     layout->addWidget(lockDesc);
 
@@ -716,7 +724,7 @@ void FormatCellsDialog::createProtectionTab(QWidget* tab) {
     QLabel* hideDesc = new QLabel(
         "Hides the formula in the formula bar when the cell is selected.\n"
         "The value is still displayed in the cell.");
-    hideDesc->setStyleSheet("color: #666; font-size: 11px;");
+    hideDesc->setStyleSheet("color: #667085; font-size: 11px;");
     hideDesc->setWordWrap(true);
     layout->addWidget(hideDesc);
 

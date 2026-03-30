@@ -23,6 +23,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QDate>
+#include <QTime>
 #include <QCheckBox>
 #include <QRegularExpression>
 #include <QVBoxLayout>
@@ -229,6 +230,10 @@ void SpreadsheetView::initializeView() {
         connect(cornerButton, &QAbstractButton::clicked, this, &QTableView::selectAll);
     }
 
+    // Marching ants timer for clipboard range animation
+    m_marchingAntsTimer = new QTimer(this);
+    connect(m_marchingAntsTimer, &QTimer::timeout, this, &SpreadsheetView::onMarchingAntsTick);
+
     // Enable mouse tracking for fill handle cursor changes
     viewport()->setMouseTracking(true);
 
@@ -386,6 +391,11 @@ void SpreadsheetView::setupHeaderContextMenus() {
             }
         });
 
+        menu.addSeparator();
+        menu.addAction("Format Cells...", [this]() {
+            emit formatCellsRequested();
+        }, QKeySequence(Qt::CTRL | Qt::Key_1));
+
         menu.exec(horizontalHeader()->mapToGlobal(pos));
     });
 
@@ -450,6 +460,11 @@ void SpreadsheetView::setupHeaderContextMenus() {
                 if (isRowHidden(r)) setRowHidden(r, false);
             }
         });
+
+        menu.addSeparator();
+        menu.addAction("Format Cells...", [this]() {
+            emit formatCellsRequested();
+        }, QKeySequence(Qt::CTRL | Qt::Key_1));
 
         menu.exec(verticalHeader()->mapToGlobal(pos));
     });
@@ -600,6 +615,12 @@ void SpreadsheetView::copy() {
 
     m_internalClipboardText = data;
     QApplication::clipboard()->setText(data);
+
+    // Start marching ants animation around copied range
+    m_clipboardRange = QRect(minCol, minRow, maxCol, maxRow); // stores col/row bounds
+    m_hasClipboardRange = true;
+    m_marchingAntsOffset = 0;
+    if (m_marchingAntsTimer) m_marchingAntsTimer->start(100);
 }
 
 void SpreadsheetView::paste() {
@@ -669,6 +690,9 @@ void SpreadsheetView::paste() {
 
     m_spreadsheet->getUndoManager().pushCommand(
         std::make_unique<MultiCellEditCommand>(before, after, "Paste"));
+
+    // Clear marching ants after paste (Excel behavior)
+    clearClipboardRange();
 
     if (m_model) {
         m_model->resetModel();
@@ -921,7 +945,42 @@ void SpreadsheetView::deleteSelection() {
 }
 
 void SpreadsheetView::selectAll() {
-    QTableView::selectAll();
+    // Excel-style two-step Ctrl+A:
+    // 1st press: select the contiguous data region around the current cell
+    // 2nd press (if data region already selected): select entire sheet
+    if (!m_spreadsheet || !currentIndex().isValid()) {
+        QTableView::selectAll();
+        return;
+    }
+
+    int curRow = logicalRow(currentIndex());
+    int curCol = currentIndex().column();
+    CellRange dataRegion = detectDataRegion(curRow, curCol);
+
+    // Check if current selection already matches the data region
+    QItemSelection currentSel = selectionModel()->selection();
+    bool alreadyMatchesRegion = false;
+    if (!currentSel.isEmpty()) {
+        QItemSelectionRange range = currentSel.first();
+        alreadyMatchesRegion = (range.top() == dataRegion.getStart().row
+            && range.left() == dataRegion.getStart().col
+            && range.bottom() == dataRegion.getEnd().row
+            && range.right() == dataRegion.getEnd().col);
+    }
+
+    // If data region is just a single empty cell, or selection already matches region, select all
+    if (alreadyMatchesRegion || dataRegion.isSingleCell()) {
+        QTableView::selectAll();
+    } else {
+        // Select the data region
+        QModelIndex topLeft = model()->index(dataRegion.getStart().row, dataRegion.getStart().col);
+        QModelIndex bottomRight = model()->index(dataRegion.getEnd().row, dataRegion.getEnd().col);
+        selectionModel()->select(QItemSelection(topLeft, bottomRight),
+            QItemSelectionModel::ClearAndSelect);
+        selectionModel()->setCurrentIndex(
+            model()->index(currentIndex().row(), currentIndex().column()),
+            QItemSelectionModel::NoUpdate);
+    }
 }
 
 // ============== Style operations ==============
@@ -3332,7 +3391,29 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    // Enter/Return: commit and move down
+    // Alt+Enter: insert line break in cell
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && (event->modifiers() & Qt::AltModifier)) {
+        QModelIndex idx = currentIndex();
+        if (state() == QAbstractItemView::EditingState) {
+            QWidget* editor = indexWidget(idx);
+            if (!editor) editor = viewport()->findChild<QLineEdit*>();
+            if (auto* lineEdit = qobject_cast<QLineEdit*>(editor)) {
+                int pos = lineEdit->cursorPosition();
+                QString text = lineEdit->text();
+                text.insert(pos, '\n');
+                lineEdit->setText(text);
+                lineEdit->setCursorPosition(pos + 1);
+            }
+        } else {
+            // Start editing and prepare for multi-line input
+            if (idx.isValid()) edit(idx);
+        }
+        event->accept();
+        return;
+    }
+
+    // Enter/Return: commit and move down (within selection if multi-cell)
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
         m_formulaEditMode = false;  // Must be set before commit/close so overrides allow it
         if (state() == QAbstractItemView::EditingState) {
@@ -3343,6 +3424,45 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
                 closeEditor(editor, QAbstractItemDelegate::NoHint);
             }
         }
+
+        // Navigate within selection bounds (Excel behavior)
+        QItemSelection sel = selectionModel()->selection();
+        if (!sel.isEmpty()) {
+            QItemSelectionRange range = sel.first();
+            if (range.width() > 1 || range.height() > 1) {
+                int curRow = currentIndex().row();
+                int curCol = currentIndex().column();
+                if (shift) {
+                    // Shift+Enter: move up within selection, wrap to bottom of previous column
+                    int nextRow = curRow - 1;
+                    int nextCol = curCol;
+                    if (nextRow < range.top()) {
+                        nextRow = range.bottom();
+                        nextCol = curCol - 1;
+                        if (nextCol < range.left()) nextCol = range.right();
+                    }
+                    QModelIndex idx = model()->index(nextRow, nextCol);
+                    selectionModel()->setCurrentIndex(idx, QItemSelectionModel::NoUpdate);
+                    scrollTo(idx);
+                } else {
+                    // Enter: move down within selection, wrap to top of next column
+                    int nextRow = curRow + 1;
+                    int nextCol = curCol;
+                    if (nextRow > range.bottom()) {
+                        nextRow = range.top();
+                        nextCol = curCol + 1;
+                        if (nextCol > range.right()) nextCol = range.left();
+                    }
+                    QModelIndex idx = model()->index(nextRow, nextCol);
+                    selectionModel()->setCurrentIndex(idx, QItemSelectionModel::NoUpdate);
+                    scrollTo(idx);
+                }
+                viewport()->update();
+                event->accept();
+                return;
+            }
+        }
+
         int newRow = currentIndex().row() + (shift ? -1 : 1);
         newRow = qBound(0, newRow, model()->rowCount() - 1);
         QModelIndex next = model()->index(newRow, currentIndex().column());
@@ -3355,7 +3475,7 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    // Tab: commit and move right; Shift+Tab: move left
+    // Tab: commit and move right; Shift+Tab: move left (within selection if multi-cell)
     if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) {
         m_formulaEditMode = false;
         if (state() == QAbstractItemView::EditingState) {
@@ -3366,6 +3486,45 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
                 closeEditor(editor, QAbstractItemDelegate::NoHint);
             }
         }
+
+        // Navigate within selection bounds (Excel behavior)
+        QItemSelection sel = selectionModel()->selection();
+        if (!sel.isEmpty()) {
+            QItemSelectionRange range = sel.first();
+            if (range.width() > 1 || range.height() > 1) {
+                int curRow = currentIndex().row();
+                int curCol = currentIndex().column();
+                if (event->key() == Qt::Key_Backtab) {
+                    // Shift+Tab: move left within selection, wrap to last column of previous row
+                    int nextCol = curCol - 1;
+                    int nextRow = curRow;
+                    if (nextCol < range.left()) {
+                        nextCol = range.right();
+                        nextRow = curRow - 1;
+                        if (nextRow < range.top()) nextRow = range.bottom();
+                    }
+                    QModelIndex idx = model()->index(nextRow, nextCol);
+                    selectionModel()->setCurrentIndex(idx, QItemSelectionModel::NoUpdate);
+                    scrollTo(idx);
+                } else {
+                    // Tab: move right within selection, wrap to first column of next row
+                    int nextCol = curCol + 1;
+                    int nextRow = curRow;
+                    if (nextCol > range.right()) {
+                        nextCol = range.left();
+                        nextRow = curRow + 1;
+                        if (nextRow > range.bottom()) nextRow = range.top();
+                    }
+                    QModelIndex idx = model()->index(nextRow, nextCol);
+                    selectionModel()->setCurrentIndex(idx, QItemSelectionModel::NoUpdate);
+                    scrollTo(idx);
+                }
+                viewport()->update();
+                event->accept();
+                return;
+            }
+        }
+
         int newCol = currentIndex().column() + (event->key() == Qt::Key_Backtab ? -1 : 1);
         newCol = qBound(0, newCol, model()->columnCount() - 1);
         QModelIndex next = model()->index(currentIndex().row(), newCol);
@@ -3397,6 +3556,10 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
 
     // Escape: cancel editing / format painter / formula edit mode
     if (event->key() == Qt::Key_Escape) {
+        // Clear marching ants on Escape (Excel behavior)
+        if (m_hasClipboardRange) {
+            clearClipboardRange();
+        }
         if (m_formulaEditMode) {
             m_formulaEditMode = false;
             if (state() == QAbstractItemView::EditingState) {
@@ -3840,6 +4003,17 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
+    // ===== Ctrl+Shift+; : Insert current time =====
+    if (ctrl && shift && event->key() == Qt::Key_Semicolon) {
+        QModelIndex cur = currentIndex();
+        if (cur.isValid()) {
+            QString timeStr = QTime::currentTime().toString("hh:mm:ss");
+            m_model->setData(cur, timeStr);
+        }
+        event->accept();
+        return;
+    }
+
     // ===== Ctrl+; : Insert current date =====
     if (ctrl && event->key() == Qt::Key_Semicolon) {
         QModelIndex cur = currentIndex();
@@ -3986,6 +4160,38 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
             event->accept();
             return;
         }
+    }
+
+    // ===== Alt+= : AutoSum (insert =SUM() with auto-detected range above) =====
+    if (event->key() == Qt::Key_Equal && (event->modifiers() & Qt::AltModifier)) {
+        if (m_spreadsheet) {
+            QModelIndex cur = currentIndex();
+            if (cur.isValid()) {
+                int row = logicalRow(cur);
+                int col = cur.column();
+                // Walk up from row-1 while cells have numeric data
+                int startRow = row - 1;
+                while (startRow >= 0) {
+                    auto val = m_spreadsheet->getCellValue(CellAddress(startRow, col));
+                    if (!val.isValid() || val.toString().isEmpty()) break;
+                    // Check if it's numeric
+                    bool ok = false;
+                    val.toDouble(&ok);
+                    if (!ok) break;
+                    startRow--;
+                }
+                startRow++; // first numeric row
+                if (startRow < row) {
+                    // Build cell references using CellAddress::toString()
+                    QString startRef = CellAddress(startRow, col).toString();
+                    QString endRef = CellAddress(row - 1, col).toString();
+                    QString formula = QString("=SUM(%1:%2)").arg(startRef, endRef);
+                    m_model->setData(cur, formula);
+                }
+            }
+        }
+        event->accept();
+        return;
     }
 
     // Block typing-to-edit if cell is protected
@@ -4315,33 +4521,64 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
     QTableView::paintEvent(event);
 
     // --- Selection range outer border (Excel-style) ---
-    // Draw ONE rectangle around the entire selection, not per-cell borders.
+    // Draw a separate rounded rectangle border around EACH selection range.
     {
         QItemSelection sel = selectionModel()->selection();
-        if (!sel.isEmpty() && sel.first().width() * sel.first().height() > 1) {
-            // Get bounding rect of selection in pixel coordinates
-            int minR = INT_MAX, maxR = 0, minC = INT_MAX, maxC = 0;
+        if (!sel.isEmpty()) {
+            QPainter painter(viewport());
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            QPen borderPen(ThemeManager::instance().currentTheme().focusBorderColor, 2, Qt::SolidLine);
+            painter.setPen(borderPen);
+            painter.setBrush(Qt::NoBrush);
+
             for (const auto& range : sel) {
-                minR = qMin(minR, range.top());
-                maxR = qMax(maxR, range.bottom());
-                minC = qMin(minC, range.left());
-                maxC = qMax(maxC, range.right());
-            }
+                // Skip single-cell ranges (current cell already has focus border)
+                if (range.width() == 1 && range.height() == 1 && sel.size() == 1) continue;
 
-            QModelIndex topLeft = model()->index(minR, minC);
-            QModelIndex bottomRight = model()->index(maxR, maxC);
-            QRect tlRect = visualRect(topLeft);
-            QRect brRect = visualRect(bottomRight);
+                QModelIndex topLeft = model()->index(range.top(), range.left());
+                QModelIndex bottomRight = model()->index(range.bottom(), range.right());
+                QRect tlRect = visualRect(topLeft);
+                QRect brRect = visualRect(bottomRight);
 
-            if (tlRect.isValid() && brRect.isValid()) {
-                QRect selPixelRect = tlRect.united(brRect);
-                QPainter painter(viewport());
-                painter.setRenderHint(QPainter::Antialiasing, false);
-                QPen borderPen(ThemeManager::instance().currentTheme().focusBorderColor, 2, Qt::SolidLine);
-                painter.setPen(borderPen);
-                painter.setBrush(Qt::NoBrush);
-                painter.drawRect(selPixelRect.adjusted(0, 0, 0, 0));
+                if (tlRect.isValid() && brRect.isValid()) {
+                    QRect rangePixelRect = tlRect.united(brRect);
+                    painter.drawRoundedRect(rangePixelRect, 3, 3);
+                }
             }
+        }
+    }
+
+    // --- Marching ants animation around clipboard range (Ctrl+C) ---
+    if (m_hasClipboardRange) {
+        // m_clipboardRange stores: x()=minCol, y()=minRow, width()=maxCol, height()=maxRow
+        int minCol = m_clipboardRange.x();
+        int minRow = m_clipboardRange.y();
+        int maxCol = m_clipboardRange.width();
+        int maxRow = m_clipboardRange.height();
+
+        QModelIndex topLeft = model()->index(minRow, minCol);
+        QModelIndex bottomRight = model()->index(maxRow, maxCol);
+        QRect tlRect = visualRect(topLeft);
+        QRect brRect = visualRect(bottomRight);
+
+        if (tlRect.isValid() && brRect.isValid()) {
+            QRect clipPixelRect = tlRect.united(brRect);
+            QPainter antsPainter(viewport());
+            antsPainter.setRenderHint(QPainter::Antialiasing, false);
+
+            // White background line (so dashes are visible on any background)
+            QPen bgPen(Qt::white, 2, Qt::SolidLine);
+            antsPainter.setPen(bgPen);
+            antsPainter.setBrush(Qt::NoBrush);
+            antsPainter.drawRect(clipPixelRect);
+
+            // Animated dashed foreground line
+            QPen dashPen(QColor("#1a73e8"), 2, Qt::CustomDashLine);
+            QVector<qreal> pattern = {6, 4};
+            dashPen.setDashPattern(pattern);
+            dashPen.setDashOffset(m_marchingAntsOffset);
+            antsPainter.setPen(dashPen);
+            antsPainter.drawRect(clipPixelRect);
         }
     }
 
@@ -4584,6 +4821,20 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
         QPainter gutterPainter(this);
         paintOutlineGutter(gutterPainter);
     }
+}
+
+// ============== Marching ants (clipboard range animation) ==============
+
+void SpreadsheetView::onMarchingAntsTick() {
+    m_marchingAntsOffset = (m_marchingAntsOffset + 1) % 10;
+    viewport()->update();
+}
+
+void SpreadsheetView::clearClipboardRange() {
+    m_hasClipboardRange = false;
+    m_marchingAntsOffset = 0;
+    if (m_marchingAntsTimer) m_marchingAntsTimer->stop();
+    viewport()->update();
 }
 
 // ============== Fill series helpers ==============

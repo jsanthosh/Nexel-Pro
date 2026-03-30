@@ -373,6 +373,14 @@ private:
     // Picklist popup re-entry guard
     bool m_picklistPopupOpen = false;
 
+    // Marching ants for clipboard (Ctrl+C animated dashed border)
+    QTimer* m_marchingAntsTimer = nullptr;
+    int m_marchingAntsOffset = 0;
+    QRect m_clipboardRange;  // row/col bounds of copied range (top, left, bottom, right stored as x=left, y=top, width=right, height=bottom)
+    bool m_hasClipboardRange = false;
+    void clearClipboardRange();
+    void onMarchingAntsTick();
+
     // Trace arrows state
     bool m_showPrecedents = false;
     bool m_showDependents = false;

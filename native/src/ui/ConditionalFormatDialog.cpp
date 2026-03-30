@@ -82,7 +82,8 @@ ConditionalFormatDialog::ConditionalFormatDialog(const CellRange& defaultRange,
     styleLayout->addWidget(m_fgColorBtn);
 
     m_bgColorBtn = new QPushButton("Fill Color", this);
-    m_bgColorBtn->setStyleSheet("QPushButton { background-color: #FFFFFF; border: 1px solid #CCC; }");
+    m_bgColorBtn->setStyleSheet(QString("QPushButton { background-color: #FFFFFF; border: 1px solid %1; }")
+        .arg(ThemeManager::instance().currentTheme().dialogGroupBoxBorder.name()));
     m_bgColorBtn->setFixedWidth(90);
     styleLayout->addWidget(m_bgColorBtn);
 
@@ -90,12 +91,11 @@ ConditionalFormatDialog::ConditionalFormatDialog(const CellRange& defaultRange,
 
     QHBoxLayout* actionBtns = new QHBoxLayout();
     QPushButton* addBtn = new QPushButton("Add Rule", this);
-    addBtn->setStyleSheet(QString("QPushButton { background-color: %1; color: white; padding: 5px 16px; border-radius: 3px; }")
-        .arg(ThemeManager::instance().currentTheme().accentDark.name()));
+    addBtn->setProperty("primary", true);
     actionBtns->addWidget(addBtn);
 
     m_updateBtn = new QPushButton("Update Selected", this);
-    m_updateBtn->setStyleSheet("QPushButton { background-color: #0078D4; color: white; padding: 5px 16px; border-radius: 3px; }");
+    m_updateBtn->setProperty("primary", true);
     m_updateBtn->setEnabled(false);
     actionBtns->addWidget(m_updateBtn);
     actionBtns->addStretch();
@@ -139,7 +139,8 @@ ConditionalFormatDialog::ConditionalFormatDialog(const CellRange& defaultRange,
         if (color.isValid()) {
             m_selectedBgColor = color;
             m_bgColorBtn->setStyleSheet(
-                QString("QPushButton { background-color: %1; border: 1px solid #CCC; }").arg(color.name()));
+                QString("QPushButton { background-color: %1; border: 1px solid %2; }")
+                    .arg(color.name(), ThemeManager::instance().currentTheme().dialogGroupBoxBorder.name()));
         }
     });
 
@@ -230,7 +231,8 @@ void ConditionalFormatDialog::onRuleSelected(int row) {
     m_selectedBgColor = QColor(s.backgroundColor.isEmpty() ? "#FFFFFF" : s.backgroundColor);
     m_selectedFgColor = QColor(s.foregroundColor.isEmpty() ? "#000000" : s.foregroundColor);
     m_bgColorBtn->setStyleSheet(
-        QString("QPushButton { background-color: %1; border: 1px solid #CCC; }").arg(m_selectedBgColor.name()));
+        QString("QPushButton { background-color: %1; border: 1px solid %2; }")
+            .arg(m_selectedBgColor.name(), ThemeManager::instance().currentTheme().dialogGroupBoxBorder.name()));
     m_fgColorBtn->setStyleSheet(
         QString("QPushButton { border-bottom: 3px solid %1; }").arg(m_selectedFgColor.name()));
 }

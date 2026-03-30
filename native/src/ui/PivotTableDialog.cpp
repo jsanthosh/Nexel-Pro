@@ -68,6 +68,7 @@ void PivotTableDialog::createLayout() {
     QVBoxLayout* zonesLayout = new QVBoxLayout();
     zonesLayout->setSpacing(6);
 
+    const auto& zt = ThemeManager::instance().currentTheme();
     auto createZone = [&](const QString& title, QListWidget*& zone,
                           QPushButton*& addBtn, QPushButton*& removeBtn) {
         QGroupBox* group = new QGroupBox(title);
@@ -79,14 +80,17 @@ void PivotTableDialog::createLayout() {
         QHBoxLayout* btnLayout = new QHBoxLayout();
         addBtn = new QPushButton("+");
         addBtn->setFixedSize(28, 24);
-        addBtn->setStyleSheet("QPushButton { background: #E8F0FE; border: 1px solid #4A90D9; "
-                               "border-radius: 4px; font-weight: bold; color: #4A90D9; }"
-                               "QPushButton:hover { background: #D6E4F0; }");
+        addBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; border: 1px solid %2; "
+            "border-radius: 4px; font-weight: bold; color: %2; }"
+            "QPushButton:hover { background: %3; }")
+            .arg(zt.accentLight.name(), zt.accentDark.name(), zt.accentLight.name()));
         removeBtn = new QPushButton("-");
         removeBtn->setFixedSize(28, 24);
-        removeBtn->setStyleSheet("QPushButton { background: #FEE8E8; border: 1px solid #D94A4A; "
-                                  "border-radius: 4px; font-weight: bold; color: #D94A4A; }"
-                                  "QPushButton:hover { background: #F0D6D6; }");
+        removeBtn->setStyleSheet(
+            "QPushButton { background: #FEE8E8; border: 1px solid #D94A4A; "
+            "border-radius: 4px; font-weight: bold; color: #D94A4A; }"
+            "QPushButton:hover { background: #F0D6D6; }");
         btnLayout->addWidget(addBtn);
         btnLayout->addWidget(removeBtn);
         btnLayout->addStretch();
@@ -113,14 +117,17 @@ void PivotTableDialog::createLayout() {
     QHBoxLayout* valBtnLayout = new QHBoxLayout();
     addValBtn = new QPushButton("+");
     addValBtn->setFixedSize(28, 24);
-    addValBtn->setStyleSheet("QPushButton { background: #E8F0FE; border: 1px solid #4A90D9; "
-                              "border-radius: 4px; font-weight: bold; color: #4A90D9; }"
-                              "QPushButton:hover { background: #D6E4F0; }");
+    addValBtn->setStyleSheet(QString(
+        "QPushButton { background: %1; border: 1px solid %2; "
+        "border-radius: 4px; font-weight: bold; color: %2; }"
+        "QPushButton:hover { background: %3; }")
+        .arg(zt.accentLight.name(), zt.accentDark.name(), zt.accentLight.name()));
     removeValBtn = new QPushButton("-");
     removeValBtn->setFixedSize(28, 24);
-    removeValBtn->setStyleSheet("QPushButton { background: #FEE8E8; border: 1px solid #D94A4A; "
-                                 "border-radius: 4px; font-weight: bold; color: #D94A4A; }"
-                                 "QPushButton:hover { background: #F0D6D6; }");
+    removeValBtn->setStyleSheet(
+        "QPushButton { background: #FEE8E8; border: 1px solid #D94A4A; "
+        "border-radius: 4px; font-weight: bold; color: #D94A4A; }"
+        "QPushButton:hover { background: #F0D6D6; }");
     valBtnLayout->addWidget(addValBtn);
     valBtnLayout->addWidget(removeValBtn);
     valBtnLayout->addWidget(new QLabel("Agg:"));
@@ -175,18 +182,9 @@ void PivotTableDialog::createLayout() {
     QDialogButtonBox* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText("Create Pivot Table");
-    {
-        const auto& t = ThemeManager::instance().currentTheme();
-        buttons->button(QDialogButtonBox::Ok)->setStyleSheet(QString(
-            "QPushButton { background: %1; color: white; border: none; border-radius: 4px; "
-            "padding: 8px 24px; font-weight: bold; }"
-            "QPushButton:hover { background: %2; }")
-            .arg(t.accentDark.name(), t.accentDarker.name()));
-    }
-    buttons->button(QDialogButtonBox::Cancel)->setStyleSheet(
-        "QPushButton { background: #F0F2F5; border: 1px solid #D0D5DD; border-radius: 4px; "
-        "padding: 8px 20px; }"
-        "QPushButton:hover { background: #E8ECF0; }");
+    buttons->button(QDialogButtonBox::Ok)->setProperty("primary", true);
+    buttons->button(QDialogButtonBox::Ok)->setDefault(true);
+    buttons->button(QDialogButtonBox::Cancel)->setProperty("secondary", true);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     mainLayout->addWidget(buttons);
@@ -443,7 +441,7 @@ void PivotTableDialog::updatePreview() {
                 double val = result.data[r][c].toDouble();
                 auto* cell = new QTableWidgetItem(QString::number(val, 'f', 0));
                 cell->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                if (r % 2 == 1) cell->setBackground(QColor("#E8F0FE"));
+                if (r % 2 == 1) cell->setBackground(ThemeManager::instance().currentTheme().accentLight);
                 m_previewTable->setItem(r, col, cell);
             }
         }

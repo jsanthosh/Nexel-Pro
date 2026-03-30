@@ -12,7 +12,7 @@ SortDialog::SortDialog(int startCol, int endCol, bool hasHeaders, QWidget* paren
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(10);
-    mainLayout->setContentsMargins(16, 16, 16, 16);
+    mainLayout->setContentsMargins(12, 12, 12, 12);
 
     // Header checkbox
     m_headersCheckbox = new QCheckBox("My data has headers", this);
@@ -49,18 +49,10 @@ SortDialog::SortDialog(int startCol, int endCol, bool hasHeaders, QWidget* paren
     btnRow->setSpacing(8);
     m_addBtn = new QPushButton("+ Add Level", this);
     m_addBtn->setFixedWidth(110);
-    m_addBtn->setStyleSheet(
-        "QPushButton { background: #4285f4; color: white; border: none; "
-        "border-radius: 4px; padding: 5px 12px; font-weight: 500; }"
-        "QPushButton:hover { background: #3367d6; }"
-        "QPushButton:disabled { background: #ccc; }");
+    m_addBtn->setProperty("primary", true);
     m_deleteBtn = new QPushButton("Delete Level", this);
     m_deleteBtn->setFixedWidth(110);
-    m_deleteBtn->setStyleSheet(
-        "QPushButton { background: #f0f0f0; color: #344054; border: 1px solid #d0d5dd; "
-        "border-radius: 4px; padding: 5px 12px; font-weight: 500; }"
-        "QPushButton:hover { background: #e0e0e0; }"
-        "QPushButton:disabled { background: #f8f8f8; color: #aaa; }");
+    m_deleteBtn->setProperty("secondary", true);
     btnRow->addWidget(m_addBtn);
     btnRow->addWidget(m_deleteBtn);
     btnRow->addStretch();
@@ -83,16 +75,10 @@ SortDialog::SortDialog(int startCol, int endCol, bool hasHeaders, QWidget* paren
     auto* okBtn = new QPushButton("OK", this);
     okBtn->setDefault(true);
     okBtn->setFixedWidth(80);
-    okBtn->setStyleSheet(
-        "QPushButton { background: #4285f4; color: white; border: none; "
-        "border-radius: 4px; padding: 6px 16px; font-weight: 600; }"
-        "QPushButton:hover { background: #3367d6; }");
+    okBtn->setProperty("primary", true);
     auto* cancelBtn = new QPushButton("Cancel", this);
     cancelBtn->setFixedWidth(80);
-    cancelBtn->setStyleSheet(
-        "QPushButton { background: #f0f0f0; color: #344054; border: 1px solid #d0d5dd; "
-        "border-radius: 4px; padding: 6px 16px; font-weight: 500; }"
-        "QPushButton:hover { background: #e0e0e0; }");
+    cancelBtn->setProperty("secondary", true);
     okCancelRow->addWidget(okBtn);
     okCancelRow->addWidget(cancelBtn);
     mainLayout->addLayout(okCancelRow);
