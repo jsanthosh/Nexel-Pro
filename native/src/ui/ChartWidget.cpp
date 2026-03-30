@@ -667,25 +667,30 @@ void ChartWidget::drawDataLabels(QPainter& p, const QRect& plotArea) {
 
     QFont labelFont("Arial", 8);
     p.setFont(labelFont);
-    p.setPen(QColor("#333333"));
+    QFontMetrics fm(labelFont);
 
-    for (int si = 0; si < m_config.series.size(); ++si) {
+    int numSeries = m_config.series.size();
+    int numPoints = m_config.series[0].yValues.size();
+    if (numPoints == 0) return;
+
+    bool isColumn = (m_config.type == ChartType::Column || m_config.type == ChartType::Histogram);
+    bool isBar = (m_config.type == ChartType::Bar);
+    bool isPie = (m_config.type == ChartType::Pie || m_config.type == ChartType::Donut);
+
+    // Calculate total for percentage
+    double total = 0;
+    if (m_config.dataLabelShowPercentage) {
+        for (const auto& s : m_config.series)
+            for (double v : s.yValues) total += std::abs(v);
+    }
+
+    for (int si = 0; si < numSeries; ++si) {
         if (!isSeriesVisible(si)) continue;
         const auto& s = m_config.series[si];
         int n = s.yValues.size();
-
-        // Calculate total for percentage
-        double total = 0;
-        if (m_config.dataLabelShowPercentage) {
-            for (double v : s.yValues) total += std::abs(v);
-        }
+        p.setPen(QColor("#333333"));
 
         for (int i = 0; i < n; ++i) {
-            double xFrac = (n > 1) ? static_cast<double>(i) / (n - 1) : 0.5;
-            double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
-            int px = plotArea.left() + static_cast<int>(xFrac * plotArea.width());
-            int py = plotArea.bottom() - static_cast<int>(yFrac * plotArea.height());
-
             // Build label text
             QStringList parts;
             if (m_config.dataLabelShowSeriesName) parts << s.name;
@@ -699,18 +704,104 @@ void ChartWidget::drawDataLabels(QPainter& p, const QRect& plotArea) {
             QString label = parts.join(", ");
             if (label.isEmpty()) continue;
 
-            QFontMetrics fm(labelFont);
             int tw = fm.horizontalAdvance(label);
             int th = fm.height();
 
-            int lx = px - tw / 2;
-            int ly = py;
-            switch (m_config.dataLabelPosition) {
-                case DataLabelPosition::Above: ly = py - th - 2; break;
-                case DataLabelPosition::Below: ly = py + 4; break;
-                case DataLabelPosition::Center: ly = py - th / 2; break;
-                default: ly = py - th - 2; break;
+            int lx, ly;
+
+            if (isColumn) {
+                // Match exact bar geometry from drawColumnChart
+                double groupWidth = static_cast<double>(plotArea.width()) / numPoints;
+                double barWidth = (groupWidth * 0.7) / numSeries;
+                double gap = groupWidth * 0.15;
+
+                double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
+                int barHeight = static_cast<int>(yFrac * plotArea.height());
+                int barX = plotArea.left() + static_cast<int>(i * groupWidth + gap + si * barWidth);
+                int barTop = plotArea.bottom() - barHeight;
+                int barBottom = plotArea.bottom();
+                int barCenterX = barX + static_cast<int>(barWidth) / 2;
+
+                lx = barCenterX - tw / 2;
+                switch (m_config.dataLabelPosition) {
+                    case DataLabelPosition::Above:
+                    case DataLabelPosition::OutsideEnd:
+                        ly = barTop - th - 3;
+                        break;
+                    case DataLabelPosition::Below:
+                        ly = barBottom + 3;
+                        break;
+                    case DataLabelPosition::Center:
+                        ly = barTop + (barHeight - th) / 2;
+                        break;
+                    case DataLabelPosition::InsideEnd:
+                        ly = barTop + 3;
+                        break;
+                    default:
+                        ly = barTop - th - 3;
+                        break;
+                }
+            } else if (isBar) {
+                // Match exact bar geometry from drawBarChart
+                double groupHeight = static_cast<double>(plotArea.height()) / numPoints;
+                double bh = (groupHeight * 0.7) / numSeries;
+                double gap = groupHeight * 0.15;
+
+                double xFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
+                int barW = static_cast<int>(xFrac * plotArea.width());
+                int barY = plotArea.top() + static_cast<int>(i * groupHeight + gap + si * bh);
+                int barRight = plotArea.left() + barW;
+                int barCenterY = barY + static_cast<int>(bh) / 2;
+
+                ly = barCenterY - th / 2;
+                switch (m_config.dataLabelPosition) {
+                    case DataLabelPosition::Above:
+                    case DataLabelPosition::OutsideEnd:
+                        lx = barRight + 4;
+                        break;
+                    case DataLabelPosition::Below:
+                        lx = plotArea.left() - tw - 4;
+                        break;
+                    case DataLabelPosition::Center:
+                        lx = plotArea.left() + (barW - tw) / 2;
+                        break;
+                    case DataLabelPosition::InsideEnd:
+                        lx = barRight - tw - 4;
+                        break;
+                    default:
+                        lx = barRight + 4;
+                        break;
+                }
+            } else if (isPie) {
+                // For pie: skip here, handled in drawPieChart
+                continue;
+            } else {
+                // Line, Area, Scatter -- point-based positioning
+                double xFrac = (n > 1) ? static_cast<double>(i) / (n - 1) : 0.5;
+                double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
+                int px = plotArea.left() + static_cast<int>(xFrac * plotArea.width());
+                int py = plotArea.bottom() - static_cast<int>(yFrac * plotArea.height());
+
+                lx = px - tw / 2;
+                switch (m_config.dataLabelPosition) {
+                    case DataLabelPosition::Above:
+                        ly = py - th - 4;
+                        break;
+                    case DataLabelPosition::Below:
+                        ly = py + 6;
+                        break;
+                    case DataLabelPosition::Center:
+                        ly = py - th / 2;
+                        break;
+                    default:
+                        ly = py - th - 4;
+                        break;
+                }
             }
+
+            // Clamp to plot area
+            lx = qMax(plotArea.left(), qMin(lx, plotArea.right() - tw));
+            ly = qMax(plotArea.top() - th, qMin(ly, plotArea.bottom()));
 
             p.drawText(lx, ly, tw, th, Qt::AlignCenter, label);
         }

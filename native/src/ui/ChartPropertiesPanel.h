@@ -132,6 +132,18 @@ private:
 
     QScrollArea* m_scrollArea = nullptr;
     bool m_updating = false;
+
+    // Section containers (for show/hide by element)
+    QWidget* m_sectionChartType = nullptr;
+    QWidget* m_sectionTitleLabels = nullptr;
+    QWidget* m_sectionStyle = nullptr;
+    QWidget* m_sectionData = nullptr;
+    QWidget* m_sectionSeriesColors = nullptr;
+    QWidget* m_sectionLegend = nullptr;
+    QWidget* m_sectionDataLabels = nullptr;
+    QWidget* m_sectionYAxis = nullptr;
+    QWidget* m_sectionChartOptions = nullptr;
+    QWidget* m_sectionTrendline = nullptr;
 };
 
 #endif // CHARTPROPERTIESPANEL_H
