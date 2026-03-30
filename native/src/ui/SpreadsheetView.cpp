@@ -3391,9 +3391,10 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    // Alt+Enter: insert line break in cell
+    // Alt+Enter (Win) / Option+Enter / Ctrl+Enter (Mac): insert line break in cell
     if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
-        && (event->modifiers() & Qt::AltModifier)) {
+        && (event->modifiers() & (Qt::AltModifier | Qt::ControlModifier))
+        && !(event->modifiers() & Qt::ShiftModifier)) {
         QModelIndex idx = currentIndex();
         if (state() == QAbstractItemView::EditingState) {
             QWidget* editor = indexWidget(idx);
