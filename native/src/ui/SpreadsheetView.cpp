@@ -3398,7 +3398,14 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         QModelIndex idx = currentIndex();
         if (!idx.isValid() || !m_spreadsheet) { event->accept(); return; }
 
-        // Get current text (from editor if editing, or from cell)
+        // If already in multiline editor, insert newline directly
+        if (m_multilineEditor && m_multilineEditor->isVisible()) {
+            m_multilineEditor->textCursor().insertText("\n");
+            event->accept();
+            return;
+        }
+
+        // Get current text (from QLineEdit editor if editing, or from cell)
         QString text;
         int insertPos = -1;
         if (state() == QAbstractItemView::EditingState) {
@@ -3408,7 +3415,6 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
                 text = lineEdit->text();
                 insertPos = lineEdit->cursorPosition();
             }
-            // Close editor without committing (we'll set value directly)
             setState(QAbstractItemView::NoState);
         } else {
             auto cell = m_spreadsheet->getCellIfExists(idx.row(), idx.column());
@@ -3416,37 +3422,28 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
             insertPos = text.length();
         }
 
-        // Insert newline at cursor position
+        // Insert newline and open multiline editor
         text.insert(insertPos, '\n');
-
-        // Set value directly and enable wrap text
-        CellAddress addr{idx.row(), idx.column()};
-        m_spreadsheet->setCellValue(addr, text);
-
-        // Auto-enable wrap text for this cell
-        auto cell = m_spreadsheet->getCell(addr);
-        CellStyle style = cell->getStyle();
-        if (style.textOverflow != TextOverflowMode::Wrap) {
-            style.textOverflow = TextOverflowMode::Wrap;
-            cell->setStyle(style);
-        }
-
-        // Refresh and re-enter edit mode at position after the newline
-        refreshView();
-        setCurrentIndex(idx);
-        edit(idx);
-
-        // Position cursor after the inserted newline
-        QTimer::singleShot(0, this, [this, idx, insertPos]() {
-            QWidget* editor = indexWidget(idx);
-            if (!editor) editor = viewport()->findChild<QLineEdit*>();
-            if (auto* lineEdit = qobject_cast<QLineEdit*>(editor)) {
-                // QLineEdit shows \n as space — position cursor after it
-                lineEdit->setCursorPosition(insertPos + 1);
-            }
-        });
+        openMultilineEditor(idx, text, insertPos + 1);
 
         event->accept();
+        return;
+    }
+
+    // If multiline editor is open, route keys to it
+    if (m_multilineEditor && m_multilineEditor->isVisible()) {
+        if (event->key() == Qt::Key_Escape) {
+            cancelMultilineEditor();
+            event->accept();
+            return;
+        }
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            && !(event->modifiers() & (Qt::AltModifier | Qt::ControlModifier))) {
+            commitMultilineEditor();
+            event->accept();
+            return;
+        }
+        // Let the multiline editor handle all other keys
         return;
     }
 
@@ -7045,4 +7042,90 @@ void SpreadsheetView::handleOutlineGutterClick(const QPoint& pos) {
             }
         }
     }
+}
+
+// ============================================================================
+// Multiline cell editor (QPlainTextEdit overlay for Alt+Enter)
+// ============================================================================
+
+void SpreadsheetView::openMultilineEditor(const QModelIndex& idx, const QString& text, int cursorPos) {
+    // Close any existing multiline editor
+    if (m_multilineEditor) {
+        commitMultilineEditor();
+    }
+
+    m_multilineIndex = idx;
+
+    // Create QPlainTextEdit overlay on the cell
+    m_multilineEditor = new QPlainTextEdit(viewport());
+    m_multilineEditor->setPlainText(text);
+
+    // Style to match cell editor look
+    const auto& t = ThemeManager::instance().currentTheme();
+    m_multilineEditor->setStyleSheet(QString(
+        "QPlainTextEdit { background: white; color: black; padding: 2px 4px; "
+        "border: 2px solid %1; font-size: %2px; font-family: %3; }")
+        .arg(t.editorBorderColor.name())
+        .arg(font().pointSize() > 0 ? font().pointSize() : 11)
+        .arg(font().family()));
+    m_multilineEditor->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_multilineEditor->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_multilineEditor->setTabChangesFocus(true);
+
+    // Position over the cell, expanding downward
+    QRect cellRect = visualRect(idx);
+    int minHeight = qMax(cellRect.height() * 3, 80);  // at least 3 rows tall
+    int editorWidth = qMax(cellRect.width(), 200);
+    m_multilineEditor->setGeometry(cellRect.x(), cellRect.y(), editorWidth, minHeight);
+    m_multilineEditor->show();
+    m_multilineEditor->setFocus();
+
+    // Position cursor
+    QTextCursor tc = m_multilineEditor->textCursor();
+    tc.setPosition(qMin(cursorPos, text.length()));
+    m_multilineEditor->setTextCursor(tc);
+
+    // Auto-resize as user types
+    connect(m_multilineEditor, &QPlainTextEdit::textChanged, this, [this]() {
+        if (!m_multilineEditor) return;
+        QRect cellRect = visualRect(m_multilineIndex);
+        int docHeight = static_cast<int>(m_multilineEditor->document()->size().height()) + 16;
+        int minHeight = qMax(cellRect.height() * 3, 80);
+        int h = qMax(docHeight, minHeight);
+        int w = qMax(cellRect.width(), 200);
+        m_multilineEditor->setGeometry(cellRect.x(), cellRect.y(), w, h);
+    });
+}
+
+void SpreadsheetView::commitMultilineEditor() {
+    if (!m_multilineEditor || !m_spreadsheet) return;
+
+    QString text = m_multilineEditor->toPlainText();
+    CellAddress addr{m_multilineIndex.row(), m_multilineIndex.column()};
+
+    // Set cell value
+    m_spreadsheet->setCellValue(addr, text);
+
+    // Auto-enable wrap text if there are newlines
+    if (text.contains('\n')) {
+        auto cell = m_spreadsheet->getCell(addr);
+        CellStyle style = cell->getStyle();
+        if (style.textOverflow != TextOverflowMode::Wrap) {
+            style.textOverflow = TextOverflowMode::Wrap;
+            cell->setStyle(style);
+        }
+    }
+
+    // Clean up
+    m_multilineEditor->deleteLater();
+    m_multilineEditor = nullptr;
+    setFocus();
+    refreshView();
+}
+
+void SpreadsheetView::cancelMultilineEditor() {
+    if (!m_multilineEditor) return;
+    m_multilineEditor->deleteLater();
+    m_multilineEditor = nullptr;
+    setFocus();
 }

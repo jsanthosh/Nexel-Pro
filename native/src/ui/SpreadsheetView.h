@@ -8,6 +8,7 @@
 #include <QVariantAnimation>
 #include <QTimer>
 #include <QScrollBar>
+#include <QPlainTextEdit>
 #include <memory>
 #include <functional>
 #include "../core/Cell.h"
@@ -392,6 +393,13 @@ private:
     static constexpr int OUTLINE_GUTTER_WIDTH = 16; // pixels per outline level
     int outlineGutterTotalWidth() const;
     void handleOutlineGutterClick(const QPoint& pos);
+
+    // Multiline cell editor (QPlainTextEdit overlay for Alt+Enter)
+    QPlainTextEdit* m_multilineEditor = nullptr;
+    QModelIndex m_multilineIndex;
+    void openMultilineEditor(const QModelIndex& idx, const QString& text, int cursorPos);
+    void commitMultilineEditor();
+    void cancelMultilineEditor();
 };
 
 #endif // SPREADSHEETVIEW_H
