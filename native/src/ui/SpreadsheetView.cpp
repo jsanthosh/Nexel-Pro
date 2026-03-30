@@ -517,8 +517,8 @@ void SpreadsheetView::currentChanged(const QModelIndex& current, const QModelInd
     // Force repaint of previous cell to clear its focus border and fill handle
     if (previous.isValid()) {
         QRect prevRect = visualRect(previous);
-        // Expand to cover 2px focus border + fill handle (7px square at corner)
-        viewport()->update(prevRect.adjusted(-2, -2, 6, 6));
+        // Expand to cover 2px focus border + fill handle (8px square at corner)
+        viewport()->update(prevRect.adjusted(-2, -2, 7, 7));
     }
     // Also invalidate the old fill handle rect
     if (!m_fillHandleRect.isNull()) {
@@ -3571,18 +3571,57 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    // F2: Edit current cell (like Excel)
-    if (event->key() == Qt::Key_F2) {
-        if (isCellProtected()) {
-            QMessageBox::warning(this, "Protected Sheet",
-                "The cell or chart you're trying to change is on a protected sheet.\n"
-                "To make changes, unprotect the sheet (Data menu > Protect Sheet).");
-            event->accept();
-            return;
+    // Arrow keys in multi-cell selection: move active cell within selection, don't change selection
+    // This matches Excel behavior where arrows navigate within the selected range.
+    if (!ctrl && !shift && !m_formulaEditMode
+        && state() != QAbstractItemView::EditingState
+        && (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down
+            || event->key() == Qt::Key_Left || event->key() == Qt::Key_Right)) {
+        QItemSelection sel = selectionModel()->selection();
+        if (!sel.isEmpty()) {
+            QItemSelectionRange range = sel.first();
+            if (range.width() > 1 || range.height() > 1) {
+                int row = currentIndex().row();
+                int col = currentIndex().column();
+                switch (event->key()) {
+                    case Qt::Key_Up:    row = qMax(range.top(), row - 1); break;
+                    case Qt::Key_Down:  row = qMin(range.bottom(), row + 1); break;
+                    case Qt::Key_Left:  col = qMax(range.left(), col - 1); break;
+                    case Qt::Key_Right: col = qMin(range.right(), col + 1); break;
+                }
+                QModelIndex idx = model()->index(row, col);
+                selectionModel()->setCurrentIndex(idx, QItemSelectionModel::NoUpdate);
+                scrollTo(idx);
+                event->accept();
+                return;
+            }
         }
-        QModelIndex current = currentIndex();
-        if (current.isValid() && state() != QAbstractItemView::EditingState) {
-            edit(current);
+    }
+
+    // F2: Edit current cell / toggle Edit mode vs Enter mode (like Excel)
+    if (event->key() == Qt::Key_F2) {
+        if (state() == QAbstractItemView::EditingState) {
+            // Toggle between Edit mode (arrows navigate within text) and
+            // Enter mode (arrows commit and move to next cell) — Excel F2 behavior
+            if (m_delegate) {
+                m_delegate->setFormulaEditMode(!m_delegate->isFormulaEditMode());
+            }
+        } else {
+            if (isCellProtected()) {
+                QMessageBox::warning(this, "Protected Sheet",
+                    "The cell or chart you're trying to change is on a protected sheet.\n"
+                    "To make changes, unprotect the sheet (Data menu > Protect Sheet).");
+                event->accept();
+                return;
+            }
+            QModelIndex current = currentIndex();
+            if (current.isValid()) {
+                edit(current);
+                // Enter Edit mode by default when F2 is pressed (arrows stay in text)
+                if (m_delegate) {
+                    m_delegate->setFormulaEditMode(true);
+                }
+            }
         }
         event->accept();
         return;
@@ -3615,6 +3654,13 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
     // ===== Ctrl/Cmd+Shift+V: Paste Special =====
     if (ctrl && shift && event->key() == Qt::Key_V) {
         pasteSpecial();
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl/Cmd+Shift+L: Toggle AutoFilter (Excel shortcut) =====
+    if (ctrl && shift && event->key() == Qt::Key_L) {
+        toggleAutoFilter();
         event->accept();
         return;
     }
@@ -4684,12 +4730,12 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
         }
     }
 
-    // Draw fill handle on current selection
+    // Draw fill handle on current selection (Excel-style solid square at bottom-right corner)
     QModelIndex current = currentIndex();
     if (current.isValid() && !m_fillDragging) {
         QRect selRect = getSelectionBoundingRect();
         if (!selRect.isNull()) {
-            int handleSize = 7;
+            int handleSize = 8;
             m_fillHandleRect = QRect(
                 selRect.right() - handleSize / 2,
                 selRect.bottom() - handleSize / 2,
@@ -4697,7 +4743,9 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
 
             QPainter painter(viewport());
             painter.setRenderHint(QPainter::Antialiasing, false);
+            // Solid filled square with the focus border color (Excel green)
             painter.fillRect(m_fillHandleRect, ThemeManager::instance().currentTheme().focusBorderColor);
+            // Thin white outline for visibility against any background
             painter.setPen(QPen(Qt::white, 1));
             painter.drawRect(m_fillHandleRect);
         }
@@ -4892,7 +4940,8 @@ QRect SpreadsheetView::getSelectionBoundingRect() const {
 
 bool SpreadsheetView::isOverFillHandle(const QPoint& pos) const {
     if (m_fillHandleRect.isNull()) return false;
-    QRect hitRect = m_fillHandleRect.adjusted(-4, -4, 4, 4);
+    // Generous hit area (5px padding) so it's easy to grab the fill handle
+    QRect hitRect = m_fillHandleRect.adjusted(-5, -5, 5, 5);
     return hitRect.contains(pos);
 }
 

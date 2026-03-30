@@ -157,10 +157,15 @@ bool CellDelegate::eventFilter(QObject* object, QEvent* event) {
 
         // Arrow keys during editing: commit and move (like Excel)
         // But NOT during formula edit mode — arrows navigate in the formula text
+        // Also, if the editor has selected text, let arrows deselect first (Excel behavior)
         if (!m_formulaEditMode &&
             (keyEvent->key() == Qt::Key_Up || keyEvent->key() == Qt::Key_Down ||
              keyEvent->key() == Qt::Key_Left || keyEvent->key() == Qt::Key_Right)) {
             if (editor) {
+                // If editor has selected text, let the arrow key deselect it first
+                if (editor->hasSelectedText())
+                    return QStyledItemDelegate::eventFilter(object, event);
+
                 // Left/Right: only commit if cursor is at boundary
                 if (keyEvent->key() == Qt::Key_Left && editor->cursorPosition() > 0)
                     return QStyledItemDelegate::eventFilter(object, event);

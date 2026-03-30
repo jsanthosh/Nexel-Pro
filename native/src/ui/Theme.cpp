@@ -44,8 +44,8 @@ static NexelTheme createNexelGreen() {
     t.headerBorder       = QColor("#DADCE0");
     t.headerText         = QColor("#333333");
     t.selectionTint      = QColor(198, 217, 240, 60);
-    t.focusBorderColor   = QColor(16, 124, 16);
-    t.editorBorderColor  = QColor("#107C10");
+    t.focusBorderColor   = QColor("#217346");   // Excel's exact active cell border green
+    t.editorBorderColor  = QColor("#217346");
 
     // Tab Bar
     t.bottomBarBackground   = QColor("#F3F3F3");

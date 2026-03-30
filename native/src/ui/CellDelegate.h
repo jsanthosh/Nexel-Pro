@@ -33,6 +33,7 @@ public:
     bool showGridlines() const { return m_showGridlines; }
 
     void setFormulaEditMode(bool active) { m_formulaEditMode = active; }
+    bool isFormulaEditMode() const { return m_formulaEditMode; }
     void onThemeChanged() {} // QPainter reads theme at paint time
 
 signals:
