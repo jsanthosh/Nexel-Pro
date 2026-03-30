@@ -73,6 +73,7 @@ set(CORE_SOURCES
     src/core/FormulaFunctions3.cpp
     src/core/FormulaFunctions4.cpp
     src/core/FormulaFunctions5.cpp
+    src/core/FormulaFunctionsBatch5.cpp
     src/core/FormulaMetadata.h
     src/core/CellRange.cpp
     src/core/CellRange.h
@@ -155,6 +156,8 @@ set(UI_SOURCES
     src/ui/FindReplaceDialog.h
     src/ui/GoToDialog.cpp
     src/ui/GoToDialog.h
+    src/ui/SortDialog.cpp
+    src/ui/SortDialog.h
     src/ui/ConditionalFormatDialog.cpp
     src/ui/ConditionalFormatDialog.h
     src/ui/DataValidationDialog.cpp

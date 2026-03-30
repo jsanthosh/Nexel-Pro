@@ -489,6 +489,53 @@ private:
     QVariant funcLOGINV(const std::vector<QVariant>& args);
     QVariant funcCRITBINOM(const std::vector<QVariant>& args);
 
+    // === Batch 6 — FormulaFunctionsBatch5.cpp (40 new functions) ===
+    // Complex number functions
+    QVariant funcIMABS(const std::vector<QVariant>& args);
+    QVariant funcIMARGUMENT(const std::vector<QVariant>& args);
+    QVariant funcIMCONJUGATE(const std::vector<QVariant>& args);
+    QVariant funcIMSUM(const std::vector<QVariant>& args);
+    QVariant funcIMSUB(const std::vector<QVariant>& args);
+    QVariant funcIMPRODUCT(const std::vector<QVariant>& args);
+    QVariant funcIMDIV(const std::vector<QVariant>& args);
+    QVariant funcIMPOWER(const std::vector<QVariant>& args);
+    QVariant funcIMSQRT(const std::vector<QVariant>& args);
+    QVariant funcIMEXP(const std::vector<QVariant>& args);
+    QVariant funcIMLN(const std::vector<QVariant>& args);
+    QVariant funcIMLOG2(const std::vector<QVariant>& args);
+    QVariant funcIMLOG10(const std::vector<QVariant>& args);
+    QVariant funcIMSIN(const std::vector<QVariant>& args);
+    QVariant funcIMCOS(const std::vector<QVariant>& args);
+    // Matrix functions
+    QVariant funcMINVERSE(const std::vector<QVariant>& args);
+    QVariant funcMDETERM(const std::vector<QVariant>& args);
+    // Bessel functions
+    QVariant funcBESSELI(const std::vector<QVariant>& args);
+    QVariant funcBESSELJ(const std::vector<QVariant>& args);
+    QVariant funcBESSELK(const std::vector<QVariant>& args);
+    QVariant funcBESSELY(const std::vector<QVariant>& args);
+    // Statistical
+    QVariant funcPHI(const std::vector<QVariant>& args);
+    QVariant funcGAUSS(const std::vector<QVariant>& args);
+    QVariant funcMODE_MULT(const std::vector<QVariant>& args);
+    // Financial
+    QVariant funcVDB(const std::vector<QVariant>& args);
+    // Information
+    QVariant funcCELL(const std::vector<QVariant>& args);
+    QVariant funcINFO(const std::vector<QVariant>& args);
+    // Math — trig
+    QVariant funcACOT(const std::vector<QVariant>& args);
+    QVariant funcACOTH(const std::vector<QVariant>& args);
+    QVariant funcCOT(const std::vector<QVariant>& args);
+    QVariant funcCOTH(const std::vector<QVariant>& args);
+    QVariant funcCSC(const std::vector<QVariant>& args);
+    QVariant funcCSCH(const std::vector<QVariant>& args);
+    QVariant funcSEC(const std::vector<QVariant>& args);
+    QVariant funcSECH(const std::vector<QVariant>& args);
+    // Database
+    QVariant funcDSTDEVP(const std::vector<QVariant>& args);
+    QVariant funcDVARP(const std::vector<QVariant>& args);
+
     // AST-based evaluation (parse once, evaluate many — 10x faster recalc)
     QVariant evaluateAST(uint32_t nodeIndex);
     QVariant evaluateASTFunction(uint16_t funcId, const QVariantList& argNodeIndices);

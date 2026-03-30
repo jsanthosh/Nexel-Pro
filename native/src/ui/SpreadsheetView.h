@@ -81,9 +81,15 @@ public:
     // Format painter
     void activateFormatPainter();
 
+    // Sheet protection
+    void protectSheet(const QString& password = QString());
+    void unprotectSheet(const QString& password = QString());
+    bool isSheetProtected() const;
+
     // Sorting
     void sortAscending();
     void sortDescending();
+    void showSortDialog();
 
     // Insert/Delete with shift
     void insertCellsShiftRight();
@@ -189,6 +195,12 @@ public:
     void traceDependents();
     void clearTraceArrows();
 
+    // Outline/grouping support
+    void groupSelectedRows();
+    void ungroupSelectedRows();
+    void groupSelectedColumns();
+    void ungroupSelectedColumns();
+
 signals:
     void cellSelected(int row, int col, const QString& content, const QString& address);
     void formatCellsRequested();
@@ -212,6 +224,7 @@ protected:
     bool viewportEvent(QEvent* event) override;
     void closeEditor(QWidget* editor, QAbstractItemDelegate::EndEditHint hint) override;
     void commitData(QWidget* editor) override;
+    void paintOutlineGutter(QPainter& painter);
 
 private slots:
     void onCellClicked(const QModelIndex& index);
@@ -366,6 +379,11 @@ private:
     CellAddress m_traceCell;
     std::vector<CellAddress> m_tracedCells;
     void drawTraceArrows(QPainter& painter);
+
+    // Outline gutter state
+    static constexpr int OUTLINE_GUTTER_WIDTH = 16; // pixels per outline level
+    int outlineGutterTotalWidth() const;
+    void handleOutlineGutterClick(const QPoint& pos);
 };
 
 #endif // SPREADSHEETVIEW_H

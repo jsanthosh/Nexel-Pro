@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <map>
+#include <set>
 #include <memory>
 #include <vector>
 #include <functional>
@@ -90,6 +91,13 @@ public:
 
     // Sorting
     void sortRange(const CellRange& range, int sortColumn, bool ascending);
+    void sortRangeMulti(const CellRange& range, const std::vector<std::pair<int, bool>>& sortKeys);
+
+    // Sheet protection
+    void setProtected(bool protect, const QString& password = QString());
+    bool isProtected() const;
+    bool checkProtectionPassword(const QString& password) const;
+    const QString& getProtectionPasswordHash() const { return m_protectionPasswordHash; }
 
     // Parallel search: find all cells matching query string across the entire sheet
     // Returns vector of matching cell addresses. Uses multi-threaded column scan.
@@ -229,6 +237,24 @@ public:
     const NamedRange* getNamedRange(const QString& name) const;
     const std::map<QString, NamedRange>& getNamedRanges() const;
 
+    // Row/Column grouping (outline)
+    void groupRows(int startRow, int endRow);
+    void ungroupRows(int startRow, int endRow);
+    void groupColumns(int startCol, int endCol);
+    void ungroupColumns(int startCol, int endCol);
+    int getRowOutlineLevel(int row) const;
+    int getColumnOutlineLevel(int col) const;
+    void setRowOutlineCollapsed(int row, bool collapsed);
+    void setColumnOutlineCollapsed(int col, bool collapsed);
+    bool isRowOutlineCollapsed(int row) const;
+    bool isColumnOutlineCollapsed(int col) const;
+    int getMaxRowOutlineLevel() const;
+    int getMaxColumnOutlineLevel() const;
+    const std::map<int, int>& getRowOutlineLevels() const { return m_rowOutlineLevels; }
+    const std::map<int, int>& getColumnOutlineLevels() const { return m_colOutlineLevels; }
+    void toggleRowGroup(int groupEndRow, int level);
+    void toggleColumnGroup(int groupEndCol, int level);
+
     // Mutable table access (for re-theming)
     std::vector<SpreadsheetTable>& getTablesRef() { return m_tables; }
 
@@ -303,6 +329,8 @@ private:
     std::map<int, int> m_rowHeights;     // row -> height in pixels
     std::map<int, int> m_columnWidths;   // col -> width in pixels
     bool m_showGridlines = true;
+    bool m_isProtected = false;
+    QString m_protectionPasswordHash;
     DocumentTheme m_documentTheme = defaultDocumentTheme();
     CellStyle m_defaultCellStyle;
     bool m_hasDefaultStyle = false;
@@ -310,6 +338,12 @@ private:
     std::map<QString, NamedRange> m_namedRanges;
     std::unordered_map<CellKey, SparklineConfig, CellKeyHash> m_sparklines;
     std::unordered_map<CellKey, CellRange, CellKeyHash> m_spillRanges; // formula cell -> spill output range
+
+    // Row/Column grouping (outline) data
+    std::map<int, int> m_rowOutlineLevels;   // row -> outline level (1-8)
+    std::map<int, int> m_colOutlineLevels;   // col -> outline level (1-8)
+    std::set<int> m_collapsedRowGroups;      // set of row indices where groups are collapsed
+    std::set<int> m_collapsedColGroups;      // set of col indices where groups are collapsed
 
     // Lazy navigation index — built on first query, invalidated on modification
     mutable std::unordered_map<int, std::vector<int>> m_colIndexCache; // col → sorted rows

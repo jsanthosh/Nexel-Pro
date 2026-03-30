@@ -1395,6 +1395,147 @@ void Spreadsheet::sortRange(const CellRange& range, int sortColumn, bool ascendi
     m_navIndexDirty = true;
 }
 
+void Spreadsheet::sortRangeMulti(const CellRange& range, const std::vector<std::pair<int, bool>>& sortKeys) {
+    if (sortKeys.empty()) return;
+
+    int startRow = range.getStart().row;
+    int endRow = range.getEnd().row;
+    int startCol = range.getStart().col;
+    int endCol = range.getEnd().col;
+    if (startRow >= endRow) return;
+
+    int numRows = endRow - startRow + 1;
+    int numKeys = static_cast<int>(sortKeys.size());
+
+    // Extract sort keys for all sort columns at once
+    struct SortKey {
+        double numericKey;
+        QString stringKey;
+        bool isNumeric;
+        bool isEmpty;
+    };
+
+    // keys[keyIndex][rowIndex]
+    std::vector<std::vector<SortKey>> allKeys(numKeys, std::vector<SortKey>(numRows));
+
+    for (int k = 0; k < numKeys; ++k) {
+        int sortColumn = sortKeys[k].first;
+
+        auto extractKey = [&](int i) {
+            int r = startRow + i;
+            auto& key = allKeys[k][i];
+
+            if (!m_columnStore.hasCell(r, sortColumn)) {
+                key.isEmpty = true;
+                key.isNumeric = false;
+                key.numericKey = 0;
+                return;
+            }
+
+            CellDataType type = m_columnStore.getCellType(r, sortColumn);
+            key.isEmpty = (type == CellDataType::Empty);
+
+            if (type == CellDataType::Double || type == CellDataType::Date) {
+                key.isNumeric = true;
+                auto* col = m_columnStore.getColumn(sortColumn);
+                auto* chunk = col ? col->getChunk(r) : nullptr;
+                if (chunk) {
+                    int offset = r - chunk->baseRow;
+                    int idx = chunk->denseIndex(offset);
+                    key.numericKey = chunk->values[idx];
+                }
+            } else if (type == CellDataType::Boolean) {
+                key.isNumeric = true;
+                auto* col = m_columnStore.getColumn(sortColumn);
+                auto* chunk = col ? col->getChunk(r) : nullptr;
+                if (chunk) {
+                    int offset = r - chunk->baseRow;
+                    int idx = chunk->denseIndex(offset);
+                    key.numericKey = chunk->values[idx];
+                }
+            } else {
+                QVariant val = CellProxy(&m_columnStore, r, sortColumn).getValue();
+                key.isNumeric = false;
+                key.stringKey = val.toString();
+                bool ok;
+                double d = key.stringKey.toDouble(&ok);
+                if (ok) {
+                    key.isNumeric = true;
+                    key.numericKey = d;
+                    key.stringKey.clear();
+                }
+            }
+        };
+
+        if (numRows > 10000) {
+            std::vector<int> rowIndices(numRows);
+            std::iota(rowIndices.begin(), rowIndices.end(), 0);
+            QtConcurrent::blockingMap(rowIndices, extractKey);
+        } else {
+            for (int i = 0; i < numRows; ++i) extractKey(i);
+        }
+    }
+
+    // Build index array and sort with multi-level comparator
+    std::vector<int> indices(numRows);
+    std::iota(indices.begin(), indices.end(), 0);
+
+    std::sort(indices.begin(), indices.end(), [&](int ai, int bi) {
+        for (int k = 0; k < numKeys; ++k) {
+            const auto& a = allKeys[k][ai];
+            const auto& b = allKeys[k][bi];
+            bool asc = sortKeys[k].second;
+
+            // Empty cells always sort to the end
+            if (a.isEmpty && b.isEmpty) continue;
+            if (a.isEmpty) return false;
+            if (b.isEmpty) return true;
+
+            if (a.isNumeric && b.isNumeric) {
+                if (a.numericKey != b.numericKey) {
+                    return asc ? (a.numericKey < b.numericKey) : (a.numericKey > b.numericKey);
+                }
+                continue; // tie — check next key
+            }
+            // Mixed: numbers before strings
+            if (a.isNumeric != b.isNumeric) return a.isNumeric;
+
+            int cmp = a.stringKey.compare(b.stringKey, Qt::CaseInsensitive);
+            if (cmp != 0) {
+                return asc ? (cmp < 0) : (cmp > 0);
+            }
+            // tie — check next key
+        }
+        return false; // all keys equal — stable
+    });
+
+    // Apply permutation to all columns in range
+    m_columnStore.applyPermutation(startRow, startCol, endCol, indices);
+
+    m_maxRowColDirty = true;
+    m_navIndexDirty = true;
+}
+
+// ============================================================================
+// Sheet protection
+// ============================================================================
+void Spreadsheet::setProtected(bool protect, const QString& password) {
+    m_isProtected = protect;
+    if (!password.isEmpty()) {
+        // Simple hash for password verification (not cryptographic security)
+        m_protectionPasswordHash = QString::number(qHash(password));
+    } else {
+        m_protectionPasswordHash.clear();
+    }
+}
+
+bool Spreadsheet::isProtected() const { return m_isProtected; }
+
+bool Spreadsheet::checkProtectionPassword(const QString& password) const {
+    if (m_protectionPasswordHash.isEmpty()) return true;
+    return QString::number(qHash(password)) == m_protectionPasswordHash;
+}
+
 // ============================================================================
 // Parallel search across all cells
 // ============================================================================
@@ -1883,4 +2024,199 @@ void Spreadsheet::applySpillResult(const CellAddress& formulaCell,
     m_spillRanges[key] = CellRange(startRow, startCol, startRow + rows - 1, startCol + cols - 1);
     m_maxRowColDirty = true;
     m_navIndexDirty = true;
+}
+
+// ============== Row/Column Grouping (Outline) ==============
+
+void Spreadsheet::groupRows(int startRow, int endRow) {
+    for (int r = startRow; r <= endRow; ++r) {
+        int level = m_rowOutlineLevels[r] + 1;
+        if (level > 8) level = 8; // Excel max outline level
+        m_rowOutlineLevels[r] = level;
+    }
+}
+
+void Spreadsheet::ungroupRows(int startRow, int endRow) {
+    for (int r = startRow; r <= endRow; ++r) {
+        auto it = m_rowOutlineLevels.find(r);
+        if (it != m_rowOutlineLevels.end()) {
+            it->second--;
+            if (it->second <= 0) {
+                m_rowOutlineLevels.erase(it);
+            }
+        }
+    }
+}
+
+void Spreadsheet::groupColumns(int startCol, int endCol) {
+    for (int c = startCol; c <= endCol; ++c) {
+        int level = m_colOutlineLevels[c] + 1;
+        if (level > 8) level = 8;
+        m_colOutlineLevels[c] = level;
+    }
+}
+
+void Spreadsheet::ungroupColumns(int startCol, int endCol) {
+    for (int c = startCol; c <= endCol; ++c) {
+        auto it = m_colOutlineLevels.find(c);
+        if (it != m_colOutlineLevels.end()) {
+            it->second--;
+            if (it->second <= 0) {
+                m_colOutlineLevels.erase(it);
+            }
+        }
+    }
+}
+
+int Spreadsheet::getRowOutlineLevel(int row) const {
+    auto it = m_rowOutlineLevels.find(row);
+    return (it != m_rowOutlineLevels.end()) ? it->second : 0;
+}
+
+int Spreadsheet::getColumnOutlineLevel(int col) const {
+    auto it = m_colOutlineLevels.find(col);
+    return (it != m_colOutlineLevels.end()) ? it->second : 0;
+}
+
+void Spreadsheet::setRowOutlineCollapsed(int row, bool collapsed) {
+    if (collapsed) m_collapsedRowGroups.insert(row);
+    else m_collapsedRowGroups.erase(row);
+}
+
+void Spreadsheet::setColumnOutlineCollapsed(int col, bool collapsed) {
+    if (collapsed) m_collapsedColGroups.insert(col);
+    else m_collapsedColGroups.erase(col);
+}
+
+bool Spreadsheet::isRowOutlineCollapsed(int row) const {
+    return m_collapsedRowGroups.count(row) > 0;
+}
+
+bool Spreadsheet::isColumnOutlineCollapsed(int col) const {
+    return m_collapsedColGroups.count(col) > 0;
+}
+
+int Spreadsheet::getMaxRowOutlineLevel() const {
+    int maxLevel = 0;
+    for (const auto& [row, level] : m_rowOutlineLevels) {
+        if (level > maxLevel) maxLevel = level;
+    }
+    return maxLevel;
+}
+
+int Spreadsheet::getMaxColumnOutlineLevel() const {
+    int maxLevel = 0;
+    for (const auto& [col, level] : m_colOutlineLevels) {
+        if (level > maxLevel) maxLevel = level;
+    }
+    return maxLevel;
+}
+
+void Spreadsheet::toggleRowGroup(int groupEndRow, int level) {
+    // Find all consecutive rows at or above `level` ending at groupEndRow
+    // Walk backward from groupEndRow to find the group start
+    int groupStart = groupEndRow;
+    while (groupStart > 0) {
+        int prevLevel = getRowOutlineLevel(groupStart - 1);
+        if (prevLevel >= level) {
+            groupStart--;
+        } else {
+            break;
+        }
+    }
+
+    // Check if this group is currently collapsed
+    bool isCollapsed = m_collapsedRowGroups.count(groupEndRow) > 0;
+
+    if (isCollapsed) {
+        // Expand: restore row heights (show rows)
+        m_collapsedRowGroups.erase(groupEndRow);
+        for (int r = groupStart; r <= groupEndRow; ++r) {
+            if (getRowOutlineLevel(r) >= level) {
+                // Only restore if not part of a deeper nested collapsed group
+                bool nestedCollapsed = false;
+                for (int checkRow : m_collapsedRowGroups) {
+                    if (checkRow >= groupStart && checkRow <= groupEndRow) {
+                        // There's a nested collapsed group; check if row r is in it
+                        int nestedStart = checkRow;
+                        int nestedLevel = getRowOutlineLevel(checkRow);
+                        while (nestedStart > groupStart && getRowOutlineLevel(nestedStart - 1) >= nestedLevel) {
+                            nestedStart--;
+                        }
+                        if (r >= nestedStart && r <= checkRow && getRowOutlineLevel(r) >= nestedLevel) {
+                            nestedCollapsed = true;
+                            break;
+                        }
+                    }
+                }
+                if (!nestedCollapsed) {
+                    // Restore default height (remove the 0-height marker)
+                    auto it = m_rowHeights.find(r);
+                    if (it != m_rowHeights.end() && it->second == 0) {
+                        m_rowHeights.erase(it);
+                    }
+                }
+            }
+        }
+    } else {
+        // Collapse: hide rows by setting height to 0
+        m_collapsedRowGroups.insert(groupEndRow);
+        for (int r = groupStart; r <= groupEndRow; ++r) {
+            if (getRowOutlineLevel(r) >= level) {
+                m_rowHeights[r] = 0;
+            }
+        }
+    }
+}
+
+void Spreadsheet::toggleColumnGroup(int groupEndCol, int level) {
+    // Find group start by walking backward
+    int groupStart = groupEndCol;
+    while (groupStart > 0) {
+        int prevLevel = getColumnOutlineLevel(groupStart - 1);
+        if (prevLevel >= level) {
+            groupStart--;
+        } else {
+            break;
+        }
+    }
+
+    bool isCollapsed = m_collapsedColGroups.count(groupEndCol) > 0;
+
+    if (isCollapsed) {
+        // Expand: restore column widths
+        m_collapsedColGroups.erase(groupEndCol);
+        for (int c = groupStart; c <= groupEndCol; ++c) {
+            if (getColumnOutlineLevel(c) >= level) {
+                bool nestedCollapsed = false;
+                for (int checkCol : m_collapsedColGroups) {
+                    if (checkCol >= groupStart && checkCol <= groupEndCol) {
+                        int nestedStart = checkCol;
+                        int nestedLevel = getColumnOutlineLevel(checkCol);
+                        while (nestedStart > groupStart && getColumnOutlineLevel(nestedStart - 1) >= nestedLevel) {
+                            nestedStart--;
+                        }
+                        if (c >= nestedStart && c <= checkCol && getColumnOutlineLevel(c) >= nestedLevel) {
+                            nestedCollapsed = true;
+                            break;
+                        }
+                    }
+                }
+                if (!nestedCollapsed) {
+                    auto it = m_columnWidths.find(c);
+                    if (it != m_columnWidths.end() && it->second == 0) {
+                        m_columnWidths.erase(it);
+                    }
+                }
+            }
+        }
+    } else {
+        // Collapse: hide columns by setting width to 0
+        m_collapsedColGroups.insert(groupEndCol);
+        for (int c = groupStart; c <= groupEndCol; ++c) {
+            if (getColumnOutlineLevel(c) >= level) {
+                m_columnWidths[c] = 0;
+            }
+        }
+    }
 }

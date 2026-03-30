@@ -926,6 +926,53 @@ QVariant FormulaEngine::evaluateFunction(const QString& fn, const std::vector<QV
     if (fn == "LOGINV") return funcLOGNORM_INV(args);
     if (fn == "CRITBINOM") return funcBINOM_INV(args);
 
+    // === Batch 6 — 40 new functions ===
+    // Complex number functions
+    if (fn == "IMABS") return funcIMABS(args);
+    if (fn == "IMARGUMENT") return funcIMARGUMENT(args);
+    if (fn == "IMCONJUGATE") return funcIMCONJUGATE(args);
+    if (fn == "IMSUM") return funcIMSUM(args);
+    if (fn == "IMSUB") return funcIMSUB(args);
+    if (fn == "IMPRODUCT") return funcIMPRODUCT(args);
+    if (fn == "IMDIV") return funcIMDIV(args);
+    if (fn == "IMPOWER") return funcIMPOWER(args);
+    if (fn == "IMSQRT") return funcIMSQRT(args);
+    if (fn == "IMEXP") return funcIMEXP(args);
+    if (fn == "IMLN") return funcIMLN(args);
+    if (fn == "IMLOG2") return funcIMLOG2(args);
+    if (fn == "IMLOG10") return funcIMLOG10(args);
+    if (fn == "IMSIN") return funcIMSIN(args);
+    if (fn == "IMCOS") return funcIMCOS(args);
+    // Matrix
+    if (fn == "MINVERSE") return funcMINVERSE(args);
+    if (fn == "MDETERM") return funcMDETERM(args);
+    // Bessel
+    if (fn == "BESSELI") return funcBESSELI(args);
+    if (fn == "BESSELJ") return funcBESSELJ(args);
+    if (fn == "BESSELK") return funcBESSELK(args);
+    if (fn == "BESSELY") return funcBESSELY(args);
+    // Statistical
+    if (fn == "PHI") return funcPHI(args);
+    if (fn == "GAUSS") return funcGAUSS(args);
+    if (fn == "MODE.MULT") return funcMODE_MULT(args);
+    // Financial
+    if (fn == "VDB") return funcVDB(args);
+    // Information
+    if (fn == "CELL") return funcCELL(args);
+    if (fn == "INFO") return funcINFO(args);
+    // Math — trig
+    if (fn == "ACOT") return funcACOT(args);
+    if (fn == "ACOTH") return funcACOTH(args);
+    if (fn == "COT") return funcCOT(args);
+    if (fn == "COTH") return funcCOTH(args);
+    if (fn == "CSC") return funcCSC(args);
+    if (fn == "CSCH") return funcCSCH(args);
+    if (fn == "SEC") return funcSEC(args);
+    if (fn == "SECH") return funcSECH(args);
+    // Database
+    if (fn == "DSTDEVP") return funcDSTDEVP(args);
+    if (fn == "DVARP") return funcDVARP(args);
+
     m_lastError = "Unknown function: " + fn;
     return QVariant("#NAME?");
 }

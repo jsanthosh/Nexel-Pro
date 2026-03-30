@@ -138,6 +138,9 @@ private slots:
     // Templates
     void onTemplateGallery();
 
+    // Sheet protection
+    void onProtectSheet();
+
 private:
     void createMenuBar();
     void createToolBar();
@@ -182,6 +185,7 @@ private:
     bool m_frozenPanes = false;
     bool m_dirty = false;
     QAction* m_gridlinesAction = nullptr;
+    QAction* m_protectSheetAction = nullptr;
 
     // Charts, shapes, and images (flat lists; each widget has "sheetIndex" property)
     ChartWidget* m_selectedChart = nullptr;

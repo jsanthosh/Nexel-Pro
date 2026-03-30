@@ -53,6 +53,9 @@
 #include <QUrl>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QLineEdit>
+#include <QLabel>
+#include <QDialogButtonBox>
 #include <QTabBar>
 #include <QToolButton>
 #include <QScrollBar>
@@ -659,6 +662,7 @@ void MainWindow::createMenuBar() {
     QMenu* dataMenu = menuBar->addMenu("&Data");
     dataMenu->addAction("Sort &Ascending", m_spreadsheetView, &SpreadsheetView::sortAscending);
     dataMenu->addAction("Sort &Descending", m_spreadsheetView, &SpreadsheetView::sortDescending);
+    dataMenu->addAction("Custom &Sort...", m_spreadsheetView, &SpreadsheetView::showSortDialog);
     dataMenu->addSeparator();
     dataMenu->addAction("&Data Validation...", this, &MainWindow::onDataValidation);
     dataMenu->addSeparator();
@@ -765,6 +769,18 @@ void MainWindow::createMenuBar() {
                 "Goal Seek could not find a solution.");
         }
     });
+    dataMenu->addSeparator();
+    QMenu* groupMenu = dataMenu->addMenu("&Group && Outline");
+    groupMenu->addAction("&Group Rows", QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_Right),
+        m_spreadsheetView, &SpreadsheetView::groupSelectedRows);
+    groupMenu->addAction("&Ungroup Rows", QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_Left),
+        m_spreadsheetView, &SpreadsheetView::ungroupSelectedRows);
+    groupMenu->addSeparator();
+    groupMenu->addAction("Group &Columns", m_spreadsheetView, &SpreadsheetView::groupSelectedColumns);
+    groupMenu->addAction("Ungroup C&olumns", m_spreadsheetView, &SpreadsheetView::ungroupSelectedColumns);
+
+    dataMenu->addSeparator();
+    m_protectSheetAction = dataMenu->addAction("&Protect Sheet...", this, &MainWindow::onProtectSheet);
 
     // ===== Formulas Menu =====
     QMenu* formulasMenu = menuBar->addMenu("&Formulas");
@@ -2376,6 +2392,69 @@ void MainWindow::onFreezePane() {
         m_frozenPanes = true;
         statusBar()->showMessage(QString("Panes frozen at %1")
             .arg(CellAddress(current.row(), current.column()).toString()));
+    }
+}
+
+void MainWindow::onProtectSheet() {
+    if (m_sheets.empty() || m_activeSheetIndex >= (int)m_sheets.size()) return;
+    auto& sheet = m_sheets[m_activeSheetIndex];
+
+    if (sheet->isProtected()) {
+        // Unprotect: ask for password if one was set
+        if (!sheet->getProtectionPasswordHash().isEmpty()) {
+            bool ok = false;
+            QString password = QInputDialog::getText(this, "Unprotect Sheet",
+                "Enter password to unprotect sheet:", QLineEdit::Password, QString(), &ok);
+            if (!ok) return;
+            if (!sheet->checkProtectionPassword(password)) {
+                QMessageBox::warning(this, "Unprotect Sheet", "Incorrect password.");
+                return;
+            }
+        }
+        sheet->setProtected(false);
+        if (m_protectSheetAction) m_protectSheetAction->setText("&Protect Sheet...");
+        statusBar()->showMessage("Sheet unprotected");
+    } else {
+        // Protect: show dialog with optional password
+        QDialog dlg(this);
+        dlg.setWindowTitle("Protect Sheet");
+        auto* layout = new QVBoxLayout(&dlg);
+
+        QLabel* label = new QLabel("Optionally enter a password to protect this sheet:", &dlg);
+        layout->addWidget(label);
+
+        QLineEdit* pwEdit = new QLineEdit(&dlg);
+        pwEdit->setEchoMode(QLineEdit::Password);
+        pwEdit->setPlaceholderText("Password (optional)");
+        layout->addWidget(pwEdit);
+
+        QLineEdit* pwConfirm = new QLineEdit(&dlg);
+        pwConfirm->setEchoMode(QLineEdit::Password);
+        pwConfirm->setPlaceholderText("Confirm password");
+        layout->addWidget(pwConfirm);
+
+        QLabel* infoLabel = new QLabel(
+            "All cells are locked by default. To allow editing specific cells,\n"
+            "select them and uncheck 'Locked' in Format Cells > Protection.", &dlg);
+        infoLabel->setStyleSheet("color: #666; font-size: 11px;");
+        layout->addWidget(infoLabel);
+
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+        if (dlg.exec() != QDialog::Accepted) return;
+
+        QString pw = pwEdit->text();
+        if (!pw.isEmpty() && pw != pwConfirm->text()) {
+            QMessageBox::warning(this, "Protect Sheet", "Passwords do not match.");
+            return;
+        }
+
+        m_spreadsheetView->protectSheet(pw);
+        if (m_protectSheetAction) m_protectSheetAction->setText("&Unprotect Sheet...");
+        statusBar()->showMessage("Sheet protected");
     }
 }
 

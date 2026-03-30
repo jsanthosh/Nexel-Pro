@@ -494,6 +494,10 @@ void FormatCellsDialog::loadStyle(const CellStyle& style) {
     m_fillColorBtn->setStyleSheet(
         QString("background-color: %1;").arg(bgDisplay.name()));
 
+    // Protection
+    if (m_lockedCheck) m_lockedCheck->setChecked(style.locked);
+    if (m_hiddenCheck) m_hiddenCheck->setChecked(style.hidden);
+
     updatePreview();
 }
 
@@ -521,6 +525,10 @@ CellStyle FormatCellsDialog::getStyle() const {
 
     // Fill
     style.backgroundColor = m_fillColorStr;
+
+    // Protection
+    style.locked = m_lockedCheck->isChecked() ? 1 : 0;
+    style.hidden = m_hiddenCheck->isChecked() ? 1 : 0;
 
     return style;
 }

@@ -85,11 +85,13 @@ struct CellStyle {
     uint8_t underline : 1;
     uint8_t strikethrough : 1;
     uint8_t useThousandsSeparator : 1;
-    uint8_t _reserved : 3;
+    uint8_t locked : 1;      // Cell is locked when sheet is protected (default: locked, like Excel)
+    uint8_t hidden : 1;      // Formula is hidden when sheet is protected
+    uint8_t _reserved : 1;
 
     CellStyle()
         : bold(0), italic(0), underline(0), strikethrough(0),
-          useThousandsSeparator(0), _reserved(0) {}
+          useThousandsSeparator(0), locked(1), hidden(0), _reserved(0) {}
 };
 
 class Cell {

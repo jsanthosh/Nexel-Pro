@@ -2,6 +2,7 @@
 #include "SpreadsheetModel.h"
 #include "CellDelegate.h"
 #include "PasteSpecialDialog.h"
+#include "SortDialog.h"
 #include "Theme.h"
 #include "../core/Spreadsheet.h"
 #include <algorithm>
@@ -45,6 +46,7 @@
 #include <QHelpEvent>
 #include <QDesktopServices>
 #include <QUrl>
+#include <QMessageBox>
 #include <algorithm>
 #include <cmath>
 
@@ -524,6 +526,20 @@ void SpreadsheetView::selectionChanged(const QItemSelection& selected, const QIt
 // ============== Clipboard operations ==============
 
 void SpreadsheetView::cut() {
+    if (m_spreadsheet && m_spreadsheet->isProtected()) {
+        // Check if any selected cell is locked
+        QModelIndexList selected = selectionModel()->selectedIndexes();
+        for (const auto& idx : selected) {
+            int row = m_model ? m_model->toLogicalRow(idx.row()) : idx.row();
+            auto cell = m_spreadsheet->getCell(row, idx.column());
+            if (cell->getStyle().locked) {
+                QMessageBox::warning(this, "Protected Sheet",
+                    "The cell or chart you're trying to change is on a protected sheet.\n"
+                    "To make changes, unprotect the sheet (Data menu > Protect Sheet).");
+                return;
+            }
+        }
+    }
     copy();
     deleteSelection();
 }
@@ -593,6 +609,17 @@ void SpreadsheetView::paste() {
 
     int startRow = logicalRow(current);
     int startCol = current.column();
+
+    // Protection check: block paste into locked cells on a protected sheet
+    if (m_spreadsheet->isProtected()) {
+        auto cell = m_spreadsheet->getCell(startRow, startCol);
+        if (cell->getStyle().locked) {
+            QMessageBox::warning(this, "Protected Sheet",
+                "The cell or chart you're trying to change is on a protected sheet.\n"
+                "To make changes, unprotect the sheet (Data menu > Protect Sheet).");
+            return;
+        }
+    }
 
     std::vector<CellSnapshot> before, after;
     m_model->setSuppressUndo(true);
@@ -833,6 +860,20 @@ void SpreadsheetView::pasteSpecial() {
 void SpreadsheetView::deleteSelection() {
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty() || !m_spreadsheet) return;
+
+    // Protection check: block delete on locked cells of a protected sheet
+    if (m_spreadsheet->isProtected()) {
+        for (const auto& idx : selected) {
+            int row = m_model ? m_model->toLogicalRow(idx.row()) : idx.row();
+            auto cell = m_spreadsheet->getCell(row, idx.column());
+            if (cell->getStyle().locked) {
+                QMessageBox::warning(this, "Protected Sheet",
+                    "The cell or chart you're trying to change is on a protected sheet.\n"
+                    "To make changes, unprotect the sheet (Data menu > Protect Sheet).");
+                return;
+            }
+        }
+    }
 
     std::vector<CellSnapshot> before, after;
 
@@ -1240,6 +1281,25 @@ void SpreadsheetView::activateFormatPainter() {
     viewport()->setCursor(Qt::CrossCursor);
 }
 
+// ============== Sheet Protection ==============
+
+void SpreadsheetView::protectSheet(const QString& password) {
+    if (m_spreadsheet) {
+        m_spreadsheet->setProtected(true, password);
+    }
+}
+
+void SpreadsheetView::unprotectSheet(const QString& password) {
+    if (!m_spreadsheet) return;
+    if (m_spreadsheet->checkProtectionPassword(password)) {
+        m_spreadsheet->setProtected(false);
+    }
+}
+
+bool SpreadsheetView::isSheetProtected() const {
+    return m_spreadsheet && m_spreadsheet->isProtected();
+}
+
 // ============== Sorting ==============
 
 void SpreadsheetView::sortAscending() {
@@ -1347,6 +1407,91 @@ void SpreadsheetView::sortDescending() {
         m_model->resetModel();
     }
 
+    int selMinR = 0, selMaxR = std::min(range.getEnd().row, m_model ? m_model->rowCount() - 1 : 0);
+    int selMinC = range.getStart().col, selMaxC = range.getEnd().col;
+    QModelIndex topLeft = m_model->index(selMinR, selMinC);
+    QModelIndex bottomRight = m_model->index(selMaxR, selMaxC);
+    selectionModel()->setCurrentIndex(topLeft, QItemSelectionModel::NoUpdate);
+    selectionModel()->select(QItemSelection(topLeft, bottomRight), QItemSelectionModel::ClearAndSelect);
+}
+
+void SpreadsheetView::showSortDialog() {
+    if (!m_spreadsheet) return;
+
+    QModelIndex current = currentIndex();
+    if (!current.isValid()) return;
+
+    // Determine range from selection (same logic as sortAscending)
+    QItemSelection sel = selectionModel()->selection();
+    CellRange range;
+    int minC = 0, maxC = 0;
+
+    if (!sel.isEmpty()) {
+        int minR = INT_MAX, maxR = 0;
+        minC = INT_MAX; maxC = 0;
+        for (const auto& r : sel) {
+            minR = qMin(minR, r.top());
+            maxR = qMax(maxR, r.bottom());
+            minC = qMin(minC, r.left());
+            maxC = qMax(maxC, r.right());
+        }
+        int modelRows = m_model ? m_model->rowCount() : 100;
+        bool isFullColumn = (maxR - minR + 1 >= modelRows - 1);
+
+        if (isFullColumn) {
+            int maxRow = m_spreadsheet->getMaxRow();
+            int maxCol = m_spreadsheet->getMaxColumn();
+            if (maxRow < 1) return;
+            minC = 0;
+            maxC = maxCol;
+            range = CellRange(CellAddress(0, 0), CellAddress(maxRow, maxCol));
+        } else if (minR < maxR) {
+            int logMinR = m_model ? m_model->toLogicalRow(minR) : minR;
+            int logMaxR = m_model ? m_model->toLogicalRow(maxR) : maxR;
+            range = CellRange(CellAddress(logMinR, minC), CellAddress(logMaxR, maxC));
+        }
+    }
+
+    if (!range.isValid()) {
+        int maxRow = m_spreadsheet->getMaxRow();
+        int maxCol = m_spreadsheet->getMaxColumn();
+        if (maxRow < 1 && maxCol < 1) return;
+        if (maxRow < 1) maxRow = 1;
+        minC = 0;
+        maxC = maxCol;
+        range = CellRange(CellAddress(0, 0), CellAddress(maxRow, maxCol));
+    }
+
+    // Show the sort dialog
+    SortDialog dialog(minC, maxC, false, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    auto levels = dialog.getSortLevels();
+    if (levels.empty()) return;
+
+    // If headers, skip the first row
+    CellRange sortRange = range;
+    if (dialog.hasHeaders()) {
+        int newStartRow = range.getStart().row + 1;
+        if (newStartRow > range.getEnd().row) return;
+        sortRange = CellRange(CellAddress(newStartRow, range.getStart().col),
+                              range.getEnd());
+    }
+
+    // Convert SortLevel to pair<int, bool> for the multi-sort API
+    std::vector<std::pair<int, bool>> sortKeys;
+    sortKeys.reserve(levels.size());
+    for (const auto& lvl : levels) {
+        sortKeys.emplace_back(lvl.column, lvl.ascending);
+    }
+
+    m_spreadsheet->sortRangeMulti(sortRange, sortKeys);
+
+    if (m_model) {
+        m_model->resetModel();
+    }
+
+    // Restore selection
     int selMinR = 0, selMaxR = std::min(range.getEnd().row, m_model ? m_model->rowCount() - 1 : 0);
     int selMinC = range.getStart().col, selMaxC = range.getEnd().col;
     QModelIndex topLeft = m_model->index(selMinR, selMinC);
@@ -2238,6 +2383,8 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
     QMenu* sortMenu = menu.addMenu("Sort");
     sortMenu->addAction("Sort A to Z", this, &SpreadsheetView::sortAscending);
     sortMenu->addAction("Sort Z to A", this, &SpreadsheetView::sortDescending);
+    sortMenu->addSeparator();
+    sortMenu->addAction("Custom Sort...", this, &SpreadsheetView::showSortDialog);
 
     menu.addSeparator();
 
@@ -3155,9 +3302,27 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
     bool ctrl = event->modifiers() & Qt::ControlModifier;
     bool shift = event->modifiers() & Qt::ShiftModifier;
 
+    // Sheet protection helper: returns true if the current cell is locked on a protected sheet
+    auto isCellProtected = [this]() -> bool {
+        if (!m_spreadsheet || !m_spreadsheet->isProtected()) return false;
+        QModelIndex cur = currentIndex();
+        if (!cur.isValid()) return false;
+        int row = m_model ? m_model->toLogicalRow(cur.row()) : cur.row();
+        int col = cur.column();
+        auto cell = m_spreadsheet->getCell(row, col);
+        return cell->getStyle().locked;
+    };
+
     // Delete / Backspace: clear selection (on Mac, "Delete" key = Backspace)
     if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
         if (state() != QAbstractItemView::EditingState) {
+            if (isCellProtected()) {
+                QMessageBox::warning(this, "Protected Sheet",
+                    "The cell or chart you're trying to change is on a protected sheet.\n"
+                    "To make changes, unprotect the sheet (Data menu > Protect Sheet).");
+                event->accept();
+                return;
+            }
             deleteSelection();
             event->accept();
             return;
@@ -3215,6 +3380,13 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
 
     // F2: Edit current cell (like Excel)
     if (event->key() == Qt::Key_F2) {
+        if (isCellProtected()) {
+            QMessageBox::warning(this, "Protected Sheet",
+                "The cell or chart you're trying to change is on a protected sheet.\n"
+                "To make changes, unprotect the sheet (Data menu > Protect Sheet).");
+            event->accept();
+            return;
+        }
         QModelIndex current = currentIndex();
         if (current.isValid() && state() != QAbstractItemView::EditingState) {
             edit(current);
@@ -3816,6 +3988,18 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         }
     }
 
+    // Block typing-to-edit if cell is protected
+    if (state() != QAbstractItemView::EditingState && !ctrl && !event->text().isEmpty()) {
+        QChar ch = event->text().at(0);
+        if (ch.isPrint() && isCellProtected()) {
+            QMessageBox::warning(this, "Protected Sheet",
+                "The cell or chart you're trying to change is on a protected sheet.\n"
+                "To make changes, unprotect the sheet (Data menu > Protect Sheet).");
+            event->accept();
+            return;
+        }
+    }
+
     QTableView::keyPressEvent(event);
 }
 
@@ -3877,6 +4061,18 @@ void SpreadsheetView::insertCellReference(const QString& ref) {
 }
 
 void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
+    // Outline gutter click: check if clicking on the outline gutter area
+    if (event->button() == Qt::LeftButton && m_spreadsheet && outlineGutterTotalWidth() > 0) {
+        handleOutlineGutterClick(event->pos());
+        // If click was in gutter area, it was already handled
+        QPoint vpPos = event->pos();
+        // The gutter is painted on the widget (not viewport), so we check against
+        // the vertical header area. The gutter is drawn to the left of the row header.
+        // But since we paint on the viewport, clicks on the gutter are actually in
+        // the negative x area relative to viewport, which maps to the header area.
+        // We handle this in handleOutlineGutterClick which uses mapToParent.
+    }
+
     // Filter button click: check if clicking on a filter dropdown button
     if (m_filterActive && event->button() == Qt::LeftButton && m_model) {
         QModelIndex clickedIdx = indexAt(event->pos());
@@ -4381,6 +4577,12 @@ void SpreadsheetView::paintEvent(QPaintEvent* event) {
     if ((m_showPrecedents || m_showDependents) && !m_tracedCells.empty() && m_model) {
         QPainter tracePainter(viewport());
         drawTraceArrows(tracePainter);
+    }
+
+    // Draw outline gutter (row grouping indicators)
+    if (m_spreadsheet && m_spreadsheet->getMaxRowOutlineLevel() > 0) {
+        QPainter gutterPainter(this);
+        paintOutlineGutter(gutterPainter);
     }
 }
 
@@ -6269,5 +6471,290 @@ void SpreadsheetView::drawTraceArrows(QPainter& painter) {
         // Draw a small dot at the source cell center
         painter.setBrush(arrowColor);
         painter.drawEllipse(from, 3.0, 3.0);
+    }
+}
+
+// ============== Row/Column Grouping (Outline) ==============
+
+void SpreadsheetView::groupSelectedRows() {
+    if (!m_spreadsheet) return;
+    QModelIndexList selected = selectionModel()->selectedIndexes();
+    if (selected.isEmpty()) return;
+
+    int minRow = INT_MAX, maxRow = 0;
+    for (const auto& idx : selected) {
+        int lr = logicalRow(idx);
+        if (lr < minRow) minRow = lr;
+        if (lr > maxRow) maxRow = lr;
+    }
+    m_spreadsheet->groupRows(minRow, maxRow);
+    viewport()->update();
+    update();
+}
+
+void SpreadsheetView::ungroupSelectedRows() {
+    if (!m_spreadsheet) return;
+    QModelIndexList selected = selectionModel()->selectedIndexes();
+    if (selected.isEmpty()) return;
+
+    int minRow = INT_MAX, maxRow = 0;
+    for (const auto& idx : selected) {
+        int lr = logicalRow(idx);
+        if (lr < minRow) minRow = lr;
+        if (lr > maxRow) maxRow = lr;
+    }
+    m_spreadsheet->ungroupRows(minRow, maxRow);
+    viewport()->update();
+    update();
+}
+
+void SpreadsheetView::groupSelectedColumns() {
+    if (!m_spreadsheet) return;
+    QModelIndexList selected = selectionModel()->selectedIndexes();
+    if (selected.isEmpty()) return;
+
+    int minCol = INT_MAX, maxCol = 0;
+    for (const auto& idx : selected) {
+        int c = idx.column();
+        if (c < minCol) minCol = c;
+        if (c > maxCol) maxCol = c;
+    }
+    m_spreadsheet->groupColumns(minCol, maxCol);
+    viewport()->update();
+    update();
+}
+
+void SpreadsheetView::ungroupSelectedColumns() {
+    if (!m_spreadsheet) return;
+    QModelIndexList selected = selectionModel()->selectedIndexes();
+    if (selected.isEmpty()) return;
+
+    int minCol = INT_MAX, maxCol = 0;
+    for (const auto& idx : selected) {
+        int c = idx.column();
+        if (c < minCol) minCol = c;
+        if (c > maxCol) maxCol = c;
+    }
+    m_spreadsheet->ungroupColumns(minCol, maxCol);
+    viewport()->update();
+    update();
+}
+
+int SpreadsheetView::outlineGutterTotalWidth() const {
+    if (!m_spreadsheet) return 0;
+    int maxLevel = m_spreadsheet->getMaxRowOutlineLevel();
+    if (maxLevel <= 0) return 0;
+    return (maxLevel + 1) * OUTLINE_GUTTER_WIDTH;
+}
+
+void SpreadsheetView::paintOutlineGutter(QPainter& painter) {
+    if (!m_spreadsheet || !m_model) return;
+
+    int maxLevel = m_spreadsheet->getMaxRowOutlineLevel();
+    if (maxLevel <= 0) return;
+
+    const auto& outlineLevels = m_spreadsheet->getRowOutlineLevels();
+    if (outlineLevels.empty()) return;
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    int headerWidth = verticalHeader()->width();
+    int headerHeight = horizontalHeader()->height();
+    int gutterWidth = outlineGutterTotalWidth();
+    int gutterX = headerWidth - gutterWidth;
+    if (gutterX < 0) gutterX = 0;
+
+    QColor lineColor(0x98, 0xA2, 0xB3);
+    QColor buttonColor(0x42, 0x85, 0xF4);
+    QColor bgColor(0xF5, 0xF5, 0xF5);
+
+    int totalH = height();
+    painter.fillRect(QRect(gutterX, headerHeight, gutterWidth, totalH - headerHeight), bgColor);
+
+    // Draw level buttons at the top
+    for (int lvl = 1; lvl <= maxLevel + 1; ++lvl) {
+        int btnX = gutterX + (lvl - 1) * OUTLINE_GUTTER_WIDTH;
+        int btnY = 2;
+        int btnSize = OUTLINE_GUTTER_WIDTH - 2;
+        QRect btnRect(btnX + 1, btnY, btnSize, btnSize);
+        painter.setPen(QPen(buttonColor, 1));
+        painter.setBrush(QColor(255, 255, 255));
+        painter.drawRoundedRect(btnRect, 2, 2);
+        painter.setPen(buttonColor);
+        QFont font = painter.font();
+        font.setPixelSize(10);
+        font.setBold(true);
+        painter.setFont(font);
+        painter.drawText(btnRect, Qt::AlignCenter, QString::number(lvl));
+    }
+
+    // Draw tree lines and collapse/expand buttons for each group at each level
+    for (int lvl = 1; lvl <= maxLevel; ++lvl) {
+        int colX = gutterX + (lvl - 1) * OUTLINE_GUTTER_WIDTH + OUTLINE_GUTTER_WIDTH / 2;
+
+        struct GroupInfo { int startRow; int endRow; bool collapsed; };
+        std::vector<GroupInfo> groups;
+        {
+            int gStart = -1;
+            for (auto it = outlineLevels.begin(); it != outlineLevels.end(); ++it) {
+                int row = it->first;
+                int rowLevel = it->second;
+                if (rowLevel >= lvl) {
+                    if (gStart < 0) gStart = row;
+                } else {
+                    if (gStart >= 0) {
+                        auto prevIt = std::prev(it);
+                        int gEnd = prevIt->first;
+                        groups.push_back({gStart, gEnd, m_spreadsheet->isRowOutlineCollapsed(gEnd)});
+                        gStart = -1;
+                    }
+                }
+            }
+            if (gStart >= 0) {
+                int gEnd = std::prev(outlineLevels.end())->first;
+                groups.push_back({gStart, gEnd, m_spreadsheet->isRowOutlineCollapsed(gEnd)});
+            }
+        }
+
+        for (const auto& grp : groups) {
+            int modelStart = m_model->toModelRow(grp.startRow);
+            int modelEnd = m_model->toModelRow(grp.endRow);
+            if (modelStart < 0) modelStart = 0;
+            if (modelEnd < 0) continue;
+
+            QRect startRect = visualRect(m_model->index(modelStart, 0));
+            QRect endRect = visualRect(m_model->index(modelEnd, 0));
+            int vpOffsetY = viewport()->mapTo(this, QPoint(0, 0)).y();
+            int yStart = startRect.top() + vpOffsetY;
+            int yEnd = endRect.bottom() + vpOffsetY;
+
+            if (yEnd < headerHeight || yStart > totalH) continue;
+            if (yStart < headerHeight) yStart = headerHeight;
+
+            // Vertical tree line
+            painter.setPen(QPen(lineColor, 1));
+            painter.drawLine(colX, yStart, colX, yEnd - 6);
+            // Horizontal tick
+            painter.drawLine(colX, yEnd - 6, colX + 5, yEnd - 6);
+
+            // Collapse/expand button
+            int bsz = 11;
+            QRect bRect(colX - bsz / 2, yEnd - bsz - 1, bsz, bsz);
+            painter.setPen(QPen(lineColor, 1));
+            painter.setBrush(QColor(255, 255, 255));
+            painter.drawRect(bRect);
+
+            painter.setPen(QPen(QColor(0x33, 0x33, 0x33), 1.5));
+            int cx = bRect.center().x();
+            int cy = bRect.center().y();
+            painter.drawLine(cx - 3, cy, cx + 3, cy);
+            if (grp.collapsed) {
+                painter.drawLine(cx, cy - 3, cx, cy + 3);
+            }
+        }
+    }
+
+    // Separator line
+    painter.setPen(QPen(lineColor, 1));
+    painter.drawLine(gutterX + gutterWidth - 1, headerHeight,
+                     gutterX + gutterWidth - 1, totalH);
+    painter.restore();
+}
+
+void SpreadsheetView::handleOutlineGutterClick(const QPoint& pos) {
+    if (!m_spreadsheet || !m_model) return;
+
+    int maxLevel = m_spreadsheet->getMaxRowOutlineLevel();
+    if (maxLevel <= 0) return;
+
+    int headerWidth = verticalHeader()->width();
+    int headerHeight = horizontalHeader()->height();
+    int gutterWidth = outlineGutterTotalWidth();
+    int gutterX = headerWidth - gutterWidth;
+    if (gutterX < 0) gutterX = 0;
+
+    int clickX = pos.x();
+    int clickY = pos.y();
+
+    if (clickX < gutterX || clickX >= gutterX + gutterWidth) return;
+    if (clickY < 0) return;
+
+    // Level button click
+    if (clickY < headerHeight) {
+        int levelClicked = (clickX - gutterX) / OUTLINE_GUTTER_WIDTH + 1;
+        if (levelClicked >= 1 && levelClicked <= maxLevel + 1) {
+            const auto& outlineLevels = m_spreadsheet->getRowOutlineLevels();
+            for (const auto& [row, level] : outlineLevels) {
+                int modelRow = m_model->toModelRow(row);
+                if (modelRow < 0) continue;
+                if (level >= levelClicked) {
+                    m_spreadsheet->setRowHeight(row, 0);
+                    setRowHidden(modelRow, true);
+                } else {
+                    if (m_spreadsheet->getRowHeight(row) == 0) {
+                        m_spreadsheet->getRowHeights().erase(row);
+                        setRowHidden(modelRow, false);
+                    }
+                }
+            }
+            viewport()->update();
+            update();
+            return;
+        }
+    }
+
+    // Collapse/expand button click
+    const auto& outlineLevels = m_spreadsheet->getRowOutlineLevels();
+    for (int lvl = 1; lvl <= maxLevel; ++lvl) {
+        int colX = gutterX + (lvl - 1) * OUTLINE_GUTTER_WIDTH + OUTLINE_GUTTER_WIDTH / 2;
+
+        std::vector<std::pair<int, int>> groups;
+        int gStart = -1;
+        for (auto it = outlineLevels.begin(); it != outlineLevels.end(); ++it) {
+            int row = it->first;
+            int rowLevel = it->second;
+            if (rowLevel >= lvl) {
+                if (gStart < 0) gStart = row;
+            } else {
+                if (gStart >= 0) {
+                    groups.push_back({gStart, std::prev(it)->first});
+                    gStart = -1;
+                }
+            }
+        }
+        if (gStart >= 0) {
+            groups.push_back({gStart, std::prev(outlineLevels.end())->first});
+        }
+
+        for (const auto& [grpStart, grpEnd] : groups) {
+            int modelEnd = m_model->toModelRow(grpEnd);
+            if (modelEnd < 0) continue;
+
+            QRect endRect = visualRect(m_model->index(modelEnd, 0));
+            int vpOffsetY = viewport()->mapTo(this, QPoint(0, 0)).y();
+            int yEnd = endRect.bottom() + vpOffsetY;
+
+            int bsz = 11;
+            QRect bRect(colX - bsz / 2, yEnd - bsz - 1, bsz, bsz);
+
+            if (bRect.adjusted(-3, -3, 3, 3).contains(QPoint(clickX, clickY))) {
+                m_spreadsheet->toggleRowGroup(grpEnd, lvl);
+                bool collapsed = m_spreadsheet->isRowOutlineCollapsed(grpEnd);
+                int scanStart = grpEnd;
+                while (scanStart > 0 && m_spreadsheet->getRowOutlineLevel(scanStart - 1) >= lvl) {
+                    scanStart--;
+                }
+                for (int r = scanStart; r <= grpEnd; ++r) {
+                    if (m_spreadsheet->getRowOutlineLevel(r) >= lvl) {
+                        int modelRow = m_model->toModelRow(r);
+                        if (modelRow >= 0) setRowHidden(modelRow, collapsed);
+                    }
+                }
+                viewport()->update();
+                update();
+                return;
+            }
+        }
     }
 }
