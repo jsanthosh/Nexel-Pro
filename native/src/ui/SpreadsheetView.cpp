@@ -3396,20 +3396,56 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         && (event->modifiers() & (Qt::AltModifier | Qt::ControlModifier))
         && !(event->modifiers() & Qt::ShiftModifier)) {
         QModelIndex idx = currentIndex();
+        if (!idx.isValid() || !m_spreadsheet) { event->accept(); return; }
+
+        // Get current text (from editor if editing, or from cell)
+        QString text;
+        int insertPos = -1;
         if (state() == QAbstractItemView::EditingState) {
             QWidget* editor = indexWidget(idx);
             if (!editor) editor = viewport()->findChild<QLineEdit*>();
             if (auto* lineEdit = qobject_cast<QLineEdit*>(editor)) {
-                int pos = lineEdit->cursorPosition();
-                QString text = lineEdit->text();
-                text.insert(pos, '\n');
-                lineEdit->setText(text);
-                lineEdit->setCursorPosition(pos + 1);
+                text = lineEdit->text();
+                insertPos = lineEdit->cursorPosition();
             }
+            // Close editor without committing (we'll set value directly)
+            setState(QAbstractItemView::NoState);
         } else {
-            // Start editing and prepare for multi-line input
-            if (idx.isValid()) edit(idx);
+            auto cell = m_spreadsheet->getCellIfExists(idx.row(), idx.column());
+            text = cell ? cell->getValue().toString() : QString();
+            insertPos = text.length();
         }
+
+        // Insert newline at cursor position
+        text.insert(insertPos, '\n');
+
+        // Set value directly and enable wrap text
+        CellAddress addr{idx.row(), idx.column()};
+        m_spreadsheet->setCellValue(addr, text);
+
+        // Auto-enable wrap text for this cell
+        auto cell = m_spreadsheet->getCell(addr);
+        CellStyle style = cell->getStyle();
+        if (style.textOverflow != TextOverflowMode::Wrap) {
+            style.textOverflow = TextOverflowMode::Wrap;
+            cell->setStyle(style);
+        }
+
+        // Refresh and re-enter edit mode at position after the newline
+        refreshView();
+        setCurrentIndex(idx);
+        edit(idx);
+
+        // Position cursor after the inserted newline
+        QTimer::singleShot(0, this, [this, idx, insertPos]() {
+            QWidget* editor = indexWidget(idx);
+            if (!editor) editor = viewport()->findChild<QLineEdit*>();
+            if (auto* lineEdit = qobject_cast<QLineEdit*>(editor)) {
+                // QLineEdit shows \n as space — position cursor after it
+                lineEdit->setCursorPosition(insertPos + 1);
+            }
+        });
+
         event->accept();
         return;
     }
