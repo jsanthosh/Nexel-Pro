@@ -422,7 +422,6 @@ QVariant FormulaEngine::funcBESSELY(const std::vector<QVariant>& args) {
         sum1 += term;
         if (std::fabs(term) < 1e-15 && m > 5) break;
     }
-    double negPart = 0;
     // -1/pi * sum_{m=0}^{n-1} (n-1-m)!/m! * (x/2)^(2m-n+1) ... simplified
     // Use: Y_1(x) = (2/pi)(J_1(x)*ln(x/2) - 1/x) + ...
     double y1 = (2.0 / M_PI) * (j1 * (std::log(x / 2.0) + euler) - 1.0 / x - sum1);
@@ -646,7 +645,7 @@ QVariant FormulaEngine::funcCELL(const std::vector<QVariant>& args) {
         // If we have cell reference info, extract row
         if (args[1].canConvert<CellRange>()) {
             CellRange range = args[1].value<CellRange>();
-            return range.start().row() + 1;
+            return range.getStart().row + 1;
         }
         return 1;
     }
@@ -654,7 +653,7 @@ QVariant FormulaEngine::funcCELL(const std::vector<QVariant>& args) {
         if (args.size() < 2) return 1;
         if (args[1].canConvert<CellRange>()) {
             CellRange range = args[1].value<CellRange>();
-            return range.start().col() + 1;
+            return range.getStart().col + 1;
         }
         return 1;
     }
@@ -662,8 +661,8 @@ QVariant FormulaEngine::funcCELL(const std::vector<QVariant>& args) {
         if (args.size() < 2) return QStringLiteral("$A$1");
         if (args[1].canConvert<CellRange>()) {
             CellRange range = args[1].value<CellRange>();
-            int r = range.start().row() + 1;
-            int c = range.start().col();
+            int r = range.getStart().row + 1;
+            int c = range.getStart().col;
             QChar colChar('A' + c);
             return QStringLiteral("$") + colChar + QStringLiteral("$") + QString::number(r);
         }
