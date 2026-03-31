@@ -13,9 +13,9 @@
 #include <functional>
 #include "../core/Cell.h"
 #include "../core/CellRange.h"
+#include "../core/Spreadsheet.h"
 
 class QLabel;
-class Spreadsheet;
 class SpreadsheetModel;
 class CellDelegate;
 class MacroEngine;
@@ -113,6 +113,7 @@ public:
     void insertCheckbox();
     void toggleCheckbox(int row, int col);
     void showPicklistPopup(const QModelIndex& index);
+    void showValidationDropdown(const QModelIndex& idx, const Spreadsheet::DataValidationRule* rule);
     QStringList resolvePicklistFromRange(const QString& listSourceRange) const;
     void openPicklistManageDialog(int row, int col);
     void openPicklistManagerDialog();
@@ -170,6 +171,8 @@ public:
     void zoomIn();
     void zoomOut();
     void resetZoom();
+    void setZoomLevel(int percent);
+    int getZoomLevel() const { return m_zoomLevel; }
 
     // Theme support
     void onThemeChanged();
@@ -222,6 +225,8 @@ signals:
     void pivotFilterChanged(int filterIndex, QStringList selectedValues);
     void requestSwitchToSheet(int index);
     void virtualViewportChanged();  // emitted when virtual scroll shifts viewport
+    void zoomChanged(int percent);  // emitted when zoom level changes
+    void editModeChanged(const QString& mode);  // "Ready", "Edit", or "Enter"
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;

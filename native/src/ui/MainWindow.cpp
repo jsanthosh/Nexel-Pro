@@ -73,6 +73,10 @@
 #include <QApplication>
 #include <QActionGroup>
 #include <QPushButton>
+#include <QSlider>
+#include <QColorDialog>
+#include <QListWidget>
+#include <QCheckBox>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
@@ -540,13 +544,214 @@ void MainWindow::showSheetContextMenu(const QPoint& pos) {
     if (tabIdx < 0) tabIdx = m_sheetTabBar->currentIndex();
 
     QMenu menu(this);
-    menu.addAction("Insert New Sheet", this, &MainWindow::onAddSheet);
-    menu.addAction("Duplicate Sheet", this, &MainWindow::onDuplicateSheet);
-    menu.addSeparator();
-    menu.addAction("Rename Sheet", this, [this, tabIdx]() {
+
+    // Insert / Delete / Rename
+    menu.addAction("&Insert Sheet", this, &MainWindow::onAddSheet);
+    menu.addAction("&Delete Sheet", this, [this, tabIdx]() {
+        if (m_sheets.size() <= 1) {
+            QMessageBox::warning(this, "Cannot Delete", "A workbook must contain at least one sheet.");
+            return;
+        }
+        // Confirm if sheet has data
+        if (tabIdx >= 0 && tabIdx < static_cast<int>(m_sheets.size())) {
+            auto& sheet = m_sheets[tabIdx];
+            bool hasData = false;
+            int rows = sheet->getRowCount();
+            int cols = sheet->getColumnCount();
+            for (int r = 0; r < rows && !hasData; ++r) {
+                for (int c = 0; c < cols && !hasData; ++c) {
+                    auto cell = sheet->getCellIfExists(r, c);
+                    if (cell && cell->getType() != CellType::Empty) hasData = true;
+                }
+            }
+            if (hasData) {
+                auto result = QMessageBox::question(this, "Delete Sheet",
+                    QString("Sheet \"%1\" contains data. Are you sure you want to delete it?")
+                        .arg(m_sheetTabBar->tabText(tabIdx)),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (result != QMessageBox::Yes) return;
+            }
+        }
+        // Switch to the target tab before deleting (onDeleteSheet uses m_activeSheetIndex)
+        m_sheetTabBar->setCurrentIndex(tabIdx);
+        onDeleteSheet();
+    });
+    menu.addAction("&Rename Sheet", this, [this, tabIdx]() {
         onSheetTabDoubleClicked(tabIdx);
     });
-    menu.addAction("Delete Sheet", this, &MainWindow::onDeleteSheet);
+
+    menu.addSeparator();
+
+    // Move / Copy
+    menu.addAction("&Move / Copy...", this, [this, tabIdx]() {
+        if (tabIdx < 0 || tabIdx >= static_cast<int>(m_sheets.size())) return;
+
+        QDialog dialog(this);
+        dialog.setWindowTitle("Move or Copy");
+        dialog.setFixedSize(320, 260);
+
+        QVBoxLayout* layout = new QVBoxLayout(&dialog);
+
+        layout->addWidget(new QLabel("Before sheet:"));
+        QListWidget* sheetList = new QListWidget();
+        for (int i = 0; i < static_cast<int>(m_sheets.size()); ++i) {
+            sheetList->addItem(m_sheetTabBar->tabText(i));
+        }
+        sheetList->addItem("(move to end)");
+        sheetList->setCurrentRow(tabIdx < static_cast<int>(m_sheets.size()) - 1 ? tabIdx + 1 : static_cast<int>(m_sheets.size()));
+        layout->addWidget(sheetList);
+
+        QCheckBox* copyCheck = new QCheckBox("Create a cop&y");
+        layout->addWidget(copyCheck);
+
+        QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+        layout->addWidget(buttons);
+
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+        if (dialog.exec() == QDialog::Accepted) {
+            int targetPos = sheetList->currentRow();
+            if (targetPos < 0) targetPos = static_cast<int>(m_sheets.size());
+
+            if (copyCheck->isChecked()) {
+                // Copy sheet — create new and copy cell data
+                auto copy = std::make_shared<Spreadsheet>();
+                copy->setSheetName(m_sheets[tabIdx]->getSheetName() + " (2)");
+                auto& src = *m_sheets[tabIdx];
+                copy->setAutoRecalculate(false);
+                src.forEachCell([&](int row, int col, const Cell& cell) {
+                    auto dst = copy->getOrCreateCellFast(row, col);
+                    dst->setValue(cell.getValue());
+                    if (!cell.getFormula().isEmpty()) dst->setFormula(cell.getFormula());
+                    if (cell.hasCustomStyle()) dst->setStyle(cell.getStyle());
+                });
+                copy->finishBulkImport();
+                copy->setAutoRecalculate(true);
+                int insertAt = (targetPos >= static_cast<int>(m_sheets.size())) ? static_cast<int>(m_sheets.size()) : targetPos;
+                m_sheets.insert(m_sheets.begin() + insertAt, copy);
+                m_sheetTabBar->insertTab(insertAt, copy->getSheetName());
+                m_sheetTabBar->setCurrentIndex(insertAt);
+            } else {
+                // Move sheet
+                if (targetPos > tabIdx) targetPos--;  // adjust for removal
+                auto sheet = m_sheets[tabIdx];
+                m_sheets.erase(m_sheets.begin() + tabIdx);
+
+                int insertAt = (targetPos >= static_cast<int>(m_sheets.size())) ? static_cast<int>(m_sheets.size()) : targetPos;
+                m_sheets.insert(m_sheets.begin() + insertAt, sheet);
+
+                // Rebuild tabs
+                m_sheetTabBar->blockSignals(true);
+                while (m_sheetTabBar->count() > 0) m_sheetTabBar->removeTab(0);
+                for (const auto& s : m_sheets) m_sheetTabBar->addTab(s->getSheetName());
+                m_sheetTabBar->setCurrentIndex(insertAt);
+                m_sheetTabBar->blockSignals(false);
+                switchToSheet(insertAt);
+            }
+            setDirty();
+            statusBar()->showMessage("Sheet moved/copied");
+        }
+    });
+
+    menu.addSeparator();
+
+    // Tab Color submenu
+    QMenu* colorMenu = menu.addMenu("Tab Co&lor");
+    // Theme colors
+    struct ColorEntry { QString name; QColor color; };
+    QVector<ColorEntry> themeColors = {
+        {"Red",     QColor("#FF0000")}, {"Orange",  QColor("#FF8C00")},
+        {"Yellow",  QColor("#FFD700")}, {"Green",   QColor("#00B050")},
+        {"Blue",    QColor("#4472C4")}, {"Purple",  QColor("#7030A0")},
+        {"Pink",    QColor("#FF69B4")}, {"Teal",    QColor("#00B0B0")},
+        {"Brown",   QColor("#8B4513")}, {"Gray",    QColor("#808080")}
+    };
+    for (const auto& ce : themeColors) {
+        QAction* colorAction = colorMenu->addAction(ce.name);
+        QPixmap px(16, 16);
+        px.fill(ce.color);
+        colorAction->setIcon(QIcon(px));
+        connect(colorAction, &QAction::triggered, this, [this, tabIdx, ce]() {
+            m_sheetTabBar->setTabTextColor(tabIdx, ce.color);
+            statusBar()->showMessage(QString("Tab color: %1").arg(ce.name));
+        });
+    }
+    colorMenu->addSeparator();
+    colorMenu->addAction("&More Colors...", this, [this, tabIdx]() {
+        QColor color = QColorDialog::getColor(m_sheetTabBar->tabTextColor(tabIdx), this, "Tab Color");
+        if (color.isValid()) {
+            m_sheetTabBar->setTabTextColor(tabIdx, color);
+            statusBar()->showMessage("Tab color changed");
+        }
+    });
+    colorMenu->addSeparator();
+    colorMenu->addAction("&No Color", this, [this, tabIdx]() {
+        m_sheetTabBar->setTabTextColor(tabIdx, QColor());  // reset to default
+        statusBar()->showMessage("Tab color removed");
+    });
+
+    menu.addSeparator();
+
+    // Hide / Unhide
+    menu.addAction("&Hide Sheet", this, [this, tabIdx]() {
+        if (m_sheets.size() <= 1) {
+            QMessageBox::warning(this, "Cannot Hide", "A workbook must have at least one visible sheet.");
+            return;
+        }
+        // Count visible sheets
+        int visibleCount = 0;
+        for (int i = 0; i < m_sheetTabBar->count(); ++i) {
+            if (m_sheetTabBar->isTabVisible(i)) visibleCount++;
+        }
+        if (visibleCount <= 1) {
+            QMessageBox::warning(this, "Cannot Hide", "A workbook must have at least one visible sheet.");
+            return;
+        }
+        m_sheetTabBar->setTabVisible(tabIdx, false);
+        // Switch to next visible tab if hiding the active one
+        if (tabIdx == m_sheetTabBar->currentIndex()) {
+            for (int i = 0; i < m_sheetTabBar->count(); ++i) {
+                if (m_sheetTabBar->isTabVisible(i)) {
+                    m_sheetTabBar->setCurrentIndex(i);
+                    break;
+                }
+            }
+        }
+        statusBar()->showMessage(QString("Sheet \"%1\" hidden").arg(m_sheetTabBar->tabText(tabIdx)));
+    });
+    menu.addAction("&Unhide Sheet...", this, [this]() {
+        // Collect hidden sheets
+        QStringList hiddenSheets;
+        QList<int> hiddenIndices;
+        for (int i = 0; i < m_sheetTabBar->count(); ++i) {
+            if (!m_sheetTabBar->isTabVisible(i)) {
+                hiddenSheets << m_sheetTabBar->tabText(i);
+                hiddenIndices << i;
+            }
+        }
+        if (hiddenSheets.isEmpty()) {
+            QMessageBox::information(this, "Unhide", "No hidden sheets.");
+            return;
+        }
+        bool ok;
+        QString chosen = QInputDialog::getItem(this, "Unhide Sheet",
+            "Select a sheet to unhide:", hiddenSheets, 0, false, &ok);
+        if (ok && !chosen.isEmpty()) {
+            int idx = hiddenSheets.indexOf(chosen);
+            if (idx >= 0 && idx < hiddenIndices.size()) {
+                m_sheetTabBar->setTabVisible(hiddenIndices[idx], true);
+                m_sheetTabBar->setCurrentIndex(hiddenIndices[idx]);
+                statusBar()->showMessage(QString("Sheet \"%1\" unhidden").arg(chosen));
+            }
+        }
+    });
+
+    menu.addSeparator();
+
+    // Protect Sheet
+    menu.addAction("&Protect Sheet...", this, &MainWindow::onProtectSheet);
+
     menu.exec(m_sheetTabBar->mapToGlobal(pos));
 }
 
@@ -892,8 +1097,40 @@ void MainWindow::createMenuBar() {
         }
         m_spreadsheetView->setGridlinesVisible(checked);
     });
-    viewMenu->addAction("&Freeze Panes", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F),
-                         this, &MainWindow::onFreezePane);
+    QMenu* freezeMenu = viewMenu->addMenu("&Freeze Panes");
+    freezeMenu->addAction("&Freeze Panes", this, [this]() {
+        // Freeze at current cell position
+        if (!m_spreadsheetView) return;
+        QModelIndex idx = m_spreadsheetView->currentIndex();
+        if (!idx.isValid()) return;
+        m_spreadsheetView->setFrozenRow(idx.row());
+        m_spreadsheetView->setFrozenColumn(idx.column());
+        m_frozenPanes = true;
+        statusBar()->showMessage(QString("Panes frozen at %1")
+            .arg(CellAddress(idx.row(), idx.column()).toString()));
+    }, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+    freezeMenu->addAction("Freeze &Top Row", this, [this]() {
+        if (!m_spreadsheetView) return;
+        m_spreadsheetView->setFrozenRow(1);
+        m_spreadsheetView->setFrozenColumn(-1);
+        m_frozenPanes = true;
+        statusBar()->showMessage("Frozen top row");
+    });
+    freezeMenu->addAction("Freeze &First Column", this, [this]() {
+        if (!m_spreadsheetView) return;
+        m_spreadsheetView->setFrozenRow(-1);
+        m_spreadsheetView->setFrozenColumn(1);
+        m_frozenPanes = true;
+        statusBar()->showMessage("Frozen first column");
+    });
+    freezeMenu->addSeparator();
+    freezeMenu->addAction("&Unfreeze Panes", this, [this]() {
+        if (!m_spreadsheetView) return;
+        m_spreadsheetView->setFrozenRow(-1);
+        m_spreadsheetView->setFrozenColumn(-1);
+        m_frozenPanes = false;
+        statusBar()->showMessage("Panes unfrozen");
+    });
     viewMenu->addSeparator();
     QAction* chatAction = viewMenu->addAction("&Claude Assistant");
     chatAction->setCheckable(true);
@@ -982,6 +1219,11 @@ void MainWindow::createToolBar() {}
 void MainWindow::createStatusBar() {
     statusBar()->showMessage("Ready");
 
+    // Mode indicator on the LEFT side (Excel-style: Ready / Edit / Enter)
+    m_modeLabel = new QLabel("Ready");
+    m_modeLabel->setStyleSheet("QLabel { color: #344054; font-size: 11px; padding: 0 12px; font-weight: 600; }");
+    statusBar()->addWidget(m_modeLabel);
+
     // Permanent stats widgets on the right side (Excel-style)
     QString statStyle = "QLabel { color: #344054; font-size: 12px; padding: 0 12px; }";
 
@@ -996,6 +1238,66 @@ void MainWindow::createStatusBar() {
     m_statusSumLabel = new QLabel("");
     m_statusSumLabel->setStyleSheet(statStyle);
     statusBar()->addPermanentWidget(m_statusSumLabel);
+
+    // Zoom controls (right side of status bar)
+    QWidget* zoomWidget = new QWidget();
+    QHBoxLayout* zoomLayout = new QHBoxLayout(zoomWidget);
+    zoomLayout->setContentsMargins(0, 0, 8, 0);
+    zoomLayout->setSpacing(6);
+
+    QPushButton* zoomOutBtn = new QPushButton("-");
+    zoomOutBtn->setFixedSize(20, 20);
+    zoomOutBtn->setStyleSheet(
+        "QPushButton { border: none; font-size: 14px; color: #667085; }"
+        "QPushButton:hover { color: #344054; }");
+
+    m_zoomSlider = new QSlider(Qt::Horizontal);
+    m_zoomSlider->setRange(25, 400);
+    m_zoomSlider->setValue(100);
+    m_zoomSlider->setFixedWidth(120);
+    m_zoomSlider->setStyleSheet(
+        "QSlider::groove:horizontal { height: 4px; background: #D0D5DD; border-radius: 2px; }"
+        "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0; "
+        "background: #667085; border-radius: 6px; }"
+        "QSlider::handle:horizontal:hover { background: #344054; }");
+
+    QPushButton* zoomInBtn = new QPushButton("+");
+    zoomInBtn->setFixedSize(20, 20);
+    zoomInBtn->setStyleSheet(zoomOutBtn->styleSheet());
+
+    m_zoomLabel = new QLabel("100%");
+    m_zoomLabel->setFixedWidth(40);
+    m_zoomLabel->setAlignment(Qt::AlignCenter);
+    m_zoomLabel->setStyleSheet("QLabel { color: #344054; font-size: 11px; }");
+
+    zoomLayout->addWidget(zoomOutBtn);
+    zoomLayout->addWidget(m_zoomSlider);
+    zoomLayout->addWidget(zoomInBtn);
+    zoomLayout->addWidget(m_zoomLabel);
+
+    statusBar()->addPermanentWidget(zoomWidget);
+
+    // Connect zoom slider to spreadsheet view
+    connect(m_zoomSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_zoomLabel->setText(QString("%1%").arg(value));
+        if (m_spreadsheetView) {
+            m_spreadsheetView->setZoomLevel(value);
+        }
+    });
+    connect(zoomOutBtn, &QPushButton::clicked, this, [this]() {
+        m_zoomSlider->setValue(m_zoomSlider->value() - 10);
+    });
+    connect(zoomInBtn, &QPushButton::clicked, this, [this]() {
+        m_zoomSlider->setValue(m_zoomSlider->value() + 10);
+    });
+
+    // Sync slider when zoom changes from other sources (e.g. Ctrl+wheel)
+    connect(m_spreadsheetView, &SpreadsheetView::zoomChanged, this, [this](int percent) {
+        m_zoomSlider->blockSignals(true);
+        m_zoomSlider->setValue(percent);
+        m_zoomSlider->blockSignals(false);
+        m_zoomLabel->setText(QString("%1%").arg(percent));
+    });
 }
 
 void MainWindow::onThemeChanged() {
@@ -1298,6 +1600,13 @@ void MainWindow::connectSignals() {
         }
         // Return focus to the grid
         m_spreadsheetView->setFocus();
+    });
+
+    // Status bar mode indicator: update when edit state changes
+    connect(m_spreadsheetView, &SpreadsheetView::editModeChanged, this, [this](const QString& mode) {
+        if (m_modeLabel) {
+            m_modeLabel->setText(mode);
+        }
     });
 
     // Live chart updates: refresh charts on the active sheet when data changes
@@ -2153,6 +2462,7 @@ void MainWindow::onFindReplace() {
         m_findReplaceDialog = new FindReplaceDialog(this);
         connect(m_findReplaceDialog, &FindReplaceDialog::findNext, this, &MainWindow::onFindNext);
         connect(m_findReplaceDialog, &FindReplaceDialog::findPrevious, this, &MainWindow::onFindPrevious);
+        connect(m_findReplaceDialog, &FindReplaceDialog::findAll, this, &MainWindow::onFindAll);
         connect(m_findReplaceDialog, &FindReplaceDialog::replaceOne, this, &MainWindow::onReplaceOne);
         connect(m_findReplaceDialog, &FindReplaceDialog::replaceAll, this, &MainWindow::onReplaceAll);
     }
@@ -2161,12 +2471,32 @@ void MainWindow::onFindReplace() {
     m_findReplaceDialog->activateWindow();
 }
 
-bool MainWindow::cellMatchesSearch(int row, int col, const QString& searchText, bool matchCase, bool wholeCell) const {
+bool MainWindow::cellMatchesSearch(int row, int col, const QString& searchText, bool matchCase, bool wholeCell, bool searchFormulas) const {
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (!sheet) return false;
+    return cellMatchesSearchInSheet(sheet, row, col, searchText, matchCase, wholeCell, searchFormulas);
+}
 
-    auto val = sheet->getCellValue(CellAddress(row, col));
-    QString cellText = val.toString();
+bool MainWindow::cellMatchesSearchInSheet(std::shared_ptr<Spreadsheet> sheet, int row, int col, const QString& searchText, bool matchCase, bool wholeCell, bool searchFormulas) const {
+    if (!sheet) return false;
+
+    QString cellText;
+    if (searchFormulas) {
+        // Search in formula text (e.g. "=SUM(A1:A10)")
+        auto cell = sheet->getCellIfExists(row, col);
+        if (cell) {
+            cellText = cell.getFormula();
+            if (cellText.isEmpty()) {
+                // No formula — fall back to value
+                cellText = sheet->getCellValue(CellAddress(row, col)).toString();
+            }
+        } else {
+            return false;
+        }
+    } else {
+        auto val = sheet->getCellValue(CellAddress(row, col));
+        cellText = val.toString();
+    }
 
     if (wholeCell) {
         return matchCase ? (cellText == searchText)
@@ -2184,6 +2514,8 @@ void MainWindow::onFindNext() {
 
     bool matchCase = m_findReplaceDialog->matchCase();
     bool wholeCell = m_findReplaceDialog->matchWholeCell();
+    bool searchFormulas = (m_findReplaceDialog->lookIn() == FindReplaceDialog::Formulas);
+    bool searchWorkbook = (m_findReplaceDialog->searchScope() == FindReplaceDialog::Workbook);
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (!sheet) return;
 
@@ -2198,7 +2530,6 @@ void MainWindow::onFindNext() {
 
     if (isLarge && (m_findCache.isEmpty() || m_findCacheQuery != searchText ||
                     m_findCacheCase != matchCase || m_findCacheWhole != wholeCell)) {
-        // Run parallel search in background
         m_findReplaceDialog->setStatus("Searching...");
         QApplication::processEvents();
 
@@ -2225,7 +2556,6 @@ void MainWindow::onFindNext() {
         if (mdl) {
             int modelRow = mdl->toModelRow(addr.row);
             if (modelRow < 0) {
-                // Row not in current window — recenter
                 mdl->jumpToBase(std::max(0, addr.row - SpreadsheetModel::WINDOW_SIZE / 2));
                 modelRow = mdl->toModelRow(addr.row);
             }
@@ -2240,21 +2570,112 @@ void MainWindow::onFindNext() {
         return;
     }
 
-    // Small datasets: original sequential search
+    // Workbook search: iterate all sheets starting from current
+    if (searchWorkbook) {
+        int currentSheetIdx = m_activeSheetIndex;
+        int sheetCount = static_cast<int>(m_sheets.size());
+        QModelIndex current = m_spreadsheetView->currentIndex();
+        int startRow2 = current.isValid() ? current.row() : 0;
+        int startCol2 = current.isValid() ? current.column() + 1 : 0;
+
+        for (int s = 0; s < sheetCount; ++s) {
+            int sheetIdx = (currentSheetIdx + s) % sheetCount;
+            auto searchSheet = m_sheets[sheetIdx];
+            int sMaxRow = searchSheet->getMaxRow();
+            int sMaxCol = searchSheet->getMaxColumn();
+            if (sMaxRow < 0 || sMaxCol < 0) continue;
+
+            int rStart = (s == 0) ? startRow2 : 0;
+            for (int r = rStart; r <= sMaxRow; ++r) {
+                int cStart = (s == 0 && r == startRow2) ? startCol2 : 0;
+                for (int c = cStart; c <= sMaxCol; ++c) {
+                    if (cellMatchesSearchInSheet(searchSheet, r, c, searchText, matchCase, wholeCell, searchFormulas)) {
+                        if (sheetIdx != m_activeSheetIndex) switchToSheet(sheetIdx);
+                        auto model = m_spreadsheetView->getModel();
+                        QModelIndex idx = model->index(r, c);
+                        m_spreadsheetView->setCurrentIndex(idx);
+                        m_spreadsheetView->scrollTo(idx);
+                        QString sheetName = m_sheetTabBar->tabText(sheetIdx);
+                        m_findReplaceDialog->setStatus(QString("Found at %1 in '%2'")
+                            .arg(CellAddress(r, c).toString(), sheetName));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Wrap: search from beginning of all sheets up to current position
+        for (int s = 0; s < sheetCount; ++s) {
+            auto searchSheet = m_sheets[s];
+            int sMaxRow = searchSheet->getMaxRow();
+            int sMaxCol = searchSheet->getMaxColumn();
+            if (sMaxRow < 0 || sMaxCol < 0) continue;
+
+            int rEnd = (s == currentSheetIdx) ? startRow2 : sMaxRow;
+            for (int r = 0; r <= rEnd; ++r) {
+                int cEnd2 = (s == currentSheetIdx && r == startRow2) ? startCol2 - 1 : sMaxCol;
+                for (int c = 0; c <= cEnd2; ++c) {
+                    if (cellMatchesSearchInSheet(searchSheet, r, c, searchText, matchCase, wholeCell, searchFormulas)) {
+                        if (s != m_activeSheetIndex) switchToSheet(s);
+                        auto model = m_spreadsheetView->getModel();
+                        QModelIndex idx = model->index(r, c);
+                        m_spreadsheetView->setCurrentIndex(idx);
+                        m_spreadsheetView->scrollTo(idx);
+                        QString sheetName = m_sheetTabBar->tabText(s);
+                        m_findReplaceDialog->setStatus(QString("Found at %1 in '%2' (wrapped)")
+                            .arg(CellAddress(r, c).toString(), sheetName));
+                        return;
+                    }
+                }
+            }
+        }
+
+        m_findReplaceDialog->setStatus("Not found in workbook.");
+        return;
+    }
+
+    // Small datasets: sequential search (single sheet) with match counter
     QModelIndex current = m_spreadsheetView->currentIndex();
     int startRow = current.isValid() ? current.row() : 0;
     int startCol = current.isValid() ? current.column() + 1 : 0;
     int maxCol = sheet->getMaxColumn();
 
+    // Count total matches for "X of Y" display
+    int totalMatches = 0;
+    for (int r = 0; r <= maxRow; ++r) {
+        for (int c = 0; c <= maxCol; ++c) {
+            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas))
+                totalMatches++;
+        }
+    }
+    if (totalMatches == 0) {
+        m_findReplaceDialog->setStatus("Not found.");
+        return;
+    }
+
+    // Helper lambda: count matches up to and including (tr, tc)
+    auto countMatchesUpTo = [&](int tr, int tc) -> int {
+        int n = 0;
+        for (int r = 0; r <= tr; ++r) {
+            int ce = (r == tr) ? tc : maxCol;
+            for (int c = 0; c <= ce; ++c) {
+                if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas))
+                    n++;
+            }
+        }
+        return n;
+    };
+
     for (int r = startRow; r <= maxRow; ++r) {
         int cStart = (r == startRow) ? startCol : 0;
         for (int c = cStart; c <= maxCol; ++c) {
-            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell)) {
+            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas)) {
                 auto model = m_spreadsheetView->getModel();
                 QModelIndex idx = model->index(r, c);
                 m_spreadsheetView->setCurrentIndex(idx);
                 m_spreadsheetView->scrollTo(idx);
-                m_findReplaceDialog->setStatus(QString("Found at %1").arg(CellAddress(r, c).toString()));
+                int matchNum = countMatchesUpTo(r, c);
+                m_findReplaceDialog->setStatus(QString("%1 of %2 matches").arg(matchNum).arg(totalMatches));
                 return;
             }
         }
@@ -2263,12 +2684,13 @@ void MainWindow::onFindNext() {
     for (int r = 0; r <= startRow; ++r) {
         int cEnd = (r == startRow) ? startCol - 1 : maxCol;
         for (int c = 0; c <= cEnd; ++c) {
-            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell)) {
+            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas)) {
                 auto model = m_spreadsheetView->getModel();
                 QModelIndex idx = model->index(r, c);
                 m_spreadsheetView->setCurrentIndex(idx);
                 m_spreadsheetView->scrollTo(idx);
-                m_findReplaceDialog->setStatus(QString("Found at %1 (wrapped)").arg(CellAddress(r, c).toString()));
+                int matchNum = countMatchesUpTo(r, c);
+                m_findReplaceDialog->setStatus(QString("%1 of %2 matches (wrapped)").arg(matchNum).arg(totalMatches));
                 return;
             }
         }
@@ -2285,12 +2707,38 @@ void MainWindow::onFindPrevious() {
 
     bool matchCase = m_findReplaceDialog->matchCase();
     bool wholeCell = m_findReplaceDialog->matchWholeCell();
+    bool searchFormulas = (m_findReplaceDialog->lookIn() == FindReplaceDialog::Formulas);
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (!sheet) return;
 
     int maxRow = sheet->getMaxRow();
     int maxCol = sheet->getMaxColumn();
     if (maxRow < 0 || maxCol < 0) return;
+
+    // Count total matches for "X of Y" display
+    int totalMatches = 0;
+    for (int r = 0; r <= maxRow; ++r) {
+        for (int c = 0; c <= maxCol; ++c) {
+            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas))
+                totalMatches++;
+        }
+    }
+    if (totalMatches == 0) {
+        m_findReplaceDialog->setStatus("Not found.");
+        return;
+    }
+
+    auto countMatchesUpTo = [&](int tr, int tc) -> int {
+        int n = 0;
+        for (int r = 0; r <= tr; ++r) {
+            int ce = (r == tr) ? tc : maxCol;
+            for (int c = 0; c <= ce; ++c) {
+                if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas))
+                    n++;
+            }
+        }
+        return n;
+    };
 
     QModelIndex current = m_spreadsheetView->currentIndex();
     int startRow = current.isValid() ? current.row() : maxRow;
@@ -2300,12 +2748,13 @@ void MainWindow::onFindPrevious() {
     for (int r = startRow; r >= 0; --r) {
         int cStart = (r == startRow) ? startCol : maxCol;
         for (int c = cStart; c >= 0; --c) {
-            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell)) {
+            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas)) {
                 auto model = m_spreadsheetView->getModel();
                 QModelIndex idx = model->index(r, c);
                 m_spreadsheetView->setCurrentIndex(idx);
                 m_spreadsheetView->scrollTo(idx);
-                m_findReplaceDialog->setStatus(QString("Found at %1").arg(CellAddress(r, c).toString()));
+                int matchNum = countMatchesUpTo(r, c);
+                m_findReplaceDialog->setStatus(QString("%1 of %2 matches").arg(matchNum).arg(totalMatches));
                 return;
             }
         }
@@ -2315,18 +2764,78 @@ void MainWindow::onFindPrevious() {
     for (int r = maxRow; r >= startRow; --r) {
         int cStart = (r == startRow) ? startCol + 1 : 0;
         for (int c = maxCol; c >= cStart; --c) {
-            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell)) {
+            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas)) {
                 auto model = m_spreadsheetView->getModel();
                 QModelIndex idx = model->index(r, c);
                 m_spreadsheetView->setCurrentIndex(idx);
                 m_spreadsheetView->scrollTo(idx);
-                m_findReplaceDialog->setStatus(QString("Found at %1 (wrapped)").arg(CellAddress(r, c).toString()));
+                int matchNum = countMatchesUpTo(r, c);
+                m_findReplaceDialog->setStatus(QString("%1 of %2 matches (wrapped)").arg(matchNum).arg(totalMatches));
                 return;
             }
         }
     }
 
     m_findReplaceDialog->setStatus("Not found.");
+}
+
+void MainWindow::onFindAll() {
+    if (!m_findReplaceDialog || !m_spreadsheetView) return;
+
+    QString searchText = m_findReplaceDialog->findText();
+    if (searchText.isEmpty()) return;
+
+    bool matchCase = m_findReplaceDialog->matchCase();
+    bool wholeCell = m_findReplaceDialog->matchWholeCell();
+    bool searchFormulas = (m_findReplaceDialog->lookIn() == FindReplaceDialog::Formulas);
+    bool searchWorkbook = (m_findReplaceDialog->searchScope() == FindReplaceDialog::Workbook);
+
+    // Collect all matching cells
+    QItemSelection allMatches;
+    int totalCount = 0;
+
+    auto searchSheet = [&](std::shared_ptr<Spreadsheet> sheet, bool isCurrentSheet) {
+        int sMaxRow = sheet->getMaxRow();
+        int sMaxCol = sheet->getMaxColumn();
+        if (sMaxRow < 0 || sMaxCol < 0) return;
+
+        for (int r = 0; r <= sMaxRow; ++r) {
+            for (int c = 0; c <= sMaxCol; ++c) {
+                if (cellMatchesSearchInSheet(sheet, r, c, searchText, matchCase, wholeCell, searchFormulas)) {
+                    totalCount++;
+                    if (isCurrentSheet) {
+                        auto model = m_spreadsheetView->getModel();
+                        QModelIndex idx = model->index(r, c);
+                        allMatches.select(idx, idx);
+                    }
+                }
+            }
+        }
+    };
+
+    if (searchWorkbook) {
+        for (int s = 0; s < static_cast<int>(m_sheets.size()); ++s) {
+            searchSheet(m_sheets[s], s == m_activeSheetIndex);
+        }
+    } else {
+        auto sheet = m_spreadsheetView->getSpreadsheet();
+        if (sheet) searchSheet(sheet, true);
+    }
+
+    // Select all matches in current sheet
+    if (!allMatches.isEmpty()) {
+        m_spreadsheetView->selectionModel()->select(allMatches,
+            QItemSelectionModel::ClearAndSelect);
+        // Scroll to the first match
+        auto firstIdx = allMatches.indexes().first();
+        m_spreadsheetView->scrollTo(firstIdx);
+    }
+
+    if (searchWorkbook) {
+        m_findReplaceDialog->setStatus(QString("%1 cells found across workbook").arg(totalCount));
+    } else {
+        m_findReplaceDialog->setStatus(QString("%1 cells found").arg(totalCount));
+    }
 }
 
 void MainWindow::onReplaceOne() {
@@ -2338,6 +2847,7 @@ void MainWindow::onReplaceOne() {
 
     bool matchCase = m_findReplaceDialog->matchCase();
     bool wholeCell = m_findReplaceDialog->matchWholeCell();
+    bool searchFormulas = (m_findReplaceDialog->lookIn() == FindReplaceDialog::Formulas);
 
     QModelIndex current = m_spreadsheetView->currentIndex();
     if (!current.isValid()) return;
@@ -2345,7 +2855,7 @@ void MainWindow::onReplaceOne() {
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (!sheet) return;
 
-    if (cellMatchesSearch(current.row(), current.column(), searchText, matchCase, wholeCell)) {
+    if (cellMatchesSearch(current.row(), current.column(), searchText, matchCase, wholeCell, searchFormulas)) {
         auto model = m_spreadsheetView->getModel();
         if (wholeCell) {
             model->setData(current, replaceText);
@@ -2371,6 +2881,7 @@ void MainWindow::onReplaceAll() {
 
     bool matchCase = m_findReplaceDialog->matchCase();
     bool wholeCell = m_findReplaceDialog->matchWholeCell();
+    bool searchFormulas = (m_findReplaceDialog->lookIn() == FindReplaceDialog::Formulas);
     auto sheet = m_spreadsheetView->getSpreadsheet();
     if (!sheet) return;
 
@@ -2384,7 +2895,7 @@ void MainWindow::onReplaceAll() {
 
     for (int r = 0; r <= maxRow; ++r) {
         for (int c = 0; c <= maxCol; ++c) {
-            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell)) {
+            if (cellMatchesSearch(r, c, searchText, matchCase, wholeCell, searchFormulas)) {
                 CellAddress addr(r, c);
                 before.push_back(sheet->takeCellSnapshot(addr));
 

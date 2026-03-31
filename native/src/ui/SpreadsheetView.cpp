@@ -251,6 +251,18 @@ void SpreadsheetView::initializeView() {
 
     // Setup header context menus
     setupHeaderContextMenus();
+
+    // Double-click column header to autofit column width
+    horizontalHeader()->setSectionsClickable(true);
+    connect(horizontalHeader(), &QHeaderView::sectionDoubleClicked, this, [this](int logicalIndex) {
+        autofitColumn(logicalIndex);
+    });
+
+    // Double-click row header to autofit row height
+    verticalHeader()->setSectionsClickable(true);
+    connect(verticalHeader(), &QHeaderView::sectionDoubleClicked, this, [this](int logicalIndex) {
+        autofitRow(logicalIndex);
+    });
 }
 
 void SpreadsheetView::applyGridStylesheet() {
@@ -377,21 +389,35 @@ void SpreadsheetView::setupHeaderContextMenus() {
         menu.addSeparator();
 
         // Column Width
-        menu.addAction("Column Width...", [this, clickedCol]() {
+        menu.addAction("Column &Width...", [this, clickedCol]() {
             bool ok;
-            int width = QInputDialog::getInt(this, "Column Width",
-                "Column width (pixels):", horizontalHeader()->sectionSize(clickedCol),
+            int currentWidth = horizontalHeader()->sectionSize(clickedCol);
+            int newWidth = QInputDialog::getInt(this, "Column Width",
+                "Column width (pixels):", currentWidth,
                 10, 1000, 1, &ok);
             if (ok) {
                 for (int c = 0; c < model()->columnCount(); ++c) {
-                    if (selectionModel()->isColumnSelected(c, QModelIndex()))
-                        setColumnWidth(c, width);
+                    if (selectionModel()->isColumnSelected(c, QModelIndex())) {
+                        setColumnWidth(c, newWidth);
+                        if (m_spreadsheet) m_spreadsheet->setColumnWidth(c, newWidth);
+                    }
                 }
-                if (!selectionModel()->isColumnSelected(clickedCol, QModelIndex()))
-                    setColumnWidth(clickedCol, width);
+                if (!selectionModel()->isColumnSelected(clickedCol, QModelIndex())) {
+                    setColumnWidth(clickedCol, newWidth);
+                    if (m_spreadsheet) m_spreadsheet->setColumnWidth(clickedCol, newWidth);
+                }
             }
         });
         menu.addAction("AutoFit Column Width", this, &SpreadsheetView::autofitSelectedColumns);
+        menu.addAction("&Default Width...", [this]() {
+            bool ok;
+            int defaultWidth = horizontalHeader()->defaultSectionSize();
+            int newWidth = QInputDialog::getInt(this, "Default Column Width",
+                "Default width (pixels):", defaultWidth, 10, 500, 1, &ok);
+            if (ok) {
+                horizontalHeader()->setDefaultSectionSize(newWidth);
+            }
+        });
         menu.addSeparator();
 
         // Hide / Unhide
@@ -445,21 +471,35 @@ void SpreadsheetView::setupHeaderContextMenus() {
         menu.addSeparator();
 
         // Row Height
-        menu.addAction("Row Height...", [this, clickedRow]() {
+        menu.addAction("Row &Height...", [this, clickedRow]() {
             bool ok;
-            int height = QInputDialog::getInt(this, "Row Height",
-                "Row height (pixels):", verticalHeader()->sectionSize(clickedRow),
+            int currentHeight = verticalHeader()->sectionSize(clickedRow);
+            int newHeight = QInputDialog::getInt(this, "Row Height",
+                "Row height (pixels):", currentHeight,
                 5, 500, 1, &ok);
             if (ok) {
                 for (int r = 0; r < model()->rowCount(); ++r) {
-                    if (selectionModel()->isRowSelected(r, QModelIndex()))
-                        setRowHeight(r, height);
+                    if (selectionModel()->isRowSelected(r, QModelIndex())) {
+                        setRowHeight(r, newHeight);
+                        if (m_spreadsheet) m_spreadsheet->setRowHeight(r, newHeight);
+                    }
                 }
-                if (!selectionModel()->isRowSelected(clickedRow, QModelIndex()))
-                    setRowHeight(clickedRow, height);
+                if (!selectionModel()->isRowSelected(clickedRow, QModelIndex())) {
+                    setRowHeight(clickedRow, newHeight);
+                    if (m_spreadsheet) m_spreadsheet->setRowHeight(clickedRow, newHeight);
+                }
             }
         });
         menu.addAction("AutoFit Row Height", this, &SpreadsheetView::autofitSelectedRows);
+        menu.addAction("De&fault Height...", [this]() {
+            bool ok;
+            int defaultHeight = verticalHeader()->defaultSectionSize();
+            int newHeight = QInputDialog::getInt(this, "Default Row Height",
+                "Default height (pixels):", defaultHeight, 5, 500, 1, &ok);
+            if (ok) {
+                verticalHeader()->setDefaultSectionSize(newHeight);
+            }
+        });
         menu.addSeparator();
 
         // Hide / Unhide
@@ -3120,7 +3160,17 @@ bool SpreadsheetView::viewportEvent(QEvent* event) {
                 if (cell->hasComment()) tips << cell->getComment();
                 if (cell->hasHyperlink()) tips << "Ctrl+Click to open: " + cell->getHyperlink();
                 if (!tips.isEmpty()) {
-                    QToolTip::showText(helpEvent->globalPos(), tips.join("\n"), this);
+                    // Excel-style yellow tooltip for comments
+                    if (cell->hasComment()) {
+                        // Apply yellow Excel-style tooltip palette
+                        QPalette ttPalette = QToolTip::palette();
+                        ttPalette.setColor(QPalette::ToolTipBase, QColor("#FFFFD0"));
+                        ttPalette.setColor(QPalette::ToolTipText, QColor("#000000"));
+                        QToolTip::setPalette(ttPalette);
+                        QToolTip::showText(helpEvent->globalPos(), tips.join("\n"), this);
+                    } else {
+                        QToolTip::showText(helpEvent->globalPos(), tips.join("\n"), this);
+                    }
                     return true;
                 }
             }
@@ -3381,6 +3431,15 @@ void SpreadsheetView::scrollContentsBy(int dx, int dy) {
 }
 
 void SpreadsheetView::wheelEvent(QWheelEvent* event) {
+    // Ctrl+Wheel = zoom in/out
+    if (event->modifiers() & Qt::ControlModifier) {
+        int delta = event->angleDelta().y();
+        if (delta > 0) zoomIn();
+        else if (delta < 0) zoomOut();
+        event->accept();
+        return;
+    }
+
     if (m_model && m_model->isVirtualMode()) {
         // At dataset boundaries, block momentum to prevent bounce
         auto phase = event->phase();
@@ -3437,26 +3496,27 @@ void SpreadsheetView::navigateToLogicalRow(int logicalRow, int col) {
 }
 
 void SpreadsheetView::zoomIn() {
-    m_zoomLevel += 10;
-    if (m_zoomLevel > 200) m_zoomLevel = 200;
-
-    QFont f = this->font();
-    f.setPointSize(m_baseFontSize * m_zoomLevel / 100);
-    setFont(f);
+    setZoomLevel(m_zoomLevel + 10);
 }
 
 void SpreadsheetView::zoomOut() {
-    m_zoomLevel -= 10;
-    if (m_zoomLevel < 50) m_zoomLevel = 50;
+    setZoomLevel(m_zoomLevel - 10);
+}
+
+void SpreadsheetView::resetZoom() {
+    setZoomLevel(100);
+}
+
+void SpreadsheetView::setZoomLevel(int percent) {
+    percent = qBound(25, percent, 400);
+    if (percent == m_zoomLevel) return;
+    m_zoomLevel = percent;
 
     QFont f = this->font();
     f.setPointSize(m_baseFontSize * m_zoomLevel / 100);
     setFont(f);
-}
 
-void SpreadsheetView::resetZoom() {
-    m_zoomLevel = 100;
-    setFont(QFont("Arial", m_baseFontSize));
+    emit zoomChanged(m_zoomLevel);
 }
 
 // ============== Event handlers ==============
@@ -3708,7 +3768,9 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
             // Toggle between Edit mode (arrows navigate within text) and
             // Enter mode (arrows commit and move to next cell) — Excel F2 behavior
             if (m_delegate) {
-                m_delegate->setFormulaEditMode(!m_delegate->isFormulaEditMode());
+                bool newMode = !m_delegate->isFormulaEditMode();
+                m_delegate->setFormulaEditMode(newMode);
+                emit editModeChanged(newMode ? "Edit" : "Enter");
             }
         } else {
             if (isCellProtected()) {
@@ -3725,6 +3787,7 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
                 if (m_delegate) {
                     m_delegate->setFormulaEditMode(true);
                 }
+                emit editModeChanged("Edit");
             }
         }
         event->accept();
@@ -4440,7 +4503,18 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         }
     }
 
+    // Detect transition from non-editing to editing (typing starts the editor)
+    bool wasEditing = (state() == QAbstractItemView::EditingState);
     QTableView::keyPressEvent(event);
+    if (!wasEditing && state() == QAbstractItemView::EditingState) {
+        // Check if typing "=" starts formula (Enter mode), otherwise Edit mode
+        QString typed = event->text();
+        if (typed == "=") {
+            emit editModeChanged("Enter");
+        } else {
+            emit editModeChanged("Edit");
+        }
+    }
 }
 
 void SpreadsheetView::setFormulaEditMode(bool active) {
@@ -4450,6 +4524,7 @@ void SpreadsheetView::setFormulaEditMode(bool active) {
     }
     if (active) {
         m_formulaEditCell = currentIndex();
+        emit editModeChanged("Enter");
     } else {
         m_formulaRangeDragging = false;
     }
@@ -4462,6 +4537,7 @@ void SpreadsheetView::closeEditor(QWidget* editor, QAbstractItemDelegate::EndEdi
         return;
     }
     QTableView::closeEditor(editor, hint);
+    emit editModeChanged("Ready");
 }
 
 void SpreadsheetView::commitData(QWidget* editor) {
@@ -4504,6 +4580,9 @@ void SpreadsheetView::mouseDoubleClickEvent(QMouseEvent* event) {
     m_lastDoubleClickPos = event->pos();
     m_editTriggeredByDoubleClick = true;
     QTableView::mouseDoubleClickEvent(event);
+    if (state() == QAbstractItemView::EditingState) {
+        emit editModeChanged("Edit");
+    }
 }
 
 void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
@@ -4634,6 +4713,24 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
                 openHyperlink(logicalRow(idx), idx.column());
                 event->accept();
                 return;
+            }
+        }
+    }
+
+    // Validation dropdown button click handling
+    if (event->button() == Qt::LeftButton && m_spreadsheet) {
+        QModelIndex idx = indexAt(event->pos());
+        if (idx.isValid() && idx == currentIndex()) {
+            auto* rule = m_spreadsheet->getValidationAt(logicalRow(idx), idx.column());
+            if (rule && rule->type == Spreadsheet::DataValidationRule::List) {
+                QRect cellRect = visualRect(idx);
+                int btnWidth = 18;
+                QRect btnRect(cellRect.right() - btnWidth, cellRect.top(), btnWidth, cellRect.height());
+                if (btnRect.contains(event->pos())) {
+                    showValidationDropdown(idx, rule);
+                    event->accept();
+                    return;
+                }
             }
         }
     }
@@ -6066,6 +6163,28 @@ QStringList SpreadsheetView::resolvePicklistFromRange(const QString& listSourceR
         }
     }
     return result;
+}
+
+void SpreadsheetView::showValidationDropdown(const QModelIndex& idx, const Spreadsheet::DataValidationRule* rule) {
+    if (!rule || !m_spreadsheet) return;
+
+    QMenu popup(this);
+    popup.setStyleSheet(
+        "QMenu { background: white; border: 1px solid #D0D5DD; padding: 2px 0; }"
+        "QMenu::item { padding: 4px 16px; font-size: 12px; color: #344054; }"
+        "QMenu::item:selected { background: #EFF6FF; color: #1D2939; }");
+
+    QStringList items = rule->listItems;
+    if (items.isEmpty() && !rule->listSourceRange.isEmpty()) {
+        items = resolvePicklistFromRange(rule->listSourceRange);
+    }
+    for (const QString& item : items) {
+        popup.addAction(item, [this, idx, item]() {
+            model()->setData(idx, item, Qt::EditRole);
+        });
+    }
+    QRect cellRect = visualRect(idx);
+    popup.exec(viewport()->mapToGlobal(cellRect.bottomLeft()));
 }
 
 void SpreadsheetView::showPicklistPopup(const QModelIndex& index) {

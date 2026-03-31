@@ -1085,6 +1085,38 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
     drawBorder(index.data(Qt::UserRole + 13), rect.left(), rect.top(), rect.left(), rect.bottom());     // left
     drawBorder(index.data(Qt::UserRole + 14), rect.right(), rect.top(), rect.right(), rect.bottom());   // right
 
+    // --- Validation dropdown button: show for selected cell with List validation ---
+    if (hasFocus && m_spreadsheetView) {
+        auto sp = m_spreadsheetView->getSpreadsheet();
+        if (sp) {
+            auto* rule = sp->getValidationAt(index.row(), index.column());
+            if (rule && rule->type == Spreadsheet::DataValidationRule::List) {
+                // Draw dropdown button at right edge
+                int btnWidth = 18;
+                QRect btnRect(rect.right() - btnWidth, rect.top(), btnWidth, rect.height());
+
+                // Button background
+                painter->fillRect(btnRect, QColor("#F0F2F5"));
+                painter->setPen(QPen(QColor("#D0D5DD"), 1));
+                painter->drawLine(btnRect.left(), btnRect.top(), btnRect.left(), btnRect.bottom());
+
+                // Down arrow
+                painter->setRenderHint(QPainter::Antialiasing, true);
+                QPainterPath arrow;
+                int cx = btnRect.center().x();
+                int cy = btnRect.center().y();
+                arrow.moveTo(cx - 4, cy - 2);
+                arrow.lineTo(cx + 4, cy - 2);
+                arrow.lineTo(cx, cy + 3);
+                arrow.closeSubpath();
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(QColor("#667085"));
+                painter->drawPath(arrow);
+                painter->setRenderHint(QPainter::Antialiasing, false);
+            }
+        }
+    }
+
     // --- Focus border: green rectangle for the current cell ---
     // --- Focus cell border ---
     if (hasFocus) {

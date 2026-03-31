@@ -13,6 +13,7 @@
 #include <QSettings>
 #include <QLabel>
 #include <QLineEdit>
+#include <QSlider>
 #include <memory>
 #include <vector>
 #include <atomic>
@@ -95,6 +96,7 @@ private slots:
     // Find/Replace operations
     void onFindNext();
     void onFindPrevious();
+    void onFindAll();
     void onReplaceOne();
     void onReplaceAll();
 
@@ -153,7 +155,8 @@ private:
     void setSheets(const std::vector<std::shared_ptr<Spreadsheet>>& sheets);
     void switchToSheet(int index);
     int nextSheetNumber() const;
-    bool cellMatchesSearch(int row, int col, const QString& searchText, bool matchCase, bool wholeCell) const;
+    bool cellMatchesSearch(int row, int col, const QString& searchText, bool matchCase, bool wholeCell, bool searchFormulas = false) const;
+    bool cellMatchesSearchInSheet(std::shared_ptr<Spreadsheet> sheet, int row, int col, const QString& searchText, bool matchCase, bool wholeCell, bool searchFormulas = false) const;
     void updateStatusBarSummary();
 
     SpreadsheetView* m_spreadsheetView;
@@ -176,10 +179,17 @@ private:
     QDockWidget* m_chartPropsDock = nullptr;
     QString m_currentFilePath;  // Track the file path for Ctrl+S
 
+    // Status bar mode indicator (Ready / Edit / Enter)
+    QLabel* m_modeLabel = nullptr;
+
     // Status bar permanent stats (Excel-style Sum/Average/Count)
     QLabel* m_statusAvgLabel = nullptr;
     QLabel* m_statusCountLabel = nullptr;
     QLabel* m_statusSumLabel = nullptr;
+
+    // Zoom controls (status bar)
+    QSlider* m_zoomSlider = nullptr;
+    QLabel* m_zoomLabel = nullptr;
 
     // Multi-sheet storage
     std::vector<std::shared_ptr<Spreadsheet>> m_sheets;
