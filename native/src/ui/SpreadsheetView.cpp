@@ -3685,10 +3685,38 @@ void SpreadsheetView::setZoomLevel(int percent) {
     if (percent == m_zoomLevel) return;
     m_zoomLevel = percent;
 
+    double scale = m_zoomLevel / 100.0;
+
+    // Scale font
     QFont f = this->font();
-    f.setPointSize(m_baseFontSize * m_zoomLevel / 100);
+    f.setPointSize(qMax(6, static_cast<int>(m_baseFontSize * scale)));
     setFont(f);
 
+    // Scale row heights
+    int defaultRowHeight = qMax(12, static_cast<int>(22 * scale));
+    verticalHeader()->setDefaultSectionSize(defaultRowHeight);
+
+    // Scale column widths
+    int defaultColWidth = qMax(30, static_cast<int>(80 * scale));
+    horizontalHeader()->setDefaultSectionSize(defaultColWidth);
+
+    // Scale custom row/col dimensions if spreadsheet has them
+    if (m_spreadsheet) {
+        for (const auto& [row, height] : m_spreadsheet->getRowHeights()) {
+            setRowHeight(row, qMax(12, static_cast<int>(height * scale)));
+        }
+        for (const auto& [col, width] : m_spreadsheet->getColumnWidths()) {
+            setColumnWidth(col, qMax(30, static_cast<int>(width * scale)));
+        }
+    }
+
+    // Scale header font
+    QFont hf = horizontalHeader()->font();
+    hf.setPointSize(qMax(6, static_cast<int>(m_baseFontSize * scale)));
+    horizontalHeader()->setFont(hf);
+    verticalHeader()->setFont(hf);
+
+    viewport()->update();
     emit zoomChanged(m_zoomLevel);
 }
 

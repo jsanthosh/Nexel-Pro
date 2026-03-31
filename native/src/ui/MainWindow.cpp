@@ -1323,7 +1323,8 @@ void MainWindow::createStatusBar() {
     statusBar()->addWidget(m_modeLabel);
 
     // Permanent stats widgets on the right side (Excel-style)
-    QString statStyle = "QLabel { color: #344054; font-size: 12px; padding: 0 12px; }";
+    QString statStyle = "QLabel { color: #1D2939; font-size: 12px; font-weight: 500; "
+                        "padding: 2px 14px; border-left: 1px solid #E4E7EC; }";
 
     m_statusAvgLabel = new QLabel("");
     m_statusAvgLabel->setStyleSheet(statStyle);
@@ -3216,20 +3217,23 @@ void MainWindow::updateStatusBarSummary() {
     // objects when entire rows/columns are selected
     QItemSelection selection = m_spreadsheetView->selectionModel()->selection();
     if (selection.isEmpty()) {
-        statusBar()->showMessage("Ready");
+        if (m_statusAvgLabel) m_statusAvgLabel->setText("");
+        if (m_statusCountLabel) m_statusCountLabel->setText("");
+        if (m_statusSumLabel) m_statusSumLabel->setText("");
         return;
     }
 
-    // Quick check: if only a single cell selected, show "Ready"
-    // Count total cells across all selection ranges to handle fragmented ranges
+    // Quick check: if only a single cell selected, clear stats
     int totalSelectedCells = 0;
     for (const auto& range : selection) {
         totalSelectedCells += (range.bottom() - range.top() + 1) *
                               (range.right() - range.left() + 1);
-        if (totalSelectedCells > 1) break; // early exit
+        if (totalSelectedCells > 1) break;
     }
     if (totalSelectedCells <= 1) {
-        statusBar()->showMessage("Ready");
+        if (m_statusAvgLabel) m_statusAvgLabel->setText("");
+        if (m_statusCountLabel) m_statusCountLabel->setText("");
+        if (m_statusSumLabel) m_statusSumLabel->setText("");
         return;
     }
 
