@@ -321,14 +321,18 @@ jobs:
             | Windows (64-bit) | `Nexel-${{ github.ref_name }}-Windows-x64.zip` |
             | Linux (64-bit) | `Nexel-${{ github.ref_name }}-Linux-x86_64.AppImage` |
 
-            ### What's New in v6.3.0
-            - **Text Overflow**: Cell text now spills into empty neighbor cells (like Excel)
-            - **Wrap Text**: Wrap long text within cell boundaries
-            - **Shrink to Fit**: Automatically reduce font size to fit text in cell
-            - **Editor Expansion**: Text editor expands rightward while typing into empty cells
-            - **Gridline Hiding**: Gridlines hidden where text overflows into neighbor cells
-            - **Background Gridlines**: Gridlines properly hidden behind background-colored cells
-            - **All Borders Fix**: "All borders" no longer draws double-thick internal edges
+            ### Highlights
+            - **402 Formula Functions** — Math, Stats, Financial, Engineering, Dynamic Arrays, LAMBDA
+            - **Excel-Exact UX** — Marching ants, selection behavior, keyboard navigation, Name Box
+            - **Multi-Level Sort** — Up to 4 sort keys with headers option
+            - **Sheet Protection** — Password-protected locked cells with enforcement
+            - **Row/Column Grouping** — 8 outline levels with expand/collapse
+            - **Multiline Cells** — Option+Return for in-cell line breaks
+            - **HTML Paste** — Paste tables from browsers directly into cells
+            - **10 Chart Types** — Column, Bar, Line, Pie, Scatter, Area, Donut, Histogram, Combo, Waterfall
+            - **Deep Customization** — Trendlines, data labels, axis formatting, sparklines
+            - **Conditional Formatting** — Data bars, color scales, icon sets, 18 condition types
+            - **20M+ Row Support** — Virtual scrolling with columnar storage
           files: |
             artifacts/**/*
           draft: false
