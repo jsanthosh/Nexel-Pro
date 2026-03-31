@@ -26,6 +26,7 @@
 #include <QTime>
 #include <QCheckBox>
 #include <QRegularExpression>
+#include <QMimeData>
 #include <QVBoxLayout>
 #include <QDialogButtonBox>
 #include <QScrollArea>
@@ -671,18 +672,68 @@ void SpreadsheetView::paste() {
             }
         }
     } else {
-        // External paste: plain text only
-        QStringList rows = data.split("\n");
-        for (int r = 0; r < rows.size(); ++r) {
-            QStringList cols = rows[r].split("\t");
-            for (int c = 0; c < cols.size(); ++c) {
-                CellAddress addr(startRow + r, startCol + c);
-                before.push_back(m_spreadsheet->takeCellSnapshot(addr));
+        // External paste: try HTML table first (from web browsers, Excel)
+        const QMimeData* mimeData = QApplication::clipboard()->mimeData();
+        bool htmlHandled = false;
 
-                QModelIndex index = m_model->index(startRow + r, startCol + c);
-                m_model->setData(index, cols[c]);
+        if (mimeData->hasHtml()) {
+            QString html = mimeData->html();
+            if (html.contains("<table", Qt::CaseInsensitive) || html.contains("<tr", Qt::CaseInsensitive)) {
+                // Parse HTML table
+                QRegularExpression rowRx("<tr[^>]*>(.*?)</tr>",
+                    QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+                QRegularExpression cellRx("<t[dh][^>]*>(.*?)</t[dh]>",
+                    QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
 
-                after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                auto rowMatches = rowRx.globalMatch(html);
+                int r = 0;
+                while (rowMatches.hasNext()) {
+                    auto rowMatch = rowMatches.next();
+                    QString rowHtml = rowMatch.captured(1);
+                    auto cellMatches = cellRx.globalMatch(rowHtml);
+                    int c = 0;
+                    while (cellMatches.hasNext()) {
+                        auto cellMatch = cellMatches.next();
+                        QString cellText = cellMatch.captured(1);
+                        // Strip HTML tags from cell content
+                        cellText.remove(QRegularExpression("<[^>]*>"));
+                        cellText = cellText.trimmed();
+                        // Decode HTML entities
+                        cellText.replace("&amp;", "&");
+                        cellText.replace("&lt;", "<");
+                        cellText.replace("&gt;", ">");
+                        cellText.replace("&nbsp;", " ");
+                        cellText.replace("&quot;", "\"");
+
+                        CellAddress addr(startRow + r, startCol + c);
+                        before.push_back(m_spreadsheet->takeCellSnapshot(addr));
+
+                        QModelIndex index = m_model->index(startRow + r, startCol + c);
+                        m_model->setData(index, cellText);
+
+                        after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                        c++;
+                    }
+                    r++;
+                }
+                htmlHandled = true;
+            }
+        }
+
+        if (!htmlHandled) {
+            // Fallback: plain text TSV paste
+            QStringList rows = data.split("\n");
+            for (int r = 0; r < rows.size(); ++r) {
+                QStringList cols = rows[r].split("\t");
+                for (int c = 0; c < cols.size(); ++c) {
+                    CellAddress addr(startRow + r, startCol + c);
+                    before.push_back(m_spreadsheet->takeCellSnapshot(addr));
+
+                    QModelIndex index = m_model->index(startRow + r, startCol + c);
+                    m_model->setData(index, cols[c]);
+
+                    after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+                }
             }
         }
     }

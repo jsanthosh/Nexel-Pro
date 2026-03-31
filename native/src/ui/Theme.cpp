@@ -43,7 +43,7 @@ static NexelTheme createNexelGreen() {
     t.headerBackground   = QColor("#F3F3F3");
     t.headerBorder       = QColor("#DADCE0");
     t.headerText         = QColor("#333333");
-    t.selectionTint      = QColor(198, 217, 240, 60);
+    t.selectionTint      = QColor(180, 198, 231, 76);  // Excel exact: #B4C6E7 at ~30% opacity
     t.focusBorderColor   = QColor("#217346");   // Excel's exact active cell border green
     t.editorBorderColor  = QColor("#217346");
 
@@ -109,6 +109,10 @@ static NexelTheme createNexelGreen() {
     t.textPrimary   = QColor("#333333");
     t.textSecondary = QColor("#555555");
     t.textMuted     = QColor("#94A3B8");
+
+    // Header Selection Highlight
+    t.headerSelectedBackground = QColor("#D6DCE4");  // darker than default #F3F3F3
+    t.headerSelectedText = QColor("#1D2939");
 
     // Selection Handle
     t.selectionHandleColor = QColor("#4A90D9");
@@ -423,6 +427,10 @@ static NexelTheme createDarkMode() {
     t.textPrimary   = QColor("#d4d4d4");
     t.textSecondary = QColor("#808080");
     t.textMuted     = QColor("#606060");
+
+    // Header Selection Highlight
+    t.headerSelectedBackground = QColor("#404040");
+    t.headerSelectedText = QColor("#e0e0e0");
 
     // Selection Handle
     t.selectionHandleColor = QColor("#0078d4");

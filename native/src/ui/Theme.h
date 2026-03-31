@@ -110,6 +110,10 @@ struct NexelTheme {
     QColor textSecondary;
     QColor textMuted;
 
+    // Header Selection Highlight
+    QColor headerSelectedBackground;
+    QColor headerSelectedText;
+
     // Selection Handle (chart/shape widgets)
     QColor selectionHandleColor;
 };

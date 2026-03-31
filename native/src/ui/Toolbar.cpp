@@ -3,6 +3,8 @@
 #include <QAction>
 #include <QToolButton>
 #include <QSpinBox>
+#include <QComboBox>
+#include <QIntValidator>
 #include <QFontComboBox>
 #include <QColorDialog>
 #include <QLabel>
@@ -24,6 +26,9 @@
 #include "../core/DocumentTheme.h"
 #include <QDate>
 #include <QDateTime>
+
+// Static member initialization
+QVector<QColor> Toolbar::s_recentColors;
 
 // ===== Color Palette Popup =====
 // Custom paint widget for a single color swatch — crisp, no stylesheet blur
@@ -189,6 +194,38 @@ static ColorPickResult showColorPalette(QWidget* parent, const QString& currentC
     }
     layout->addLayout(grayRow);
 
+    // Recent Colors section
+    if (!Toolbar::s_recentColors.isEmpty()) {
+        layout->addSpacing(6);
+        QFrame* sepRecent = new QFrame(container);
+        sepRecent->setFrameShape(QFrame::HLine);
+        sepRecent->setStyleSheet("background: #E8E8E8; max-height: 1px;");
+        layout->addWidget(sepRecent);
+        layout->addSpacing(4);
+
+        QLabel* recentLabel = new QLabel("Recent Colors", container);
+        recentLabel->setStyleSheet("font: 11px 'Segoe UI', 'SF Pro Text', sans-serif; color: #666; padding-bottom: 4px;");
+        layout->addWidget(recentLabel);
+
+        QHBoxLayout* recentRow = new QHBoxLayout();
+        recentRow->setSpacing(3);
+        recentRow->setContentsMargins(0, 0, 0, 0);
+        for (const QColor& rc : Toolbar::s_recentColors) {
+            ColorSwatch* swatch = new ColorSwatch(rc, container);
+            swatch->selected = currentColor.isValid() && (rc == currentColor);
+            swatch->setToolTip(rc.name().toUpper());
+            swatch->onClick = [&result, &menu, rc]() {
+                result.displayColor = rc;
+                result.colorString = rc.name();
+                result.isValid = true;
+                menu.close();
+            };
+            recentRow->addWidget(swatch);
+        }
+        recentRow->addStretch();
+        layout->addLayout(recentRow);
+    }
+
     // Separator
     layout->addSpacing(6);
     QFrame* sep2 = new QFrame(container);
@@ -242,6 +279,12 @@ static ColorPickResult showColorPalette(QWidget* parent, const QString& currentC
             result.displayColor = custom;
             result.colorString = custom.name();
             result.isValid = true;
+
+            // Add to recent colors (max 10, no duplicates)
+            Toolbar::s_recentColors.removeAll(custom);
+            Toolbar::s_recentColors.prepend(custom);
+            if (Toolbar::s_recentColors.size() > 10)
+                Toolbar::s_recentColors.resize(10);
         }
     }
 
@@ -779,11 +822,20 @@ void Toolbar::createActions() {
         emit fontFamilyChanged(font.family());
     });
 
-    m_fontSizeSpinBox = new QSpinBox(this);
-    m_fontSizeSpinBox->setRange(6, 72);
-    m_fontSizeSpinBox->setValue(11);
-    addWidget(m_fontSizeSpinBox);
-    connect(m_fontSizeSpinBox, &QSpinBox::valueChanged, this, &Toolbar::fontSizeChanged);
+    m_fontSizeCombo = new QComboBox(this);
+    m_fontSizeCombo->setEditable(true);
+    m_fontSizeCombo->setFixedWidth(55);
+    m_fontSizeCombo->setFixedHeight(26);
+    QStringList sizes = {"8", "9", "10", "11", "12", "14", "16", "18", "20", "22", "24", "26", "28", "36", "48", "72"};
+    m_fontSizeCombo->addItems(sizes);
+    m_fontSizeCombo->setCurrentText("11");
+    m_fontSizeCombo->setValidator(new QIntValidator(1, 409, m_fontSizeCombo));
+    addWidget(m_fontSizeCombo);
+    connect(m_fontSizeCombo, &QComboBox::currentTextChanged, this, [this](const QString& text) {
+        bool ok;
+        int size = text.toInt(&ok);
+        if (ok && size > 0 && size <= 409) emit fontSizeChanged(size);
+    });
 
     addSeparator();
 
@@ -1833,14 +1885,14 @@ void Toolbar::updateBgColorIcon() {
 void Toolbar::syncToStyle(const CellStyle& style) {
     // Block signals so we don't trigger formatting changes on the cell
     m_fontCombo->blockSignals(true);
-    m_fontSizeSpinBox->blockSignals(true);
+    m_fontSizeCombo->blockSignals(true);
 
     // Font family and size
     m_fontCombo->setCurrentFont(QFont(style.fontName));
-    m_fontSizeSpinBox->setValue(style.fontSize);
+    m_fontSizeCombo->setCurrentText(QString::number(style.fontSize));
 
     m_fontCombo->blockSignals(false);
-    m_fontSizeSpinBox->blockSignals(false);
+    m_fontSizeCombo->blockSignals(false);
 
     // Bold / Italic / Underline / Strikethrough
     if (m_boldBtn) m_boldBtn->setChecked(style.bold);

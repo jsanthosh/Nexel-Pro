@@ -70,6 +70,7 @@
 #include <QElapsedTimer>
 #include <QApplication>
 #include <QActionGroup>
+#include <QPushButton>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
@@ -122,7 +123,23 @@ MainWindow::MainWindow(QWidget* parent)
     QHBoxLayout* formulaRow = new QHBoxLayout();
     formulaRow->setContentsMargins(0, 0, 0, 0);
     formulaRow->setSpacing(4);
+    QPushButton* fxBtn = new QPushButton("fx");
+    fxBtn->setFixedSize(28, 26);
+    fxBtn->setStyleSheet(
+        "QPushButton { background: #F0F2F5; color: #344054; border: 1px solid #D0D5DD; "
+        "border-radius: 4px; font-size: 11px; font-style: italic; font-weight: 600; }"
+        "QPushButton:hover { background: #E4E7EC; }");
+    fxBtn->setToolTip("Insert Function");
+    connect(fxBtn, &QPushButton::clicked, this, [this]() {
+        // Focus the formula bar and insert "=" to start formula
+        if (m_formulaBar) {
+            m_formulaBar->setFocus();
+            m_formulaBar->setCellContent("=");
+        }
+    });
+
     formulaRow->addWidget(m_nameBox);
+    formulaRow->addWidget(fxBtn);
     formulaRow->addWidget(m_formulaBar, 1);
     layout->addLayout(formulaRow);
 

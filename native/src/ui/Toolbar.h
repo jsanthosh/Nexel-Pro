@@ -3,11 +3,13 @@
 
 #include <QToolBar>
 #include <QColor>
+#include <QVector>
 #include "../core/Cell.h"
 #include "../core/DocumentTheme.h"
 
 class QFontComboBox;
 class QSpinBox;
+class QComboBox;
 class QToolButton;
 
 class Toolbar : public QToolBar {
@@ -99,7 +101,7 @@ private:
     void updateBgColorIcon();
 
     QFontComboBox* m_fontCombo = nullptr;
-    QSpinBox* m_fontSizeSpinBox = nullptr;
+    QComboBox* m_fontSizeCombo = nullptr;
     QToolButton* m_saveBtn = nullptr;
     QColor m_lastFgColor = QColor("#000000");
     QString m_lastFgColorStr = "#000000";
@@ -130,6 +132,10 @@ private:
     QToolBar* m_secondaryToolbar = nullptr;
     QToolButton* m_chatBtn = nullptr;
     QToolButton* m_textOverflowBtn = nullptr;
+
+public:
+    // Recent colors shared across all color pickers
+    static QVector<QColor> s_recentColors;
 };
 
 #endif // TOOLBAR_H

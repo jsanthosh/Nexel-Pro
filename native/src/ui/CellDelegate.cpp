@@ -776,7 +776,7 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
             rotation = rotData.toInt();
         }
 
-        QRect textRect = rect.adjusted(4 + indentPx + iconTextShift, 1, -4, -1);
+        QRect textRect = rect.adjusted(4 + indentPx + iconTextShift, 2, -4, -2);
 
         // Get text overflow mode for this cell
         TextOverflowMode overflowMode = TextOverflowMode::Overflow;
