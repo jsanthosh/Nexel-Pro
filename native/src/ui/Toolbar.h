@@ -121,6 +121,7 @@ private:
     QToolButton* m_fgColorBtn = nullptr;
     QToolButton* m_bgColorBtn = nullptr;
     QToolButton* m_numberFormatBtn = nullptr;
+    QMenu* m_numberFormatMenu = nullptr;
 
     // Alignment button refs for checked state management
     QToolButton* m_alignLeftBtn = nullptr;

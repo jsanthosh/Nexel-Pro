@@ -343,6 +343,23 @@ void FormulaBar::applyThemeStyle() {
     ).arg(t.formulaBarBackground.name(), t.formulaBarBorder.name(), t.formulaInputBorder.name()));
 }
 
+void FormulaBar::setExpanded(bool expanded) {
+    if (expanded) {
+        // Allow the QLineEdit to grow vertically to fill expanded formula bar
+        m_formulaEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        m_formulaEdit->setMinimumHeight(60);
+        setMinimumHeight(70);
+        setMaximumHeight(16777215); // QWIDGETSIZE_MAX
+    } else {
+        // Restore compact formula bar
+        m_formulaEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        m_formulaEdit->setMinimumHeight(0);
+        m_formulaEdit->setFixedHeight(22);
+        setMinimumHeight(0);
+        setMaximumHeight(16777215);
+    }
+}
+
 void FormulaBar::onThemeChanged() {
     applyThemeStyle();
 }

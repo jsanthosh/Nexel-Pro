@@ -102,6 +102,11 @@ public:
     void deleteEntireRow();
     void deleteEntireColumn();
 
+    // Double-click cursor positioning
+    bool wasEditTriggeredByDoubleClick() const { return m_editTriggeredByDoubleClick; }
+    QPoint lastDoubleClickPos() const { return m_lastDoubleClickPos; }
+    void clearDoubleClickFlag() { m_editTriggeredByDoubleClick = false; }
+
     // Picklist & Checkbox
     void insertPicklist(const QStringList& options, const QStringList& colors = {});
     void showCreatePicklistDialog();
@@ -182,6 +187,12 @@ public:
     // Bulk loading guard: disables cell-scanning navigation (Ctrl+Arrow etc.)
     void setBulkLoading(bool loading) { m_bulkLoading = loading; }
 
+    // Go To Special
+    void goToSpecial();
+
+    // Remove Duplicates
+    void removeDuplicates();
+
     // Cell comments
     void insertOrEditComment();
     void deleteComment();
@@ -205,6 +216,7 @@ public:
 signals:
     void cellSelected(int row, int col, const QString& content, const QString& address);
     void formatCellsRequested();
+    void goToRequested();
     void cellReferenceInserted(const QString& ref);
     void cellReferenceReplaced(const QString& newRef);
     void pivotFilterChanged(int filterIndex, QStringList selectedValues);
@@ -214,6 +226,7 @@ signals:
 protected:
     void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
@@ -373,6 +386,10 @@ private:
 
     // Picklist popup re-entry guard
     bool m_picklistPopupOpen = false;
+
+    // Double-click cursor positioning
+    QPoint m_lastDoubleClickPos;
+    bool m_editTriggeredByDoubleClick = false;
 
     // Marching ants for clipboard (Ctrl+C animated dashed border)
     QTimer* m_marchingAntsTimer = nullptr;

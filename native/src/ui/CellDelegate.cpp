@@ -470,11 +470,21 @@ void CellDelegate::setEditorData(QWidget* editor, const QModelIndex& index) cons
     QLineEdit* lineEdit = qobject_cast<QLineEdit*>(editor);
     if (lineEdit) {
         lineEdit->setText(index.data(Qt::EditRole).toString());
-        // Place cursor at end (not selecting all text) — like Excel
+        // Place cursor at click point (double-click) or end (F2/typing) — like Excel
         // Deferred to after Qt finishes initializing the editor, which otherwise re-selects all text
-        QTimer::singleShot(0, lineEdit, [lineEdit]() {
+        SpreadsheetView* sv = m_spreadsheetView;
+        QTimer::singleShot(0, lineEdit, [lineEdit, sv]() {
             lineEdit->deselect();
-            lineEdit->setCursorPosition(lineEdit->text().length());
+            if (sv && sv->wasEditTriggeredByDoubleClick()) {
+                // Position cursor at the double-click location
+                QPoint clickPos = sv->lastDoubleClickPos();
+                QPoint localPos = lineEdit->mapFromGlobal(sv->viewport()->mapToGlobal(clickPos));
+                int cursorPos = lineEdit->cursorPositionAt(localPos);
+                lineEdit->setCursorPosition(cursorPos);
+                sv->clearDoubleClickFlag();
+            } else {
+                lineEdit->setCursorPosition(lineEdit->text().length());
+            }
         });
     }
 }

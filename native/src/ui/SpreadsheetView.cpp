@@ -3,6 +3,8 @@
 #include "CellDelegate.h"
 #include "PasteSpecialDialog.h"
 #include "SortDialog.h"
+#include "GoToSpecialDialog.h"
+#include "RemoveDuplicatesDialog.h"
 #include "Theme.h"
 #include "../core/Spreadsheet.h"
 #include <algorithm>
@@ -205,6 +207,10 @@ void SpreadsheetView::initializeView() {
     m_delegate->setSpreadsheetView(this);
     setItemDelegate(m_delegate);
 
+    // Highlight headers when corresponding rows/columns are selected (Excel behavior)
+    horizontalHeader()->setHighlightSections(true);
+    verticalHeader()->setHighlightSections(true);
+
     // Column/row sizing
     horizontalHeader()->setDefaultSectionSize(80);
     verticalHeader()->setDefaultSectionSize(25);
@@ -276,6 +282,11 @@ void SpreadsheetView::applyGridStylesheet() {
         "   font-size: 11px;"
         "   color: %4;"
         "}"
+        "QHeaderView::section:checked {"
+        "   background-color: %5;"
+        "   color: %6;"
+        "   font-weight: 600;"
+        "}"
         "QHeaderView {"
         "   background-color: %2;"
         "}"
@@ -289,7 +300,9 @@ void SpreadsheetView::applyGridStylesheet() {
         t.gridBackground.name(),
         t.headerBackground.name(),
         t.headerBorder.name(),
-        t.headerText.name()
+        t.headerText.name(),
+        t.headerSelectedBackground.name(),
+        t.headerSelectedText.name()
     ));
 }
 
@@ -2329,37 +2342,76 @@ void SpreadsheetView::unmergeCells() {
 void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
     QMenu menu(this);
 
-    menu.addAction("Cut", this, &SpreadsheetView::cut, QKeySequence::Cut);
-    menu.addAction("Copy", this, &SpreadsheetView::copy, QKeySequence::Copy);
-    menu.addAction("Paste", this, &SpreadsheetView::paste, QKeySequence::Paste);
-    menu.addAction("Paste Special...", this, &SpreadsheetView::pasteSpecial,
-                   QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V));
+    menu.addAction("Cu&t", QKeySequence(Qt::CTRL | Qt::Key_X), this, &SpreadsheetView::cut);
+    menu.addAction("&Copy", QKeySequence(Qt::CTRL | Qt::Key_C), this, &SpreadsheetView::copy);
+    menu.addAction("&Paste", QKeySequence(Qt::CTRL | Qt::Key_V), this, &SpreadsheetView::paste);
+    menu.addAction("Paste &Special...", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V),
+                   this, &SpreadsheetView::pasteSpecial);
 
     menu.addSeparator();
 
     // Clear submenu
-    QMenu* clearMenu = menu.addMenu("Clear");
-    clearMenu->addAction("Clear All", this, &SpreadsheetView::clearAll);
-    clearMenu->addAction("Clear Contents", this, &SpreadsheetView::clearContent);
-    clearMenu->addAction("Clear Formats", this, &SpreadsheetView::clearFormats);
+    QMenu* clearMenu = menu.addMenu("Clea&r");
+    clearMenu->addAction("Clear &All", this, &SpreadsheetView::clearAll);
+    clearMenu->addAction("Clear &Contents", QKeySequence(Qt::Key_Delete),
+                         this, &SpreadsheetView::clearContent);
+    clearMenu->addAction("Clear &Formats", this, &SpreadsheetView::clearFormats);
+
+    // Pick from Drop-down List (Excel feature: shows unique values from current column)
+    menu.addSeparator();
+    menu.addAction("Pick from &Drop-down List...", this, [this]() {
+        QModelIndex idx = currentIndex();
+        if (!idx.isValid() || !m_spreadsheet) return;
+
+        int col = idx.column();
+        int maxRow = m_spreadsheet->getMaxRow();
+
+        // Collect unique non-empty values from this column
+        QStringList values;
+        QSet<QString> seen;
+        for (int r = 0; r <= maxRow; ++r) {
+            if (r == idx.row()) continue; // skip current cell
+            auto cell = m_spreadsheet->getCellIfExists(r, col);
+            if (cell && cell->getValue().isValid()) {
+                QString val = cell->getValue().toString().trimmed();
+                if (!val.isEmpty() && !seen.contains(val)) {
+                    seen.insert(val);
+                    values.append(val);
+                }
+            }
+        }
+
+        if (values.isEmpty()) return;
+        values.sort(Qt::CaseInsensitive);
+
+        // Show popup menu with values
+        QMenu popup(this);
+        popup.setStyleSheet(ThemeManager::instance().dialogStylesheet());
+        for (const QString& val : values) {
+            popup.addAction(val, [this, idx, val]() {
+                model()->setData(idx, val, Qt::EditRole);
+            });
+        }
+        popup.exec(viewport()->mapToGlobal(visualRect(idx).bottomLeft()));
+    });
 
     menu.addSeparator();
 
     // Insert submenu
-    QMenu* insertMenu = menu.addMenu("Insert...");
-    insertMenu->addAction("Shift cells right", this, &SpreadsheetView::insertCellsShiftRight);
-    insertMenu->addAction("Shift cells down", this, &SpreadsheetView::insertCellsShiftDown);
+    QMenu* insertMenu = menu.addMenu("&Insert...");
+    insertMenu->addAction("Shift cells &right", this, &SpreadsheetView::insertCellsShiftRight);
+    insertMenu->addAction("Shift cells &down", this, &SpreadsheetView::insertCellsShiftDown);
     insertMenu->addSeparator();
-    insertMenu->addAction("Entire row", this, &SpreadsheetView::insertEntireRow);
-    insertMenu->addAction("Entire column", this, &SpreadsheetView::insertEntireColumn);
+    insertMenu->addAction("Entire ro&w", this, &SpreadsheetView::insertEntireRow);
+    insertMenu->addAction("Entire co&lumn", this, &SpreadsheetView::insertEntireColumn);
 
     // Delete submenu
-    QMenu* deleteMenu = menu.addMenu("Delete...");
-    deleteMenu->addAction("Shift cells left", this, &SpreadsheetView::deleteCellsShiftLeft);
-    deleteMenu->addAction("Shift cells up", this, &SpreadsheetView::deleteCellsShiftUp);
+    QMenu* deleteMenu = menu.addMenu("De&lete...");
+    deleteMenu->addAction("Shift cells &left", this, &SpreadsheetView::deleteCellsShiftLeft);
+    deleteMenu->addAction("Shift cells &up", this, &SpreadsheetView::deleteCellsShiftUp);
     deleteMenu->addSeparator();
-    deleteMenu->addAction("Entire row", this, &SpreadsheetView::deleteEntireRow);
-    deleteMenu->addAction("Entire column", this, &SpreadsheetView::deleteEntireColumn);
+    deleteMenu->addAction("Entire ro&w", this, &SpreadsheetView::deleteEntireRow);
+    deleteMenu->addAction("Entire co&lumn", this, &SpreadsheetView::deleteEntireColumn);
 
     menu.addSeparator();
 
@@ -2456,7 +2508,8 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
         if (cur.isValid()) {
             auto cell = m_spreadsheet->getCellIfExists(logicalRow(cur), cur.column());
             bool hasComment = cell && cell->hasComment();
-            menu.addAction(hasComment ? "Edit Comment..." : "Insert Comment...",
+            menu.addAction(hasComment ? "Edit Co&mment..." : "Insert Co&mment...",
+                           QKeySequence(Qt::SHIFT | Qt::Key_F2),
                            this, &SpreadsheetView::insertOrEditComment);
             if (hasComment) {
                 menu.addAction("Delete Comment", this, &SpreadsheetView::deleteComment);
@@ -2483,23 +2536,23 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
         }
     }
 
-    menu.addAction("Format Cells...", this, [this]() {
+    menu.addAction("&Format Cells...", QKeySequence(Qt::CTRL | Qt::Key_1), this, [this]() {
         emit formatCellsRequested();
-    }, QKeySequence(Qt::CTRL | Qt::Key_1));
+    });
 
     menu.addSeparator();
 
     // Sort submenu
-    QMenu* sortMenu = menu.addMenu("Sort");
-    sortMenu->addAction("Sort A to Z", this, &SpreadsheetView::sortAscending);
-    sortMenu->addAction("Sort Z to A", this, &SpreadsheetView::sortDescending);
+    QMenu* sortMenu = menu.addMenu("Sor&t");
+    sortMenu->addAction("Sort &A to Z", this, &SpreadsheetView::sortAscending);
+    sortMenu->addAction("Sort &Z to A", this, &SpreadsheetView::sortDescending);
     sortMenu->addSeparator();
-    sortMenu->addAction("Custom Sort...", this, &SpreadsheetView::showSortDialog);
+    sortMenu->addAction("&Custom Sort...", this, &SpreadsheetView::showSortDialog);
 
     menu.addSeparator();
 
     // Define Name
-    menu.addAction("Define Name...", [this]() {
+    menu.addAction("De&fine Name...", [this]() {
         QModelIndex cur = currentIndex();
         if (!cur.isValid() || !m_spreadsheet) return;
         QString addr = CellAddress(logicalRow(cur), cur.column()).toString();
@@ -2514,8 +2567,8 @@ void SpreadsheetView::showCellContextMenu(const QPoint& pos) {
     });
 
     // Hyperlink
-    menu.addAction("Hyperlink...", this, &SpreadsheetView::insertOrEditHyperlink,
-                   QKeySequence(Qt::CTRL | Qt::Key_K));
+    menu.addAction("&Hyperlink...", QKeySequence(Qt::CTRL | Qt::Key_K),
+                   this, &SpreadsheetView::insertOrEditHyperlink);
 
     menu.exec(viewport()->mapToGlobal(pos));
 }
@@ -4156,9 +4209,59 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
+    // ===== Ctrl+Shift+~ : General number format =====
+    // (Must be checked before Ctrl+` since ~ is Shift+` on most keyboards)
+    if (ctrl && shift && (event->key() == Qt::Key_AsciiTilde || event->key() == Qt::Key_QuoteLeft)) {
+        applyNumberFormat("General");
+        event->accept();
+        return;
+    }
+
     // ===== Ctrl+` (backtick): Toggle formula view =====
-    if (ctrl && event->key() == Qt::Key_QuoteLeft) {
+    if (ctrl && !shift && event->key() == Qt::Key_QuoteLeft) {
         toggleFormulaView();
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Shift+! : Number format (2 decimal places, thousands separator) =====
+    if (ctrl && shift && event->key() == Qt::Key_Exclam) {
+        applyNumberFormat("Number");
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Shift+@ : Time format =====
+    if (ctrl && shift && event->key() == Qt::Key_At) {
+        applyNumberFormat("hh:mm:ss");
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Shift+# : Date format =====
+    if (ctrl && shift && event->key() == Qt::Key_NumberSign) {
+        applyNumberFormat("mm/dd/yyyy");
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Shift+$ : Currency format =====
+    if (ctrl && shift && event->key() == Qt::Key_Dollar) {
+        applyNumberFormat("Currency");
+        event->accept();
+        return;
+    }
+
+    // ===== Ctrl+Shift+% : Percentage format =====
+    if (ctrl && shift && event->key() == Qt::Key_Percent) {
+        applyNumberFormat("Percentage");
+        event->accept();
+        return;
+    }
+
+    // ===== F5: Go To dialog (same as Ctrl+G) =====
+    if (event->key() == Qt::Key_F5) {
+        emit goToRequested();
         event->accept();
         return;
     }
@@ -4395,6 +4498,12 @@ void SpreadsheetView::insertCellReference(const QString& ref) {
     }
     // Otherwise signal for the formula bar to handle
     emit cellReferenceInserted(ref);
+}
+
+void SpreadsheetView::mouseDoubleClickEvent(QMouseEvent* event) {
+    m_lastDoubleClickPos = event->pos();
+    m_editTriggeredByDoubleClick = true;
+    QTableView::mouseDoubleClickEvent(event);
 }
 
 void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
@@ -7228,4 +7337,260 @@ void SpreadsheetView::cancelMultilineEditor() {
     m_multilineEditor->deleteLater();
     m_multilineEditor = nullptr;
     setFocus();
+}
+
+// =============================================================================
+// Go To Special — select cells by type (blanks, constants, formulas, comments)
+// =============================================================================
+void SpreadsheetView::goToSpecial() {
+    if (!m_spreadsheet) return;
+
+    GoToSpecialDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    auto selType = dialog.getSelectionType();
+    bool wantNumbers = dialog.includeNumbers();
+    bool wantText = dialog.includeText();
+    bool wantLogicals = dialog.includeLogicals();
+    bool wantErrors = dialog.includeErrors();
+
+    int maxRow = m_spreadsheet->getMaxRow();
+    int maxCol = m_spreadsheet->getMaxColumn();
+
+    // For CurrentRegion, use detectDataRegion from current cell
+    if (selType == GoToSpecialDialog::CurrentRegion) {
+        QModelIndex cur = currentIndex();
+        if (!cur.isValid()) return;
+        CellRange region = detectDataRegion(logicalRow(cur), cur.column());
+        if (region.isValid() && m_model) {
+            QItemSelection sel;
+            sel.select(m_model->index(region.getStart().row, region.getStart().col),
+                       m_model->index(region.getEnd().row, region.getEnd().col));
+            selectionModel()->select(sel, QItemSelectionModel::ClearAndSelect);
+        }
+        return;
+    }
+
+    if (maxRow < 0 || maxCol < 0) {
+        QMessageBox::information(this, "Go To Special", "No cells found matching the criteria.");
+        return;
+    }
+
+    QItemSelection matchingSel;
+    int matchCount = 0;
+
+    for (int r = 0; r <= maxRow; ++r) {
+        for (int c = 0; c <= maxCol; ++c) {
+            auto cell = m_spreadsheet->getCellIfExists(r, c);
+            bool match = false;
+
+            switch (selType) {
+            case GoToSpecialDialog::Blanks:
+                match = !cell || cell.isEmpty() || cell.getType() == CellType::Empty;
+                break;
+
+            case GoToSpecialDialog::Constants: {
+                if (!cell || cell.isEmpty()) break;
+                if (cell.hasFormula()) break; // constants only = no formulas
+                CellType ct = cell.getType();
+                if (wantNumbers && (ct == CellType::Number || ct == CellType::Date)) match = true;
+                if (wantText && ct == CellType::Text) match = true;
+                if (wantLogicals && ct == CellType::Boolean) match = true;
+                if (wantErrors && ct == CellType::Error) match = true;
+                break;
+            }
+
+            case GoToSpecialDialog::Formulas: {
+                if (!cell || !cell.hasFormula()) break;
+                // Check the computed value type
+                QVariant val = cell.getComputedValue();
+                if (cell.hasError()) {
+                    if (wantErrors) match = true;
+                } else if (val.typeId() == QMetaType::Bool) {
+                    if (wantLogicals) match = true;
+                } else if (val.typeId() == QMetaType::Double || val.typeId() == QMetaType::Int ||
+                           val.typeId() == QMetaType::LongLong || val.typeId() == QMetaType::Float) {
+                    if (wantNumbers) match = true;
+                } else if (val.typeId() == QMetaType::QString) {
+                    if (wantText) match = true;
+                } else {
+                    if (wantNumbers) match = true; // default: treat as number
+                }
+                break;
+            }
+
+            case GoToSpecialDialog::Comments:
+                if (cell && cell.hasComment()) match = true;
+                break;
+
+            case GoToSpecialDialog::ConditionalFormats: {
+                const auto& cf = m_spreadsheet->getConditionalFormatting();
+                const auto& rules = cf.getAllRules();
+                for (const auto& rule : rules) {
+                    if (rule->getRange().contains(r, c)) {
+                        match = true;
+                        break;
+                    }
+                }
+                break;
+            }
+
+            case GoToSpecialDialog::DataValidation: {
+                if (m_spreadsheet->getValidationAt(r, c)) match = true;
+                break;
+            }
+
+            case GoToSpecialDialog::VisibleCells:
+                if (!isRowHidden(r) && !isColumnHidden(c)) match = true;
+                break;
+
+            case GoToSpecialDialog::CurrentRegion:
+                break; // handled above
+            }
+
+            if (match) {
+                QModelIndex idx = m_model ? m_model->index(r, c) : QModelIndex();
+                if (idx.isValid()) {
+                    matchingSel.select(idx, idx);
+                    matchCount++;
+                }
+            }
+        }
+    }
+
+    if (matchCount > 0) {
+        selectionModel()->select(matchingSel, QItemSelectionModel::ClearAndSelect);
+        // Scroll to the first match
+        if (!matchingSel.isEmpty() && !matchingSel.first().indexes().isEmpty()) {
+            scrollTo(matchingSel.first().indexes().first());
+        }
+    } else {
+        QMessageBox::information(this, "Go To Special", "No cells found matching the criteria.");
+    }
+}
+
+// =============================================================================
+// Remove Duplicates — find and remove duplicate rows based on selected columns
+// =============================================================================
+void SpreadsheetView::removeDuplicates() {
+    if (!m_spreadsheet) return;
+
+    // Determine the data range from selection or auto-detect
+    QModelIndex cur = currentIndex();
+    if (!cur.isValid()) return;
+
+    CellRange dataRange;
+    QItemSelection sel = selectionModel()->selection();
+    if (!sel.isEmpty()) {
+        int minR = INT_MAX, maxR = 0, minC = INT_MAX, maxC = 0;
+        for (const auto& r : sel) {
+            minR = qMin(minR, r.top());
+            maxR = qMax(maxR, r.bottom());
+            minC = qMin(minC, r.left());
+            maxC = qMax(maxC, r.right());
+        }
+        // If selection is more than 1 cell, use it; otherwise auto-detect
+        if (maxR > minR || maxC > minC) {
+            int logMinR = m_model ? m_model->toLogicalRow(minR) : minR;
+            int logMaxR = m_model ? m_model->toLogicalRow(maxR) : maxR;
+            dataRange = CellRange(CellAddress(logMinR, minC), CellAddress(logMaxR, maxC));
+        }
+    }
+
+    if (!dataRange.isValid()) {
+        dataRange = detectDataRegion(logicalRow(cur), cur.column());
+    }
+    if (!dataRange.isValid()) {
+        QMessageBox::information(this, "Remove Duplicates", "No data range found.");
+        return;
+    }
+
+    int startRow = dataRange.getStart().row;
+    int endRow = dataRange.getEnd().row;
+    int startCol = dataRange.getStart().col;
+    int endCol = dataRange.getEnd().col;
+
+    // Build column headers from first row
+    QStringList headers;
+    for (int c = startCol; c <= endCol; ++c) {
+        auto cell = m_spreadsheet->getCellIfExists(startRow, c);
+        QString val = cell ? cell.getValue().toString().trimmed() : QString();
+        if (val.isEmpty()) {
+            // Generate column letter
+            QString colLetter;
+            int cc = c;
+            do {
+                colLetter.prepend(QChar('A' + cc % 26));
+                cc = cc / 26 - 1;
+            } while (cc >= 0);
+            val = QString("Column %1").arg(colLetter);
+        }
+        headers.append(val);
+    }
+
+    RemoveDuplicatesDialog dialog(headers, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    QVector<int> selectedCols = dialog.getSelectedColumns();
+    if (selectedCols.isEmpty()) {
+        QMessageBox::information(this, "Remove Duplicates", "No columns selected.");
+        return;
+    }
+
+    bool hasHeaders = dialog.hasHeaders();
+    int dataStartRow = hasHeaders ? startRow + 1 : startRow;
+
+    if (dataStartRow > endRow) {
+        QMessageBox::information(this, "Remove Duplicates",
+            "0 duplicate values found and removed; 0 unique values remain.");
+        return;
+    }
+
+    // Build set of seen row-tuples, keep track of duplicate row indices
+    QSet<QString> seen;
+    QVector<int> duplicateRows;
+
+    for (int r = dataStartRow; r <= endRow; ++r) {
+        // Build a key string from the selected columns
+        QString key;
+        for (int ci : selectedCols) {
+            int actualCol = startCol + ci;
+            if (actualCol > endCol) continue;
+            auto cell = m_spreadsheet->getCellIfExists(r, actualCol);
+            QString val = cell ? cell.getValue().toString() : QString();
+            key += val + QChar('\x1F'); // unit separator as delimiter
+        }
+
+        if (seen.contains(key)) {
+            duplicateRows.append(r);
+        } else {
+            seen.insert(key);
+        }
+    }
+
+    if (duplicateRows.isEmpty()) {
+        int uniqueCount = endRow - dataStartRow + 1;
+        QMessageBox::information(this, "Remove Duplicates",
+            QString("0 duplicate values found and removed; %1 unique values remain.")
+                .arg(uniqueCount));
+        return;
+    }
+
+    // Delete duplicate rows from bottom to top to preserve indices
+    std::sort(duplicateRows.begin(), duplicateRows.end(), std::greater<int>());
+    for (int r : duplicateRows) {
+        m_spreadsheet->deleteRow(r);
+    }
+
+    int removedCount = duplicateRows.size();
+    int uniqueCount = (endRow - dataStartRow + 1) - removedCount;
+
+    // Refresh view
+    if (m_model) {
+        m_model->resetModel();
+    }
+
+    QMessageBox::information(this, "Remove Duplicates",
+        QString("%1 duplicate values found and removed; %2 unique values remain.")
+            .arg(removedCount).arg(uniqueCount));
 }

@@ -156,6 +156,10 @@ set(UI_SOURCES
     src/ui/FindReplaceDialog.h
     src/ui/GoToDialog.cpp
     src/ui/GoToDialog.h
+    src/ui/GoToSpecialDialog.cpp
+    src/ui/GoToSpecialDialog.h
+    src/ui/RemoveDuplicatesDialog.cpp
+    src/ui/RemoveDuplicatesDialog.h
     src/ui/SortDialog.cpp
     src/ui/SortDialog.h
     src/ui/ConditionalFormatDialog.cpp

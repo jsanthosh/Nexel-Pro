@@ -18,6 +18,7 @@ public:
     bool isFormulaEditing() const;
     void insertText(const QString& text);
     void replaceLastInsertedText(const QString& newText);
+    void setExpanded(bool expanded);
     void onThemeChanged();
 
 signals:

@@ -11,6 +11,8 @@
 #include "FormatCellsDialog.h"
 #include "FindReplaceDialog.h"
 #include "GoToDialog.h"
+#include "GoToSpecialDialog.h"
+#include "RemoveDuplicatesDialog.h"
 #include "ConditionalFormatDialog.h"
 #include "DataValidationDialog.h"
 #include "ChatPanel.h"
@@ -138,9 +140,30 @@ MainWindow::MainWindow(QWidget* parent)
         }
     });
 
+    // Formula bar expand/collapse button (Excel-style)
+    QPushButton* expandBtn = new QPushButton();
+    expandBtn->setFixedSize(20, 26);
+    expandBtn->setCheckable(true);
+    expandBtn->setToolTip("Expand Formula Bar");
+    expandBtn->setStyleSheet(
+        "QPushButton { background: #F0F2F5; border: 1px solid #D0D5DD; border-left: none; "
+        "border-radius: 0 4px 4px 0; font-size: 10px; color: #667085; }"
+        "QPushButton:hover { background: #E4E7EC; }"
+        "QPushButton:checked { background: #E4E7EC; }");
+    expandBtn->setText("\xE2\x96\xBC"); // down arrow
+    connect(expandBtn, &QPushButton::toggled, this, [this, expandBtn](bool expanded) {
+        if (m_formulaBar) {
+            m_formulaBar->setExpanded(expanded);
+            m_formulaBar->setFixedHeight(expanded ? 80 : 26);
+            expandBtn->setText(expanded ? "\xE2\x96\xB2" : "\xE2\x96\xBC"); // up or down arrow
+            expandBtn->setToolTip(expanded ? "Collapse Formula Bar" : "Expand Formula Bar");
+        }
+    });
+
     formulaRow->addWidget(m_nameBox);
     formulaRow->addWidget(fxBtn);
     formulaRow->addWidget(m_formulaBar, 1);
+    formulaRow->addWidget(expandBtn);
     layout->addLayout(formulaRow);
 
     m_spreadsheetView = new SpreadsheetView(this);
@@ -633,6 +656,9 @@ void MainWindow::createMenuBar() {
     editMenu->addAction("&Find and Replace...", this, &MainWindow::onFindReplace, QKeySequence::Find);
     editMenu->addAction("&Go To...", this, &MainWindow::onGoTo,
                          QKeySequence(Qt::CTRL | Qt::Key_G));
+    editMenu->addAction("Go To &Special...", this, [this]() {
+        if (m_spreadsheetView) m_spreadsheetView->goToSpecial();
+    });
 
     QMenu* formatMenu = menuBar->addMenu("F&ormat");
     formatMenu->addAction("Format &Cells...", this, &MainWindow::onFormatCells,
@@ -700,6 +726,10 @@ void MainWindow::createMenuBar() {
     dataMenu->addAction("Custom &Sort...", m_spreadsheetView, &SpreadsheetView::showSortDialog);
     dataMenu->addSeparator();
     dataMenu->addAction("&Data Validation...", this, &MainWindow::onDataValidation);
+    dataMenu->addSeparator();
+    dataMenu->addAction("Remove &Duplicates...", this, [this]() {
+        if (m_spreadsheetView) m_spreadsheetView->removeDuplicates();
+    });
     dataMenu->addSeparator();
     dataMenu->addAction("Create &Pivot Table...", this, &MainWindow::onCreatePivotTable);
     dataMenu->addAction("&Edit Pivot Table...", this, &MainWindow::onEditPivotTable);
@@ -1122,6 +1152,7 @@ void MainWindow::connectSignals() {
     connect(m_chatPanel, &ChatPanel::executeActions, this, &MainWindow::onChatActions);
 
     connect(m_spreadsheetView, &SpreadsheetView::formatCellsRequested, this, &MainWindow::onFormatCells);
+    connect(m_spreadsheetView, &SpreadsheetView::goToRequested, this, &MainWindow::onGoTo);
     connect(m_spreadsheetView, &SpreadsheetView::pivotFilterChanged, this, &MainWindow::onPivotFilterChanged);
     connect(m_spreadsheetView, &SpreadsheetView::requestSwitchToSheet, this, [this](int index) {
         if (index >= 0 && index < static_cast<int>(m_sheets.size())) {

@@ -1390,6 +1390,7 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
 
     // Build the number format menu
     QMenu* numFmtMenu = new QMenu(m_numberFormatBtn);
+    m_numberFormatMenu = numFmtMenu;
     numFmtMenu->setStyleSheet(
         "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; min-width: 220px; }"
         "QMenu::item { padding: 6px 16px 6px 12px; border-radius: 4px; font-size: 12px; }"
@@ -1400,6 +1401,8 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
 
     auto addFmtItem = [&](const QString& label, const QString& shortcut, const QString& format) {
         QAction* action = numFmtMenu->addAction(label);
+        action->setCheckable(true);
+        action->setProperty("formatType", format);
         if (!shortcut.isEmpty()) action->setShortcut(QKeySequence(shortcut));
         connect(action, &QAction::triggered, this, [this, format, label]() {
             emit numberFormatChanged(format);
@@ -1415,24 +1418,28 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     QMenu* accountingMenu = numFmtMenu->addMenu("Accounting");
     accountingMenu->setStyleSheet(numFmtMenu->styleSheet());
     for (const auto& cur : NumberFormat::currencies()) {
-        accountingMenu->addAction(
+        QAction* acctAction = accountingMenu->addAction(
             QString("%1  %2").arg(cur.symbol, -4).arg(cur.label),
             this, [this, cur]() {
                 emit accountingFormatSelected(cur.code);
                 m_numberFormatBtn->setText("Accounting");
             });
+        acctAction->setCheckable(true);
+        acctAction->setProperty("formatType", "Accounting");
     }
 
     // --- Currency submenu ---
     QMenu* currencyMenu = numFmtMenu->addMenu("Currency");
     currencyMenu->setStyleSheet(numFmtMenu->styleSheet());
     for (const auto& cur : NumberFormat::currencies()) {
-        currencyMenu->addAction(
+        QAction* curAction = currencyMenu->addAction(
             QString("%1  %2").arg(cur.symbol, -4).arg(cur.label),
             this, [this, cur]() {
                 emit currencyFormatSelected(cur.code);
                 m_numberFormatBtn->setText("Currency");
             });
+        curAction->setCheckable(true);
+        curAction->setProperty("formatType", "Currency");
     }
 
     // --- Date submenu with live previews ---
@@ -1468,6 +1475,8 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
         QAction* action = dateMenu->addAction(QString("%1").arg(df.preview));
         // Show format code on the right via tooltip
         action->setToolTip(df.label);
+        action->setCheckable(true);
+        action->setProperty("formatType", "Date");
         connect(action, &QAction::triggered, this, [this, df]() {
             emit dateFormatSelected(df.fmtId);
             m_numberFormatBtn->setText("Date");
@@ -1492,6 +1501,8 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     for (const auto& dtf : dtFmts) {
         QString preview = now.toString(dtf.qtFmt);
         QAction* action = dateMenu->addAction(preview);
+        action->setCheckable(true);
+        action->setProperty("formatType", "Date");
         connect(action, &QAction::triggered, this, [this, dtf]() {
             emit dateFormatSelected(dtf.fmtId);
             m_numberFormatBtn->setText("Date");
@@ -1931,5 +1942,24 @@ void Toolbar::syncToStyle(const CellStyle& style) {
     // Number format dropdown text
     if (m_numberFormatBtn) {
         m_numberFormatBtn->setText(style.numberFormat == "General" ? "General" : style.numberFormat);
+    }
+
+    // Number format menu: check/uncheck the matching format action
+    if (m_numberFormatMenu) {
+        QString currentFormat = style.numberFormat;
+        // Update top-level actions
+        for (QAction* action : m_numberFormatMenu->actions()) {
+            if (action->property("formatType").isValid()) {
+                action->setChecked(action->property("formatType").toString() == currentFormat);
+            }
+            // Also update submenu actions (Accounting, Currency, Date)
+            if (action->menu()) {
+                for (QAction* subAction : action->menu()->actions()) {
+                    if (subAction->property("formatType").isValid()) {
+                        subAction->setChecked(subAction->property("formatType").toString() == currentFormat);
+                    }
+                }
+            }
+        }
     }
 }
