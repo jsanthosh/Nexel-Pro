@@ -297,6 +297,52 @@ void ChartWidget::computeAxisRange(double& minVal, double& maxVal, double& step)
     minVal = 0;
     maxVal = 100;
 
+    // For 100% stacked charts, the axis is always 0-100%
+    if (m_config.percentStacked) {
+        minVal = 0;
+        maxVal = 1.0;  // Represents 100%
+        step = 0.2;
+        return;
+    }
+
+    // For stacked (non-percent) charts, compute max as the largest category sum
+    if (m_config.stacked) {
+        int numPoints = 0;
+        for (int si = 0; si < m_config.series.size(); ++si) {
+            if (isSeriesVisible(si))
+                numPoints = qMax(numPoints, m_config.series[si].yValues.size());
+        }
+
+        minVal = 0;
+        maxVal = 0;
+        for (int i = 0; i < numPoints; ++i) {
+            double categorySum = 0;
+            for (int si = 0; si < m_config.series.size(); ++si) {
+                if (!isSeriesVisible(si)) continue;
+                if (i < m_config.series[si].yValues.size())
+                    categorySum += m_config.series[si].yValues[i];
+            }
+            maxVal = qMax(maxVal, categorySum);
+        }
+
+        if (maxVal <= 0) { maxVal = 1.0; }
+
+        // Nice number rounding
+        double range = maxVal - minVal;
+        double magnitude = std::pow(10.0, std::floor(std::log10(range)));
+        double residual = range / magnitude;
+
+        if (residual <= 1.5) step = 0.2 * magnitude;
+        else if (residual <= 3.0) step = 0.5 * magnitude;
+        else if (residual <= 7.0) step = magnitude;
+        else step = 2.0 * magnitude;
+
+        minVal = std::floor(minVal / step) * step;
+        maxVal = std::ceil(maxVal / step) * step;
+        if (minVal > 0) minVal = 0;
+        return;
+    }
+
     bool first = true;
     for (int si = 0; si < m_config.series.size(); ++si) {
         if (!isSeriesVisible(si)) continue;
@@ -539,7 +585,9 @@ void ChartWidget::drawAxes(QPainter& p, const QRect& plotArea) {
         p.drawLine(plotArea.left() - 4, y, plotArea.left(), y);
 
         QString label;
-        if (std::abs(v) >= 1000000) label = QString::number(v / 1000000.0, 'f', 1) + "M";
+        if (m_config.percentStacked) {
+            label = QString::number(static_cast<int>(v * 100)) + "%";
+        } else if (std::abs(v) >= 1000000) label = QString::number(v / 1000000.0, 'f', 1) + "M";
         else if (std::abs(v) >= 1000) label = QString::number(v / 1000.0, 'f', 1) + "K";
         else label = QString::number(v, 'f', step < 1 ? 1 : 0);
 
@@ -712,15 +760,50 @@ void ChartWidget::drawDataLabels(QPainter& p, const QRect& plotArea) {
             if (isColumn) {
                 // Match exact bar geometry from drawColumnChart
                 double groupWidth = static_cast<double>(plotArea.width()) / numPoints;
-                double barWidth = (groupWidth * 0.7) / numSeries;
                 double gap = groupWidth * 0.15;
 
-                double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
-                int barHeight = static_cast<int>(yFrac * plotArea.height());
-                int barX = plotArea.left() + static_cast<int>(i * groupWidth + gap + si * barWidth);
-                int barTop = plotArea.bottom() - barHeight;
-                int barBottom = plotArea.bottom();
-                int barCenterX = barX + static_cast<int>(barWidth) / 2;
+                int barX, barHeight, barTop, barBottom, barCenterX;
+                if (m_config.stacked || m_config.percentStacked) {
+                    double fullBarWidth = groupWidth * 0.7;
+                    // Compute per-category total for percent stacked
+                    double catTotal = 0;
+                    if (m_config.percentStacked) {
+                        for (int cs = 0; cs < numSeries; ++cs) {
+                            if (!isSeriesVisible(cs)) continue;
+                            if (i < m_config.series[cs].yValues.size())
+                                catTotal += std::abs(m_config.series[cs].yValues[i]);
+                        }
+                    }
+                    // Compute cumulative height up to this series
+                    double cumH = 0;
+                    for (int ps = 0; ps < si; ++ps) {
+                        if (!isSeriesVisible(ps)) continue;
+                        if (i >= m_config.series[ps].yValues.size()) continue;
+                        double pv = m_config.series[ps].yValues[i];
+                        if (m_config.percentStacked && catTotal > 0)
+                            cumH += (std::abs(pv) / catTotal) * plotArea.height();
+                        else
+                            cumH += ((pv - minVal) / (maxVal - minVal)) * plotArea.height();
+                    }
+                    double thisH;
+                    if (m_config.percentStacked && catTotal > 0)
+                        thisH = (std::abs(s.yValues[i]) / catTotal) * plotArea.height();
+                    else
+                        thisH = ((s.yValues[i] - minVal) / (maxVal - minVal)) * plotArea.height();
+                    barHeight = static_cast<int>(thisH);
+                    barX = plotArea.left() + static_cast<int>(i * groupWidth + gap);
+                    barTop = plotArea.bottom() - static_cast<int>(cumH) - barHeight;
+                    barBottom = plotArea.bottom() - static_cast<int>(cumH);
+                    barCenterX = barX + static_cast<int>(fullBarWidth) / 2;
+                } else {
+                    double barWidth = (groupWidth * 0.7) / numSeries;
+                    double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
+                    barHeight = static_cast<int>(yFrac * plotArea.height());
+                    barX = plotArea.left() + static_cast<int>(i * groupWidth + gap + si * barWidth);
+                    barTop = plotArea.bottom() - barHeight;
+                    barBottom = plotArea.bottom();
+                    barCenterX = barX + static_cast<int>(barWidth) / 2;
+                }
 
                 lx = barCenterX - tw / 2;
                 switch (m_config.dataLabelPosition) {
@@ -744,14 +827,48 @@ void ChartWidget::drawDataLabels(QPainter& p, const QRect& plotArea) {
             } else if (isBar) {
                 // Match exact bar geometry from drawBarChart
                 double groupHeight = static_cast<double>(plotArea.height()) / numPoints;
-                double bh = (groupHeight * 0.7) / numSeries;
                 double gap = groupHeight * 0.15;
 
-                double xFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
-                int barW = static_cast<int>(xFrac * plotArea.width());
-                int barY = plotArea.top() + static_cast<int>(i * groupHeight + gap + si * bh);
-                int barRight = plotArea.left() + barW;
-                int barCenterY = barY + static_cast<int>(bh) / 2;
+                int barW, barY, barRight, barCenterY;
+                if (m_config.stacked || m_config.percentStacked) {
+                    double fullBarH = groupHeight * 0.7;
+                    // Compute per-category total for percent stacked
+                    double catTotal = 0;
+                    if (m_config.percentStacked) {
+                        for (int cs = 0; cs < numSeries; ++cs) {
+                            if (!isSeriesVisible(cs)) continue;
+                            if (i < m_config.series[cs].yValues.size())
+                                catTotal += std::abs(m_config.series[cs].yValues[i]);
+                        }
+                    }
+                    // Compute cumulative width up to this series
+                    double cumW = 0;
+                    for (int ps = 0; ps < si; ++ps) {
+                        if (!isSeriesVisible(ps)) continue;
+                        if (i >= m_config.series[ps].yValues.size()) continue;
+                        double pv = m_config.series[ps].yValues[i];
+                        if (m_config.percentStacked && catTotal > 0)
+                            cumW += (std::abs(pv) / catTotal) * plotArea.width();
+                        else
+                            cumW += ((pv - minVal) / (maxVal - minVal)) * plotArea.width();
+                    }
+                    double thisW;
+                    if (m_config.percentStacked && catTotal > 0)
+                        thisW = (std::abs(s.yValues[i]) / catTotal) * plotArea.width();
+                    else
+                        thisW = ((s.yValues[i] - minVal) / (maxVal - minVal)) * plotArea.width();
+                    barW = static_cast<int>(thisW);
+                    barY = plotArea.top() + static_cast<int>(i * groupHeight + gap);
+                    barRight = plotArea.left() + static_cast<int>(cumW) + barW;
+                    barCenterY = barY + static_cast<int>(fullBarH) / 2;
+                } else {
+                    double bh = (groupHeight * 0.7) / numSeries;
+                    double xFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
+                    barW = static_cast<int>(xFrac * plotArea.width());
+                    barY = plotArea.top() + static_cast<int>(i * groupHeight + gap + si * bh);
+                    barRight = plotArea.left() + barW;
+                    barCenterY = barY + static_cast<int>(bh) / 2;
+                }
 
                 ly = barCenterY - th / 2;
                 switch (m_config.dataLabelPosition) {
@@ -1060,24 +1177,72 @@ void ChartWidget::drawColumnChart(QPainter& p, const QRect& plotArea) {
     if (numPoints == 0) return;
 
     double groupWidth = static_cast<double>(plotArea.width()) / numPoints;
-    double barWidth = (groupWidth * 0.7) / numSeries;
     double gap = groupWidth * 0.15;
 
-    for (int si = 0; si < numSeries; ++si) {
-        if (!isSeriesVisible(si)) continue;
-        const auto& s = m_config.series[si];
-        for (int i = 0; i < qMin(numPoints, s.yValues.size()); ++i) {
-            double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
-            int barHeight = static_cast<int>(yFrac * plotArea.height() * m_animProgress);
+    if (m_config.stacked || m_config.percentStacked) {
+        // Stacked / 100% stacked column chart
+        double barWidth = groupWidth * 0.7;
 
-            int x = plotArea.left() + static_cast<int>(i * groupWidth + gap + si * barWidth);
-            int y = plotArea.bottom() - barHeight;
+        for (int i = 0; i < numPoints; ++i) {
+            // Compute category total for 100% stacked
+            double categoryTotal = 0;
+            if (m_config.percentStacked) {
+                for (int s = 0; s < numSeries; ++s) {
+                    if (!isSeriesVisible(s)) continue;
+                    if (i < m_config.series[s].yValues.size())
+                        categoryTotal += std::abs(m_config.series[s].yValues[i]);
+                }
+            }
 
-            QRect barRect(x, y, static_cast<int>(barWidth) - 1, barHeight);
+            double cumulativeHeight = 0;
+            for (int si = 0; si < numSeries; ++si) {
+                if (!isSeriesVisible(si)) continue;
+                const auto& s = m_config.series[si];
+                if (i >= s.yValues.size()) continue;
 
-            p.setPen(Qt::NoPen);
-            p.setBrush(s.color);
-            p.drawRoundedRect(barRect, 2, 2);
+                double value = s.yValues[i];
+                double barH;
+                if (m_config.percentStacked && categoryTotal > 0) {
+                    double pctFrac = std::abs(value) / categoryTotal;
+                    barH = pctFrac * plotArea.height() * m_animProgress;
+                } else {
+                    double yFrac = (value - minVal) / (maxVal - minVal);
+                    barH = yFrac * plotArea.height() * m_animProgress;
+                }
+                int barHeight = static_cast<int>(barH);
+                if (barHeight < 1) barHeight = 1;
+
+                int x = plotArea.left() + static_cast<int>(i * groupWidth + gap);
+                int y = plotArea.bottom() - static_cast<int>(cumulativeHeight) - barHeight;
+
+                QRect barRect(x, y, static_cast<int>(barWidth) - 1, barHeight);
+                p.setPen(Qt::NoPen);
+                p.setBrush(s.color);
+                p.drawRoundedRect(barRect, 2, 2);
+
+                cumulativeHeight += barHeight;
+            }
+        }
+    } else {
+        // Clustered (side-by-side) column chart
+        double barWidth = (groupWidth * 0.7) / numSeries;
+
+        for (int si = 0; si < numSeries; ++si) {
+            if (!isSeriesVisible(si)) continue;
+            const auto& s = m_config.series[si];
+            for (int i = 0; i < qMin(numPoints, s.yValues.size()); ++i) {
+                double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
+                int barHeight = static_cast<int>(yFrac * plotArea.height() * m_animProgress);
+
+                int x = plotArea.left() + static_cast<int>(i * groupWidth + gap + si * barWidth);
+                int y = plotArea.bottom() - barHeight;
+
+                QRect barRect(x, y, static_cast<int>(barWidth) - 1, barHeight);
+
+                p.setPen(Qt::NoPen);
+                p.setBrush(s.color);
+                p.drawRoundedRect(barRect, 2, 2);
+            }
         }
     }
 }
@@ -1095,24 +1260,72 @@ void ChartWidget::drawBarChart(QPainter& p, const QRect& plotArea) {
     if (numPoints == 0) return;
 
     double groupHeight = static_cast<double>(plotArea.height()) / numPoints;
-    double barHeight = (groupHeight * 0.7) / numSeries;
     double gap = groupHeight * 0.15;
 
-    for (int si = 0; si < numSeries; ++si) {
-        if (!isSeriesVisible(si)) continue;
-        const auto& s = m_config.series[si];
-        for (int i = 0; i < qMin(numPoints, s.yValues.size()); ++i) {
-            double xFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
-            int barW = static_cast<int>(xFrac * plotArea.width() * m_animProgress);
+    if (m_config.stacked || m_config.percentStacked) {
+        // Stacked / 100% stacked bar chart (horizontal)
+        double barH = groupHeight * 0.7;
 
-            int y = plotArea.top() + static_cast<int>(i * groupHeight + gap + si * barHeight);
-            int x = plotArea.left();
+        for (int i = 0; i < numPoints; ++i) {
+            // Compute category total for 100% stacked
+            double categoryTotal = 0;
+            if (m_config.percentStacked) {
+                for (int s = 0; s < numSeries; ++s) {
+                    if (!isSeriesVisible(s)) continue;
+                    if (i < m_config.series[s].yValues.size())
+                        categoryTotal += std::abs(m_config.series[s].yValues[i]);
+                }
+            }
 
-            QRect barRect(x, y, barW, static_cast<int>(barHeight) - 1);
+            double cumulativeWidth = 0;
+            for (int si = 0; si < numSeries; ++si) {
+                if (!isSeriesVisible(si)) continue;
+                const auto& s = m_config.series[si];
+                if (i >= s.yValues.size()) continue;
 
-            p.setPen(Qt::NoPen);
-            p.setBrush(s.color);
-            p.drawRoundedRect(barRect, 2, 2);
+                double value = s.yValues[i];
+                double barW;
+                if (m_config.percentStacked && categoryTotal > 0) {
+                    double pctFrac = std::abs(value) / categoryTotal;
+                    barW = pctFrac * plotArea.width() * m_animProgress;
+                } else {
+                    double xFrac = (value - minVal) / (maxVal - minVal);
+                    barW = xFrac * plotArea.width() * m_animProgress;
+                }
+                int barWidth = static_cast<int>(barW);
+                if (barWidth < 1) barWidth = 1;
+
+                int y = plotArea.top() + static_cast<int>(i * groupHeight + gap);
+                int x = plotArea.left() + static_cast<int>(cumulativeWidth);
+
+                QRect barRect(x, y, barWidth, static_cast<int>(barH) - 1);
+                p.setPen(Qt::NoPen);
+                p.setBrush(s.color);
+                p.drawRoundedRect(barRect, 2, 2);
+
+                cumulativeWidth += barWidth;
+            }
+        }
+    } else {
+        // Clustered (side-by-side) bar chart
+        double barHeight = (groupHeight * 0.7) / numSeries;
+
+        for (int si = 0; si < numSeries; ++si) {
+            if (!isSeriesVisible(si)) continue;
+            const auto& s = m_config.series[si];
+            for (int i = 0; i < qMin(numPoints, s.yValues.size()); ++i) {
+                double xFrac = (s.yValues[i] - minVal) / (maxVal - minVal);
+                int barW = static_cast<int>(xFrac * plotArea.width() * m_animProgress);
+
+                int y = plotArea.top() + static_cast<int>(i * groupHeight + gap + si * barHeight);
+                int x = plotArea.left();
+
+                QRect barRect(x, y, barW, static_cast<int>(barHeight) - 1);
+
+                p.setPen(Qt::NoPen);
+                p.setBrush(s.color);
+                p.drawRoundedRect(barRect, 2, 2);
+            }
         }
     }
 }
@@ -1217,46 +1430,152 @@ void ChartWidget::drawAreaChart(QPainter& p, const QRect& plotArea) {
     double minVal, maxVal, step;
     computeAxisRange(minVal, maxVal, step);
 
-    for (int si = m_config.series.size() - 1; si >= 0; --si) {
-        if (!isSeriesVisible(si)) continue;
-        const auto& s = m_config.series[si];
-        if (s.yValues.isEmpty()) continue;
+    int numSeries = m_config.series.size();
+    int numPoints = m_config.series[0].yValues.size();
+    if (numPoints == 0) return;
 
-        int n = s.yValues.size();
-        QPolygonF polygon;
+    if (m_config.stacked || m_config.percentStacked) {
+        // Stacked / 100% stacked area chart
+        // Compute cumulative Y positions bottom-up, then draw top-down so
+        // the first series visually appears on top.
 
-        // Bottom line
-        polygon << QPointF(plotArea.left(), plotArea.bottom());
+        // cumulativeY[i] holds the pixel Y coordinate of the top of the
+        // stack built so far at data point i. Starts at the baseline.
+        QVector<double> baselineY(numPoints, static_cast<double>(plotArea.bottom()));
 
-        for (int i = 0; i < n; ++i) {
-            double xFrac = (n > 1) ? static_cast<double>(i) / (n - 1) : 0.5;
-            double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal) * m_animProgress;
-            polygon << QPointF(plotArea.left() + xFrac * plotArea.width(),
-                               plotArea.bottom() - yFrac * plotArea.height());
+        // Precompute category totals for 100% stacked
+        QVector<double> categoryTotals(numPoints, 0.0);
+        if (m_config.percentStacked) {
+            for (int i = 0; i < numPoints; ++i) {
+                for (int si = 0; si < numSeries; ++si) {
+                    if (!isSeriesVisible(si)) continue;
+                    if (i < m_config.series[si].yValues.size())
+                        categoryTotals[i] += std::abs(m_config.series[si].yValues[i]);
+                }
+            }
         }
 
-        // Close at bottom
-        polygon << QPointF(plotArea.right(), plotArea.bottom());
+        // Build cumulative top-Y arrays for each series (bottom-up order)
+        QVector<QVector<double>> topY(numSeries, QVector<double>(numPoints));
+        QVector<double> runningY = baselineY;
 
-        QColor fill = s.color;
-        fill.setAlpha(80);
-        p.setPen(Qt::NoPen);
-        p.setBrush(fill);
-        p.drawPolygon(polygon);
-
-        // Line on top
-        QPainterPath line;
-        for (int i = 0; i < n; ++i) {
-            double xFrac = (n > 1) ? static_cast<double>(i) / (n - 1) : 0.5;
-            double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal) * m_animProgress;
-            QPointF pt(plotArea.left() + xFrac * plotArea.width(),
-                       plotArea.bottom() - yFrac * plotArea.height());
-            if (i == 0) line.moveTo(pt);
-            else line.lineTo(pt);
+        for (int si = 0; si < numSeries; ++si) {
+            const auto& s = m_config.series[si];
+            for (int i = 0; i < numPoints; ++i) {
+                if (!isSeriesVisible(si) || i >= s.yValues.size()) {
+                    topY[si][i] = runningY[i];
+                    continue;
+                }
+                double value = s.yValues[i];
+                double h;
+                if (m_config.percentStacked && categoryTotals[i] > 0) {
+                    double pctFrac = std::abs(value) / categoryTotals[i];
+                    h = pctFrac * plotArea.height() * m_animProgress;
+                } else {
+                    double yFrac = (value - minVal) / (maxVal - minVal);
+                    h = yFrac * plotArea.height() * m_animProgress;
+                }
+                topY[si][i] = runningY[i] - h;
+                runningY[i] = topY[si][i];
+            }
         }
-        p.setPen(QPen(s.color, 2));
-        p.setBrush(Qt::NoBrush);
-        p.drawPath(line);
+
+        // Draw in reverse order (last series at bottom, first on top)
+        for (int si = numSeries - 1; si >= 0; --si) {
+            if (!isSeriesVisible(si)) continue;
+            const auto& s = m_config.series[si];
+            if (s.yValues.isEmpty()) continue;
+
+            // The bottom edge for this series is the top of the previous series
+            // (or the baseline for si == 0)
+            QPolygonF polygon;
+
+            // Forward pass: top edge of this series
+            for (int i = 0; i < numPoints; ++i) {
+                double xFrac = (numPoints > 1) ? static_cast<double>(i) / (numPoints - 1) : 0.5;
+                double px = plotArea.left() + xFrac * plotArea.width();
+                polygon << QPointF(px, topY[si][i]);
+            }
+
+            // Backward pass: bottom edge (top of series si-1, or baseline)
+            for (int i = numPoints - 1; i >= 0; --i) {
+                double xFrac = (numPoints > 1) ? static_cast<double>(i) / (numPoints - 1) : 0.5;
+                double px = plotArea.left() + xFrac * plotArea.width();
+                double bottomEdge = (si > 0) ? topY[si - 1][i] : static_cast<double>(plotArea.bottom());
+                // For hidden earlier series, walk back to find the actual visible bottom
+                if (si > 0 && !isSeriesVisible(si - 1)) {
+                    bottomEdge = static_cast<double>(plotArea.bottom());
+                    for (int prev = si - 1; prev >= 0; --prev) {
+                        if (isSeriesVisible(prev)) {
+                            bottomEdge = topY[prev][i];
+                            break;
+                        }
+                    }
+                }
+                polygon << QPointF(px, bottomEdge);
+            }
+
+            QColor fill = s.color;
+            fill.setAlpha(120);
+            p.setPen(Qt::NoPen);
+            p.setBrush(fill);
+            p.drawPolygon(polygon);
+
+            // Line on top edge
+            QPainterPath line;
+            for (int i = 0; i < numPoints; ++i) {
+                double xFrac = (numPoints > 1) ? static_cast<double>(i) / (numPoints - 1) : 0.5;
+                QPointF pt(plotArea.left() + xFrac * plotArea.width(), topY[si][i]);
+                if (i == 0) line.moveTo(pt);
+                else line.lineTo(pt);
+            }
+            p.setPen(QPen(s.color, 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(line);
+        }
+    } else {
+        // Non-stacked area chart (original behavior)
+        for (int si = m_config.series.size() - 1; si >= 0; --si) {
+            if (!isSeriesVisible(si)) continue;
+            const auto& s = m_config.series[si];
+            if (s.yValues.isEmpty()) continue;
+
+            int n = s.yValues.size();
+            QPolygonF polygon;
+
+            // Bottom line
+            polygon << QPointF(plotArea.left(), plotArea.bottom());
+
+            for (int i = 0; i < n; ++i) {
+                double xFrac = (n > 1) ? static_cast<double>(i) / (n - 1) : 0.5;
+                double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal) * m_animProgress;
+                polygon << QPointF(plotArea.left() + xFrac * plotArea.width(),
+                                   plotArea.bottom() - yFrac * plotArea.height());
+            }
+
+            // Close at bottom
+            polygon << QPointF(plotArea.right(), plotArea.bottom());
+
+            QColor fill = s.color;
+            fill.setAlpha(80);
+            p.setPen(Qt::NoPen);
+            p.setBrush(fill);
+            p.drawPolygon(polygon);
+
+            // Line on top
+            QPainterPath line;
+            for (int i = 0; i < n; ++i) {
+                double xFrac = (n > 1) ? static_cast<double>(i) / (n - 1) : 0.5;
+                double yFrac = (s.yValues[i] - minVal) / (maxVal - minVal) * m_animProgress;
+                QPointF pt(plotArea.left() + xFrac * plotArea.width(),
+                           plotArea.bottom() - yFrac * plotArea.height());
+                if (i == 0) line.moveTo(pt);
+                else line.lineTo(pt);
+            }
+            p.setPen(QPen(s.color, 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(line);
+        }
     }
 }
 

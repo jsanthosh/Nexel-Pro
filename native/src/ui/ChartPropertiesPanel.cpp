@@ -868,8 +868,9 @@ void ChartPropertiesPanel::showElementOptions(ChartElement element) {
     }
 
     // Chart-type-specific control visibility (within visible sections)
-    if (m_stackedCheck) m_stackedCheck->setVisible(isBarCol);
-    if (m_percentStackedCheck) m_percentStackedCheck->setVisible(isBarCol);
+    bool supportsStacking = isBarCol || (chartType == ChartType::Area);
+    if (m_stackedCheck) m_stackedCheck->setVisible(supportsStacking);
+    if (m_percentStackedCheck) m_percentStackedCheck->setVisible(supportsStacking);
     if (m_smoothLinesCheck) m_smoothLinesCheck->setVisible(isLine);
     if (m_showMarkersCheck) m_showMarkersCheck->setVisible(isLine);
     if (m_labelShowPercent) m_labelShowPercent->setVisible(isPie);

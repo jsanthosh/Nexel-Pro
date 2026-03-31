@@ -2668,30 +2668,30 @@ void SpreadsheetView::insertEntireRow() {
         }
     }
 
+    // Sort descending so inserts don't shift subsequent indices
     QList<int> sortedRows(rows.begin(), rows.end());
     std::sort(sortedRows.rbegin(), sortedRows.rend());
 
+    // Build a single compound undo command for all row inserts
+    auto compound = std::make_unique<CompoundUndoCommand>("Insert Row");
+    for (int row : sortedRows) {
+        compound->addChild(std::make_unique<InsertRowCommand>(row, 1));
+    }
+
     if (m_model && m_model->isVirtualMode()) {
-        // Virtual mode with large data: row insert is O(n) and too slow.
-        // For now, show a message. TODO: implement O(1) chunk-level row insertion.
         int totalRows = m_spreadsheet->getRowCount();
         if (totalRows > 500000) {
             qDebug() << "[InsertRow] Skipped: dataset too large (" << totalRows << " rows)";
-            // Still do the insert but warn it may be slow
         }
-        for (int row : sortedRows) {
-            m_spreadsheet->getUndoManager().execute(
-                std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
-        }
+        m_spreadsheet->getUndoManager().execute(std::move(compound), m_spreadsheet.get());
         m_model->resetModel();
     } else {
+        int minRow = *std::min_element(rows.begin(), rows.end());
+        int count = static_cast<int>(rows.size());
         verticalHeader()->blockSignals(true);
-        for (int row : sortedRows) {
-            m_model->beginRowInsertion(row, 1);
-            m_spreadsheet->getUndoManager().execute(
-                std::make_unique<InsertRowCommand>(row, 1), m_spreadsheet.get());
-            m_model->endRowInsertion();
-        }
+        m_model->beginRowInsertion(minRow, count);
+        m_spreadsheet->getUndoManager().execute(std::move(compound), m_spreadsheet.get());
+        m_model->endRowInsertion();
         verticalHeader()->blockSignals(false);
     }
 }
@@ -2711,19 +2711,23 @@ void SpreadsheetView::insertEntireColumn() {
         }
     }
 
-    // Use beginInsertColumns/endInsertColumns so Qt automatically shifts header widths.
+    // Sort descending so inserts don't shift subsequent indices
     QList<int> sortedCols(cols.begin(), cols.end());
     std::sort(sortedCols.rbegin(), sortedCols.rend());
 
-    horizontalHeader()->blockSignals(true);
-
+    // Build a single compound undo command for all column inserts
+    auto compound = std::make_unique<CompoundUndoCommand>("Insert Column");
     for (int col : sortedCols) {
-        m_model->beginColumnInsertion(col, 1);
-        m_spreadsheet->getUndoManager().execute(
-            std::make_unique<InsertColumnCommand>(col, 1, col), m_spreadsheet.get());
-        m_model->endColumnInsertion();
+        compound->addChild(std::make_unique<InsertColumnCommand>(col, 1, col));
     }
 
+    int minCol = *std::min_element(cols.begin(), cols.end());
+    int count = static_cast<int>(cols.size());
+
+    horizontalHeader()->blockSignals(true);
+    m_model->beginColumnInsertion(minCol, count);
+    m_spreadsheet->getUndoManager().execute(std::move(compound), m_spreadsheet.get());
+    m_model->endColumnInsertion();
     horizontalHeader()->blockSignals(false);
 }
 
@@ -2784,16 +2788,11 @@ void SpreadsheetView::deleteEntireRow() {
     int focusCol = current.column();
 
     // Delete rows high-to-low to preserve indices.
-    // Use beginRemoveRows/endRemoveRows so Qt automatically shifts header heights.
     QList<int> sortedRows(rows.begin(), rows.end());
     std::sort(sortedRows.rbegin(), sortedRows.rend());
 
-    // Block header signals so Qt's internal section adjustments don't
-    // trigger onVerticalSectionResized (which would corrupt m_rowHeights).
-    verticalHeader()->blockSignals(true);
-
-    bool isVirtual = m_model && m_model->isVirtualMode();
-
+    // Build a single compound undo command for all row deletes
+    auto compound = std::make_unique<CompoundUndoCommand>("Delete Row");
     for (int row : sortedRows) {
         // Snapshot deleted cells for undo
         std::vector<CellSnapshot> deleted;
@@ -2804,19 +2803,25 @@ void SpreadsheetView::deleteEntireRow() {
                 deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(row, c)));
             }
         }
-
         std::vector<int> savedHeights = { verticalHeader()->defaultSectionSize() };
+        compound->addChild(std::make_unique<DeleteRowCommand>(row, 1, deleted, savedHeights));
+    }
 
-        if (!isVirtual) {
-            m_model->beginRowRemoval(row, 1);
-        }
+    // Block header signals so Qt's internal section adjustments don't
+    // trigger onVerticalSectionResized (which would corrupt m_rowHeights).
+    verticalHeader()->blockSignals(true);
 
-        m_spreadsheet->getUndoManager().execute(
-            std::make_unique<DeleteRowCommand>(row, 1, deleted, savedHeights), m_spreadsheet.get());
+    bool isVirtual = m_model && m_model->isVirtualMode();
+    int count = static_cast<int>(rows.size());
 
-        if (!isVirtual) {
-            m_model->endRowRemoval();
-        }
+    if (!isVirtual) {
+        m_model->beginRowRemoval(focusRow, count);
+    }
+
+    m_spreadsheet->getUndoManager().execute(std::move(compound), m_spreadsheet.get());
+
+    if (!isVirtual) {
+        m_model->endRowRemoval();
     }
 
     if (isVirtual) {
@@ -2854,14 +2859,11 @@ void SpreadsheetView::deleteEntireColumn() {
     int focusRow = current.row();
 
     // Delete columns high-to-low to preserve indices.
-    // Use beginRemoveColumns/endRemoveColumns so Qt automatically shifts header widths.
     QList<int> sortedCols(cols.begin(), cols.end());
     std::sort(sortedCols.rbegin(), sortedCols.rend());
 
-    // Block header signals so Qt's internal section adjustments don't
-    // trigger onHorizontalSectionResized (which would corrupt m_columnWidths).
-    horizontalHeader()->blockSignals(true);
-
+    // Build a single compound undo command for all column deletes
+    auto compound = std::make_unique<CompoundUndoCommand>("Delete Column");
     for (int col : sortedCols) {
         // Snapshot deleted cells for undo
         std::vector<CellSnapshot> deleted;
@@ -2872,21 +2874,18 @@ void SpreadsheetView::deleteEntireColumn() {
                 deleted.push_back(m_spreadsheet->takeCellSnapshot(CellAddress(r, col)));
             }
         }
-
-        // Save the width of the column being deleted (for undo restore)
         std::vector<int> savedWidths = { horizontalHeader()->sectionSize(col) };
-
-        // Tell Qt model: columns are about to be removed (BEFORE data change)
-        m_model->beginColumnRemoval(col, 1);
-
-        // Execute the delete (changes data + shifts m_columnWidths in Spreadsheet)
-        m_spreadsheet->getUndoManager().execute(
-            std::make_unique<DeleteColumnCommand>(col, 1, deleted, savedWidths), m_spreadsheet.get());
-
-        // Tell Qt model: removal complete (AFTER data change)
-        // Qt will now automatically shift header section sizes
-        m_model->endColumnRemoval();
+        compound->addChild(std::make_unique<DeleteColumnCommand>(col, 1, deleted, savedWidths));
     }
+
+    // Block header signals so Qt's internal section adjustments don't
+    // trigger onHorizontalSectionResized (which would corrupt m_columnWidths).
+    horizontalHeader()->blockSignals(true);
+
+    int count = static_cast<int>(cols.size());
+    m_model->beginColumnRemoval(focusCol, count);
+    m_spreadsheet->getUndoManager().execute(std::move(compound), m_spreadsheet.get());
+    m_model->endColumnRemoval();
 
     horizontalHeader()->blockSignals(false);
 

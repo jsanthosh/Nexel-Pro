@@ -160,6 +160,35 @@ private:
     QString m_description;
 };
 
+// Compound command — groups multiple undo commands into a single undo step.
+// Undo replays children in reverse order; redo replays in forward order.
+class CompoundUndoCommand : public UndoCommand {
+public:
+    CompoundUndoCommand(const QString& desc) : m_description(desc) {}
+    void addChild(std::unique_ptr<UndoCommand> cmd) { m_children.push_back(std::move(cmd)); }
+    void undo(Spreadsheet* sheet) override {
+        for (auto it = m_children.rbegin(); it != m_children.rend(); ++it)
+            (*it)->undo(sheet);
+    }
+    void redo(Spreadsheet* sheet) override {
+        for (auto& cmd : m_children)
+            cmd->redo(sheet);
+    }
+    QString description() const override { return m_description; }
+    CellAddress targetCell() const override {
+        return m_children.empty() ? CellAddress(0, 0) : m_children.front()->targetCell();
+    }
+    bool isStructural() const override { return true; }
+    size_t estimateMemory() const override {
+        size_t total = sizeof(*this);
+        for (const auto& cmd : m_children) total += cmd->estimateMemory();
+        return total;
+    }
+private:
+    std::vector<std::unique_ptr<UndoCommand>> m_children;
+    QString m_description;
+};
+
 class UndoManager {
 public:
     UndoManager() = default;
