@@ -1903,6 +1903,116 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             }
         }
 
+        // Write data validation rules
+        const auto& validationRules = sheet->getValidationRules();
+        if (!validationRules.empty()) {
+            xml.writeStartElement("dataValidations");
+            xml.writeAttribute("count", QString::number(validationRules.size()));
+            for (const auto& rule : validationRules) {
+                xml.writeStartElement("dataValidation");
+
+                // Map validation type to OOXML type string
+                QString typeStr;
+                switch (rule.type) {
+                    case Spreadsheet::DataValidationRule::WholeNumber: typeStr = "whole"; break;
+                    case Spreadsheet::DataValidationRule::Decimal:     typeStr = "decimal"; break;
+                    case Spreadsheet::DataValidationRule::List:        typeStr = "list"; break;
+                    case Spreadsheet::DataValidationRule::TextLength:  typeStr = "textLength"; break;
+                    case Spreadsheet::DataValidationRule::Date:        typeStr = "date"; break;
+                    case Spreadsheet::DataValidationRule::Custom:      typeStr = "custom"; break;
+                }
+                xml.writeAttribute("type", typeStr);
+
+                // Map operator to OOXML operator string (not used for List/Custom)
+                if (rule.type != Spreadsheet::DataValidationRule::List &&
+                    rule.type != Spreadsheet::DataValidationRule::Custom) {
+                    QString opStr;
+                    switch (rule.op) {
+                        case Spreadsheet::DataValidationRule::Between:              opStr = "between"; break;
+                        case Spreadsheet::DataValidationRule::NotBetween:           opStr = "notBetween"; break;
+                        case Spreadsheet::DataValidationRule::EqualTo:              opStr = "equal"; break;
+                        case Spreadsheet::DataValidationRule::NotEqualTo:           opStr = "notEqual"; break;
+                        case Spreadsheet::DataValidationRule::GreaterThan:          opStr = "greaterThan"; break;
+                        case Spreadsheet::DataValidationRule::LessThan:             opStr = "lessThan"; break;
+                        case Spreadsheet::DataValidationRule::GreaterThanOrEqual:   opStr = "greaterThanOrEqual"; break;
+                        case Spreadsheet::DataValidationRule::LessThanOrEqual:      opStr = "lessThanOrEqual"; break;
+                    }
+                    xml.writeAttribute("operator", opStr);
+                }
+
+                // allowBlank (for list type, use listIgnoreBlanks; others default to 1)
+                if (rule.type == Spreadsheet::DataValidationRule::List) {
+                    xml.writeAttribute("allowBlank", rule.listIgnoreBlanks ? "1" : "0");
+                } else {
+                    xml.writeAttribute("allowBlank", "1");
+                }
+
+                if (rule.showInputMessage) {
+                    xml.writeAttribute("showInputMessage", "1");
+                }
+                if (rule.showErrorAlert) {
+                    xml.writeAttribute("showErrorMessage", "1");
+                }
+
+                // Error style
+                if (rule.errorStyle == Spreadsheet::DataValidationRule::Warning) {
+                    xml.writeAttribute("errorStyle", "warning");
+                } else if (rule.errorStyle == Spreadsheet::DataValidationRule::Information) {
+                    xml.writeAttribute("errorStyle", "information");
+                }
+                // "stop" is the default, no need to write it
+
+                // Input/error messages
+                if (!rule.errorTitle.isEmpty()) {
+                    xml.writeAttribute("errorTitle", rule.errorTitle);
+                }
+                if (!rule.errorMessage.isEmpty()) {
+                    xml.writeAttribute("error", rule.errorMessage);
+                }
+                if (!rule.inputTitle.isEmpty()) {
+                    xml.writeAttribute("promptTitle", rule.inputTitle);
+                }
+                if (!rule.inputMessage.isEmpty()) {
+                    xml.writeAttribute("prompt", rule.inputMessage);
+                }
+
+                // sqref — cell range this validation applies to
+                QString sqref = columnIndexToLetter(rule.range.getStart().col) +
+                                QString::number(rule.range.getStart().row + 1) + ":" +
+                                columnIndexToLetter(rule.range.getEnd().col) +
+                                QString::number(rule.range.getEnd().row + 1);
+                xml.writeAttribute("sqref", sqref);
+
+                // formula1
+                if (rule.type == Spreadsheet::DataValidationRule::List) {
+                    if (!rule.listSourceRange.isEmpty()) {
+                        // Range-based list (e.g. "Sheet2!A1:A10")
+                        xml.writeTextElement("formula1", rule.listSourceRange);
+                    } else if (!rule.listItems.isEmpty()) {
+                        // Inline comma-separated list in quotes
+                        xml.writeTextElement("formula1", "\"" + rule.listItems.join(",") + "\"");
+                    }
+                } else if (rule.type == Spreadsheet::DataValidationRule::Custom) {
+                    if (!rule.customFormula.isEmpty()) {
+                        QString f = rule.customFormula;
+                        if (f.startsWith('=')) f = f.mid(1);
+                        xml.writeTextElement("formula1", f);
+                    }
+                } else {
+                    // Numeric/date/text-length validation
+                    if (!rule.value1.isEmpty()) {
+                        xml.writeTextElement("formula1", rule.value1);
+                    }
+                    if (!rule.value2.isEmpty()) {
+                        xml.writeTextElement("formula2", rule.value2);
+                    }
+                }
+
+                xml.writeEndElement(); // dataValidation
+            }
+            xml.writeEndElement(); // dataValidations
+        }
+
         // Collect hyperlinks for this sheet
         struct HyperlinkEntry { int row; int col; QString url; };
         std::vector<HyperlinkEntry> sheetHyperlinks;

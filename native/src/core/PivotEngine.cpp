@@ -315,6 +315,16 @@ void PivotEngine::writeToSheet(std::shared_ptr<Spreadsheet> targetSheet,
                                 const PivotConfig& config) {
     targetSheet->setAutoRecalculate(false);
 
+    // Clear all existing data on the target sheet before writing new pivot results.
+    // This prevents stale data from a previous refresh from persisting in cells
+    // that the new (potentially smaller) result set doesn't overwrite.
+    int maxRow = targetSheet->getMaxRow();
+    int maxCol = targetSheet->getMaxColumn();
+    if (maxRow >= 0 && maxCol >= 0) {
+        CellRange fullRange(CellAddress(0, 0), CellAddress(maxRow, maxCol));
+        targetSheet->clearRange(fullRange);
+    }
+
     int currentRow = 0;
 
     // Write report filter rows (one per filter field, always shown)

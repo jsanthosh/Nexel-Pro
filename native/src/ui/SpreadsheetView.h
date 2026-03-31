@@ -275,6 +275,8 @@ private:
         CellType type;
         QString formula;
         CellAddress sourceAddr;  // original cell position for formula ref adjustment
+        QString comment;     // preserve cell comment on copy
+        QString hyperlink;   // preserve cell hyperlink on copy
     };
     std::vector<std::vector<ClipboardCell>> m_internalClipboard;
     QString m_internalClipboardText;

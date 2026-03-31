@@ -5,6 +5,7 @@
 #include <numeric>
 #include <mutex>
 #include <QElapsedTimer>
+#include <QDate>
 #include <QRegularExpression>
 #include <QtConcurrent>
 
@@ -1937,7 +1938,25 @@ bool Spreadsheet::validateCell(int row, int col, const QString& value) const {
             }
             break;
         }
-        case DataValidationRule::List: return rule->listItems.contains(value, Qt::CaseInsensitive);
+        case DataValidationRule::List: {
+            QStringList items = rule->listItems;
+            if (items.isEmpty() && !rule->listSourceRange.isEmpty()) {
+                // Resolve range reference to get list items
+                CellRange range(rule->listSourceRange);
+                if (range.isValid()) {
+                    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+                        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+                            auto cell = getCellIfExists(r, c);
+                            if (cell) {
+                                QString val = cell->getValue().toString().trimmed();
+                                if (!val.isEmpty()) items.append(val);
+                            }
+                        }
+                    }
+                }
+            }
+            return items.contains(value, Qt::CaseInsensitive);
+        }
         case DataValidationRule::TextLength: {
             int len = value.length(), v1 = rule->value1.toInt(), v2 = rule->value2.toInt();
             switch (rule->op) {
@@ -1951,6 +1970,32 @@ bool Spreadsheet::validateCell(int row, int col, const QString& value) const {
                 case DataValidationRule::LessThanOrEqual: return len <= v1;
             }
             break;
+        }
+        case DataValidationRule::Date: {
+            QDate date = QDate::fromString(value, Qt::ISODate);
+            if (!date.isValid()) date = QDate::fromString(value, "MM/dd/yyyy");
+            if (!date.isValid()) date = QDate::fromString(value, "M/d/yyyy");
+            if (!date.isValid()) return false; // Invalid date
+            QDate d1 = QDate::fromString(rule->value1, Qt::ISODate);
+            QDate d2 = QDate::fromString(rule->value2, Qt::ISODate);
+            switch (rule->op) {
+                case DataValidationRule::Between: return date >= d1 && date <= d2;
+                case DataValidationRule::NotBetween: return date < d1 || date > d2;
+                case DataValidationRule::EqualTo: return date == d1;
+                case DataValidationRule::NotEqualTo: return date != d1;
+                case DataValidationRule::GreaterThan: return date > d1;
+                case DataValidationRule::LessThan: return date < d1;
+                case DataValidationRule::GreaterThanOrEqual: return date >= d1;
+                case DataValidationRule::LessThanOrEqual: return date <= d1;
+                default: return true;
+            }
+            break;
+        }
+        case DataValidationRule::Custom: {
+            if (rule->customFormula.isEmpty()) return true;
+            // Evaluate the custom formula — if it returns TRUE, validation passes
+            QVariant result = m_formulaEngine->evaluate(rule->customFormula);
+            return result.toBool();
         }
         default: return true;
     }

@@ -653,6 +653,8 @@ void SpreadsheetView::copy() {
         m_internalClipboard[r][c].type = cell->getType();
         m_internalClipboard[r][c].formula = cell->getFormula();
         m_internalClipboard[r][c].sourceAddr = addr;
+        m_internalClipboard[r][c].comment = cell->getComment();
+        m_internalClipboard[r][c].hyperlink = cell->getHyperlink();
     }
 
     // Also set system clipboard text for cross-app paste
@@ -703,6 +705,7 @@ void SpreadsheetView::paste() {
 
     std::vector<CellSnapshot> before, after;
     m_model->setSuppressUndo(true);
+    m_spreadsheet->beginBatchUpdate();
 
     // Check if system clipboard matches our internal clipboard (same-app paste with formatting)
     bool useInternalClipboard = !m_internalClipboard.empty() && data == m_internalClipboardText;
@@ -725,6 +728,9 @@ void SpreadsheetView::paste() {
                 // Apply formatting
                 auto cell = m_spreadsheet->getCell(addr);
                 cell->setStyle(clipCell.style);
+                // Restore comment and hyperlink
+                if (!clipCell.comment.isEmpty()) cell->setComment(clipCell.comment);
+                if (!clipCell.hyperlink.isEmpty()) cell->setHyperlink(clipCell.hyperlink);
 
                 after.push_back(m_spreadsheet->takeCellSnapshot(addr));
             }
@@ -795,6 +801,7 @@ void SpreadsheetView::paste() {
             }
         }
     }
+    m_spreadsheet->endBatchUpdate();
     m_model->setSuppressUndo(false);
 
     // If this is a cut-paste, also clear the source cells
@@ -2295,6 +2302,9 @@ void SpreadsheetView::clearAll() {
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty() || !m_spreadsheet) return;
 
+    // Compute bounding box of selection for validation/conditional formatting cleanup
+    int minRow = INT_MAX, maxRow = 0, minCol = INT_MAX, maxCol = 0;
+
     std::vector<CellSnapshot> before, after;
     for (const auto& index : selected) {
         CellAddress addr(logicalRow(index), index.column());
@@ -2302,7 +2312,33 @@ void SpreadsheetView::clearAll() {
         auto cell = m_spreadsheet->getCell(addr);
         cell->clear();
         cell->setStyle(CellStyle()); // Reset to default style
+        cell->setComment("");
+        cell->setHyperlink("");
         after.push_back(m_spreadsheet->takeCellSnapshot(addr));
+
+        minRow = qMin(minRow, addr.row);
+        maxRow = qMax(maxRow, addr.row);
+        minCol = qMin(minCol, addr.col);
+        maxCol = qMax(maxCol, addr.col);
+    }
+
+    // Remove validation rules that intersect the cleared selection
+    CellRange selRange(minRow, minCol, maxRow, maxCol);
+    auto& valRules = m_spreadsheet->getValidationRules();
+    valRules.erase(
+        std::remove_if(valRules.begin(), valRules.end(),
+            [&selRange](const Spreadsheet::DataValidationRule& rule) {
+                return rule.range.intersects(selRange);
+            }),
+        valRules.end());
+
+    // Remove conditional formatting rules that intersect the cleared selection
+    auto& cfRules = m_spreadsheet->getConditionalFormatting().getAllRules();
+    // Iterate in reverse to safely remove by index
+    for (int i = static_cast<int>(cfRules.size()) - 1; i >= 0; --i) {
+        if (cfRules[i] && cfRules[i]->getRange().intersects(selRange)) {
+            m_spreadsheet->getConditionalFormatting().removeRule(static_cast<size_t>(i));
+        }
     }
 
     m_spreadsheet->getUndoManager().pushCommand(
@@ -4031,9 +4067,10 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         bool isLeft = srcValue.startsWith(exampleOutput, Qt::CaseInsensitive);
         bool isRight = srcValue.endsWith(exampleOutput, Qt::CaseInsensitive);
 
-        // Apply pattern to remaining rows
+        // Apply pattern to remaining rows with undo support
         int maxRow = m_spreadsheet->getMaxRow();
         int applied = 0;
+        std::vector<CellSnapshot> ffBefore, ffAfter;
         for (int r = row; r <= maxRow; ++r) {
             QString src = m_spreadsheet->getCellValue(CellAddress(r, srcCol)).toString();
             if (src.isEmpty()) continue;
@@ -4056,9 +4093,18 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
                 continue; // Can't detect pattern
             }
 
-            m_spreadsheet->setCellValue(CellAddress(r, col), QVariant(result));
+            CellAddress fillAddr(r, col);
+            ffBefore.push_back(m_spreadsheet->takeCellSnapshot(fillAddr));
+            m_spreadsheet->setCellValue(fillAddr, QVariant(result));
+            ffAfter.push_back(m_spreadsheet->takeCellSnapshot(fillAddr));
             applied++;
             if (applied > 100000) break; // Safety limit
+        }
+
+        // Push undo command for flash fill
+        if (!ffBefore.empty()) {
+            m_spreadsheet->getUndoManager().pushCommand(
+                std::make_unique<MultiCellEditCommand>(ffBefore, ffAfter, "Flash Fill"));
         }
 
         if (m_model) m_model->resetModel();

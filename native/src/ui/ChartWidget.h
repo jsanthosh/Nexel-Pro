@@ -232,8 +232,12 @@ private:
     void drawPieChart(QPainter& p, const QRect& plotArea);
     void drawAreaChart(QPainter& p, const QRect& plotArea);
     void drawDonutChart(QPainter& p, const QRect& plotArea);
+    void drawWaterfallChart(QPainter& p, const QRect& plotArea);
     void drawTrendlines(QPainter& p, const QRect& plotArea);
     void drawDataLabels(QPainter& p, const QRect& plotArea);
+    void drawSecondaryYAxis(QPainter& p, const QRect& plotArea,
+                            double minVal, double maxVal, double step);
+    void drawComboChart(QPainter& p, const QRect& plotArea);
 
     // Data helpers
     void computeAxisRange(double& minVal, double& maxVal, double& step) const;

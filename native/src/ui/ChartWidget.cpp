@@ -14,6 +14,7 @@
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 // --- Chart color palettes (index 0 is "Document Theme", resolved at runtime) ---
 // Indices 1-6 are fixed palettes; index 0 falls through to document theme accents.
@@ -444,7 +445,9 @@ void ChartWidget::autoGenerateTitles(ChartConfig& config, std::shared_ptr<Spread
 QRect ChartWidget::computePlotArea() const {
     int left = AXIS_MARGIN + 10;
     int top = TITLE_HEIGHT + 5;
-    int right = width() - 15;
+    // Combo charts need extra right margin for the secondary Y-axis labels
+    int rightMargin = (m_config.type == ChartType::Combo) ? AXIS_MARGIN + 10 : 15;
+    int right = width() - rightMargin;
     int bottom = height() - (m_config.showLegend ? LEGEND_HEIGHT + 10 : 10) - 25;
     return QRect(left, top, right - left, bottom - top);
 }
@@ -509,15 +512,12 @@ void ChartWidget::paintEvent(QPaintEvent*) {
             drawColumnChart(p, plotArea);
             break;
         case ChartType::Combo:
-            drawAxes(p, plotArea);
-            if (m_config.showGridLines) drawGridLines(p, plotArea);
-            drawColumnChart(p, plotArea); // Primary series as columns
-            drawLineChart(p, plotArea);   // Overlay line series
+            drawComboChart(p, plotArea);
             break;
         case ChartType::Waterfall:
             drawAxes(p, plotArea);
             if (m_config.showGridLines) drawGridLines(p, plotArea);
-            drawColumnChart(p, plotArea); // Simplified waterfall as stacked columns
+            drawWaterfallChart(p, plotArea);
             break;
     }
 
@@ -661,6 +661,11 @@ void ChartWidget::drawTrendlines(QPainter& p, const QRect& plotArea) {
 
         // Calculate trendline points
         QVector<QPointF> points;
+        // Number of sample points for curve rendering
+        const int numSamples = 100;
+        // X range with forecast support
+        double xStart = -tl.forecastBackward;
+        double xEnd = (n - 1) + tl.forecastForward;
 
         if (tl.type == TrendlineType::Linear) {
             // y = mx + b via least squares
@@ -669,13 +674,186 @@ void ChartWidget::drawTrendlines(QPainter& p, const QRect& plotArea) {
                 sumX += i; sumY += s.yValues[i];
                 sumXY += i * s.yValues[i]; sumX2 += i * i;
             }
-            double m = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+            double denom = n * sumX2 - sumX * sumX;
+            if (std::abs(denom) < 1e-12) continue;
+            double m = (n * sumXY - sumX * sumY) / denom;
             double b = (sumY - m * sumX) / n;
 
-            for (int i = 0; i <= n + 1; ++i) {
-                double x = i - tl.forecastBackward;
+            for (int j = 0; j <= numSamples; ++j) {
+                double x = xStart + (xEnd - xStart) * j / numSamples;
                 points.append(QPointF(x, m * x + b));
             }
+
+        } else if (tl.type == TrendlineType::Exponential) {
+            // y = a * e^(bx)  =>  ln(y) = ln(a) + b*x
+            // Only use positive y values for ln fit
+            double sumX = 0, sumLnY = 0, sumXLnY = 0, sumX2 = 0;
+            int validCount = 0;
+            for (int i = 0; i < n; ++i) {
+                if (s.yValues[i] <= 0) continue; // skip non-positive values
+                double lnY = std::log(s.yValues[i]);
+                sumX += i;
+                sumLnY += lnY;
+                sumXLnY += i * lnY;
+                sumX2 += static_cast<double>(i) * i;
+                ++validCount;
+            }
+            if (validCount < 2) continue;
+            double denom = validCount * sumX2 - sumX * sumX;
+            if (std::abs(denom) < 1e-12) continue;
+            double b = (validCount * sumXLnY - sumX * sumLnY) / denom;
+            double lnA = (sumLnY - b * sumX) / validCount;
+            double a = std::exp(lnA);
+
+            for (int j = 0; j <= numSamples; ++j) {
+                double x = xStart + (xEnd - xStart) * j / numSamples;
+                double y = a * std::exp(b * x);
+                points.append(QPointF(x, y));
+            }
+
+        } else if (tl.type == TrendlineType::Logarithmic) {
+            // y = a * ln(x) + b
+            // Use x = i+1 (1-based) to avoid ln(0)
+            double sumLnX = 0, sumY = 0, sumLnXY = 0, sumLnX2 = 0;
+            for (int i = 0; i < n; ++i) {
+                double lnX = std::log(static_cast<double>(i + 1));
+                sumLnX += lnX;
+                sumY += s.yValues[i];
+                sumLnXY += lnX * s.yValues[i];
+                sumLnX2 += lnX * lnX;
+            }
+            double denom = n * sumLnX2 - sumLnX * sumLnX;
+            if (std::abs(denom) < 1e-12) continue;
+            double a = (n * sumLnXY - sumLnX * sumY) / denom;
+            double b = (sumY - a * sumLnX) / n;
+
+            for (int j = 0; j <= numSamples; ++j) {
+                double x = xStart + (xEnd - xStart) * j / numSamples;
+                double xVal = x + 1; // 1-based
+                if (xVal <= 0) continue; // can't take ln of non-positive
+                double y = a * std::log(xVal) + b;
+                points.append(QPointF(x, y));
+            }
+
+        } else if (tl.type == TrendlineType::Power) {
+            // y = a * x^b  =>  ln(y) = ln(a) + b*ln(x)
+            // Use x = i+1 (1-based), only positive y values
+            double sumLnX = 0, sumLnY = 0, sumLnXLnY = 0, sumLnX2 = 0;
+            int validCount = 0;
+            for (int i = 0; i < n; ++i) {
+                if (s.yValues[i] <= 0) continue; // skip non-positive
+                double lnX = std::log(static_cast<double>(i + 1));
+                double lnY = std::log(s.yValues[i]);
+                sumLnX += lnX;
+                sumLnY += lnY;
+                sumLnXLnY += lnX * lnY;
+                sumLnX2 += lnX * lnX;
+                ++validCount;
+            }
+            if (validCount < 2) continue;
+            double denom = validCount * sumLnX2 - sumLnX * sumLnX;
+            if (std::abs(denom) < 1e-12) continue;
+            double bCoeff = (validCount * sumLnXLnY - sumLnX * sumLnY) / denom;
+            double lnA = (sumLnY - bCoeff * sumLnX) / validCount;
+            double a = std::exp(lnA);
+
+            for (int j = 0; j <= numSamples; ++j) {
+                double x = xStart + (xEnd - xStart) * j / numSamples;
+                double xVal = x + 1; // 1-based
+                if (xVal <= 0) continue;
+                double y = a * std::pow(xVal, bCoeff);
+                points.append(QPointF(x, y));
+            }
+
+        } else if (tl.type == TrendlineType::Polynomial) {
+            // y = a0 + a1*x + a2*x^2 + ... + ak*x^k
+            // Solve via normal equations: (X^T X) coeffs = X^T y
+            int order = qBound(2, tl.polynomialOrder, 6);
+            int cols = order + 1;
+
+            // Build X^T X matrix and X^T y vector
+            // Use std::vector for matrix storage
+            std::vector<double> XtX(cols * cols, 0.0);
+            std::vector<double> XtY(cols, 0.0);
+
+            // Pre-compute x powers sums
+            for (int i = 0; i < n; ++i) {
+                double xi = static_cast<double>(i);
+                // Compute powers of xi up to 2*order
+                std::vector<double> xpow(2 * order + 1);
+                xpow[0] = 1.0;
+                for (int k = 1; k <= 2 * order; ++k) {
+                    xpow[k] = xpow[k - 1] * xi;
+                }
+                for (int r = 0; r < cols; ++r) {
+                    for (int c = 0; c < cols; ++c) {
+                        XtX[r * cols + c] += xpow[r + c];
+                    }
+                    XtY[r] += xpow[r] * s.yValues[i];
+                }
+            }
+
+            // Solve via Gaussian elimination with partial pivoting
+            // Augmented matrix [XtX | XtY]
+            std::vector<double> aug(cols * (cols + 1));
+            for (int r = 0; r < cols; ++r) {
+                for (int c = 0; c < cols; ++c) {
+                    aug[r * (cols + 1) + c] = XtX[r * cols + c];
+                }
+                aug[r * (cols + 1) + cols] = XtY[r];
+            }
+
+            // Forward elimination
+            bool singular = false;
+            for (int k = 0; k < cols; ++k) {
+                // Partial pivoting: find max in column k
+                int maxRow = k;
+                double maxVal2 = std::abs(aug[k * (cols + 1) + k]);
+                for (int r = k + 1; r < cols; ++r) {
+                    double val = std::abs(aug[r * (cols + 1) + k]);
+                    if (val > maxVal2) { maxVal2 = val; maxRow = r; }
+                }
+                if (maxVal2 < 1e-12) { singular = true; break; }
+
+                // Swap rows
+                if (maxRow != k) {
+                    for (int c = 0; c <= cols; ++c) {
+                        std::swap(aug[k * (cols + 1) + c], aug[maxRow * (cols + 1) + c]);
+                    }
+                }
+
+                // Eliminate below
+                for (int r = k + 1; r < cols; ++r) {
+                    double factor = aug[r * (cols + 1) + k] / aug[k * (cols + 1) + k];
+                    for (int c = k; c <= cols; ++c) {
+                        aug[r * (cols + 1) + c] -= factor * aug[k * (cols + 1) + c];
+                    }
+                }
+            }
+            if (singular) continue;
+
+            // Back substitution
+            std::vector<double> coeffs(cols, 0.0);
+            for (int r = cols - 1; r >= 0; --r) {
+                double sum = aug[r * (cols + 1) + cols];
+                for (int c = r + 1; c < cols; ++c) {
+                    sum -= aug[r * (cols + 1) + c] * coeffs[c];
+                }
+                coeffs[r] = sum / aug[r * (cols + 1) + r];
+            }
+
+            // Generate curve points
+            for (int j = 0; j <= numSamples; ++j) {
+                double x = xStart + (xEnd - xStart) * j / numSamples;
+                double y = 0;
+                double xpow = 1.0;
+                for (int k = 0; k < cols; ++k) {
+                    y += coeffs[k] * xpow;
+                    xpow *= x;
+                }
+                points.append(QPointF(x, y));
+            }
+
         } else if (tl.type == TrendlineType::MovingAverage) {
             int period = qMax(2, tl.movingAveragePeriod);
             for (int i = period - 1; i < n; ++i) {
@@ -684,6 +862,7 @@ void ChartWidget::drawTrendlines(QPainter& p, const QRect& plotArea) {
                 points.append(QPointF(i, sum / period));
             }
         }
+
         // Draw the trendline
         if (points.size() < 2) continue;
         QPen pen(tl.color, tl.lineWidth, Qt::DashLine);
@@ -1619,6 +1798,274 @@ void ChartWidget::drawDonutChart(QPainter& p, const QRect& plotArea) {
         p.drawPath(donutSlice);
 
         startAngle -= spanAngle;
+    }
+}
+
+// --- Waterfall Chart ---
+
+void ChartWidget::drawWaterfallChart(QPainter& p, const QRect& plotArea) {
+    if (m_config.series.isEmpty()) return;
+    const auto& s = m_config.series[0]; // waterfall uses first series only
+    int n = s.yValues.size();
+    if (n == 0) return;
+
+    // Compute running totals to find correct axis range
+    std::vector<double> runningTotal(n);
+    double cumulative = 0;
+    double totalMin = 0, totalMax = 0;
+    for (int i = 0; i < n; ++i) {
+        double prevCumulative = cumulative;
+        cumulative += s.yValues[i];
+        runningTotal[i] = cumulative;
+        totalMin = std::min(totalMin, std::min(cumulative, prevCumulative));
+        totalMax = std::max(totalMax, std::max(cumulative, prevCumulative));
+    }
+
+    // Use computeAxisRange as baseline, then override if running totals exceed
+    double minVal, maxVal, step;
+    computeAxisRange(minVal, maxVal, step);
+    minVal = std::min(minVal, totalMin);
+    maxVal = std::max(maxVal, totalMax);
+    if (maxVal == minVal) maxVal = minVal + 1;
+
+    // Re-compute nice step for the possibly expanded range
+    double range = maxVal - minVal;
+    double magnitude = std::pow(10.0, std::floor(std::log10(range)));
+    double residual = range / magnitude;
+    if (residual <= 1.5) step = 0.2 * magnitude;
+    else if (residual <= 3.0) step = 0.5 * magnitude;
+    else if (residual <= 7.0) step = magnitude;
+    else step = 2.0 * magnitude;
+    minVal = std::floor(minVal / step) * step;
+    maxVal = std::ceil(maxVal / step) * step;
+
+    double groupWidth = static_cast<double>(plotArea.width()) / n;
+    double barWidth = groupWidth * 0.6;
+    double gap = groupWidth * 0.2;
+
+    QColor posColor("#4CAF50");   // green for positive
+    QColor negColor("#F44336");   // red for negative
+    QColor totalColor("#2196F3"); // blue for first/last (totals)
+
+    cumulative = 0;
+    for (int i = 0; i < n; ++i) {
+        double value = s.yValues[i];
+        double barStart = cumulative;
+        cumulative += value;
+        double barEnd = cumulative;
+
+        // Convert to pixel coordinates
+        int x = plotArea.left() + static_cast<int>(i * groupWidth + gap);
+        int yStart = plotArea.bottom() - static_cast<int>((barStart - minVal) / (maxVal - minVal) * plotArea.height());
+        int yEnd = plotArea.bottom() - static_cast<int>((barEnd - minVal) / (maxVal - minVal) * plotArea.height());
+
+        int barTop = std::min(yStart, yEnd);
+        int barHeight = std::abs(yEnd - yStart);
+        if (barHeight < 1) barHeight = 1;
+
+        // Apply entry animation
+        barHeight = static_cast<int>(barHeight * m_animProgress);
+        if (barHeight < 1) barHeight = 1;
+
+        QRect barRect(x, barTop, static_cast<int>(barWidth), barHeight);
+
+        // Color: first bar = total, last bar = total, positive = green, negative = red
+        bool isTotal = (i == 0 || i == n - 1);
+        QColor color = isTotal ? totalColor : (value >= 0 ? posColor : negColor);
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawRoundedRect(barRect, 2, 2);
+
+        // Connector line to next bar (dashed, showing running total)
+        if (i < n - 1) {
+            int connectorY = yEnd;
+            int nextX = plotArea.left() + static_cast<int>((i + 1) * groupWidth + gap);
+            p.setPen(QPen(QColor("#999999"), 1, Qt::DashLine));
+            p.drawLine(x + static_cast<int>(barWidth), connectorY, nextX, connectorY);
+        }
+    }
+}
+
+// --- Combo Chart with Secondary Y-Axis ---
+
+void ChartWidget::drawSecondaryYAxis(QPainter& p, const QRect& plotArea,
+                                      double minVal, double maxVal, double step) {
+    // Draw the right-side Y axis line
+    p.setPen(QPen(QColor("#888"), 1));
+    p.drawLine(plotArea.right(), plotArea.top(), plotArea.right(), plotArea.bottom());
+
+    // Y axis ticks and labels on the right side
+    p.setFont(QFont("Arial", 8));
+    p.setPen(QColor("#666"));
+
+    for (double v = minVal; v <= maxVal + step * 0.001; v += step) {
+        double frac = (v - minVal) / (maxVal - minVal);
+        int y = plotArea.bottom() - static_cast<int>(frac * plotArea.height());
+        if (y < plotArea.top() || y > plotArea.bottom()) continue;
+
+        p.drawLine(plotArea.right(), y, plotArea.right() + 4, y);
+
+        QString label;
+        if (std::abs(v) >= 1000000) label = QString::number(v / 1000000.0, 'f', 1) + "M";
+        else if (std::abs(v) >= 1000) label = QString::number(v / 1000.0, 'f', 1) + "K";
+        else label = QString::number(v, 'f', step < 1 ? 1 : 0);
+
+        p.drawText(QRect(plotArea.right() + 6, y - 8, AXIS_MARGIN - 6, 16),
+                   Qt::AlignLeft | Qt::AlignVCenter, label);
+    }
+}
+
+void ChartWidget::drawComboChart(QPainter& p, const QRect& plotArea) {
+    if (m_config.series.isEmpty()) return;
+
+    int numSeries = m_config.series.size();
+
+    // Determine which series use the secondary axis
+    // If useSecondaryAxis is configured, use that; otherwise heuristic: first series = primary, rest = secondary
+    QVector<bool> isSecondary(numSeries, false);
+    if (m_config.useSecondaryAxis.size() >= numSeries) {
+        isSecondary = m_config.useSecondaryAxis;
+    } else {
+        // Heuristic: first series is primary (columns), remaining are secondary (lines)
+        for (int i = 1; i < numSeries; ++i) {
+            isSecondary[i] = true;
+        }
+    }
+
+    // Compute primary axis range (from primary series only)
+    double priMin = 0, priMax = 0;
+    bool priFirst = true;
+    for (int si = 0; si < numSeries; ++si) {
+        if (isSecondary[si] || !isSeriesVisible(si)) continue;
+        for (double v : m_config.series[si].yValues) {
+            if (priFirst) { priMin = priMax = v; priFirst = false; }
+            else { priMin = qMin(priMin, v); priMax = qMax(priMax, v); }
+        }
+    }
+    if (priFirst) { priMin = 0; priMax = 100; }
+    if (priMin > 0) priMin = 0;
+    if (priMax == priMin) priMax = priMin + 1;
+    // Nice rounding for primary
+    {
+        double range = priMax - priMin;
+        double mag = std::pow(10.0, std::floor(std::log10(range)));
+        double res = range / mag;
+        double priStep;
+        if (res <= 1.5) priStep = 0.2 * mag;
+        else if (res <= 3.0) priStep = 0.5 * mag;
+        else if (res <= 7.0) priStep = mag;
+        else priStep = 2.0 * mag;
+        priMin = std::floor(priMin / priStep) * priStep;
+        priMax = std::ceil(priMax / priStep) * priStep;
+        if (priMin > 0) priMin = 0;
+    }
+
+    // Compute secondary axis range (from secondary series only)
+    double secMin = 0, secMax = 0;
+    bool secFirst = true;
+    for (int si = 0; si < numSeries; ++si) {
+        if (!isSecondary[si] || !isSeriesVisible(si)) continue;
+        for (double v : m_config.series[si].yValues) {
+            if (secFirst) { secMin = secMax = v; secFirst = false; }
+            else { secMin = qMin(secMin, v); secMax = qMax(secMax, v); }
+        }
+    }
+    if (secFirst) { secMin = 0; secMax = 100; }
+    if (secMin > 0) secMin = 0;
+    if (secMax == secMin) secMax = secMin + 1;
+    double secStep;
+    {
+        double range = secMax - secMin;
+        double mag = std::pow(10.0, std::floor(std::log10(range)));
+        double res = range / mag;
+        if (res <= 1.5) secStep = 0.2 * mag;
+        else if (res <= 3.0) secStep = 0.5 * mag;
+        else if (res <= 7.0) secStep = mag;
+        else secStep = 2.0 * mag;
+        secMin = std::floor(secMin / secStep) * secStep;
+        secMax = std::ceil(secMax / secStep) * secStep;
+        if (secMin > 0) secMin = 0;
+    }
+
+    // Draw primary axis (left) and gridlines
+    drawAxes(p, plotArea);
+    if (m_config.showGridLines) drawGridLines(p, plotArea);
+
+    // Draw secondary axis (right)
+    drawSecondaryYAxis(p, plotArea, secMin, secMax, secStep);
+
+    // Draw primary series as columns
+    {
+        int numPrimary = 0;
+        for (int si = 0; si < numSeries; ++si) {
+            if (!isSecondary[si] && isSeriesVisible(si)) ++numPrimary;
+        }
+        if (numPrimary > 0 && !m_config.series[0].yValues.isEmpty()) {
+            int numPoints = m_config.series[0].yValues.size();
+            double groupWidth = static_cast<double>(plotArea.width()) / numPoints;
+            double gap = groupWidth * 0.15;
+            double barWidth = (groupWidth * 0.7) / numPrimary;
+            int priIdx = 0;
+            for (int si = 0; si < numSeries; ++si) {
+                if (isSecondary[si] || !isSeriesVisible(si)) continue;
+                const auto& s = m_config.series[si];
+                for (int i = 0; i < qMin(numPoints, s.yValues.size()); ++i) {
+                    double yFrac = (s.yValues[i] - priMin) / (priMax - priMin);
+                    int barHeight = static_cast<int>(yFrac * plotArea.height() * m_animProgress);
+                    int x = plotArea.left() + static_cast<int>(i * groupWidth + gap + priIdx * barWidth);
+                    int y = plotArea.bottom() - barHeight;
+                    QRect barRect(x, y, static_cast<int>(barWidth) - 1, barHeight);
+                    p.setPen(Qt::NoPen);
+                    p.setBrush(s.color);
+                    p.drawRoundedRect(barRect, 2, 2);
+                }
+                ++priIdx;
+            }
+        }
+    }
+
+    // Draw secondary series as lines (scaled to secondary axis)
+    {
+        // Clip to animate left-to-right reveal
+        int clipW = static_cast<int>(plotArea.width() * m_animProgress);
+        p.save();
+        p.setClipRect(QRect(plotArea.left(), plotArea.top() - 10, clipW + 10, plotArea.height() + 20));
+
+        int numPoints = m_config.series[0].yValues.size();
+        for (int si = 0; si < numSeries; ++si) {
+            if (!isSecondary[si] || !isSeriesVisible(si)) continue;
+            const auto& s = m_config.series[si];
+            if (s.yValues.isEmpty()) continue;
+
+            int nPts = s.yValues.size();
+            QPainterPath path;
+            for (int i = 0; i < nPts; ++i) {
+                double xFrac = (nPts > 1) ? static_cast<double>(i) / (nPts - 1) : 0.5;
+                double yFrac = (s.yValues[i] - secMin) / (secMax - secMin);
+                int px = plotArea.left() + static_cast<int>(xFrac * plotArea.width());
+                int py = plotArea.bottom() - static_cast<int>(yFrac * plotArea.height());
+                if (i == 0) path.moveTo(px, py);
+                else path.lineTo(px, py);
+            }
+            p.setPen(QPen(s.color, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(path);
+
+            // Data point markers
+            if (m_config.showMarkers) {
+                p.setPen(QPen(s.color.darker(120), 1.5));
+                p.setBrush(Qt::white);
+                for (int i = 0; i < nPts; ++i) {
+                    double xFrac = (nPts > 1) ? static_cast<double>(i) / (nPts - 1) : 0.5;
+                    double yFrac = (s.yValues[i] - secMin) / (secMax - secMin);
+                    int px = plotArea.left() + static_cast<int>(xFrac * plotArea.width());
+                    int py = plotArea.bottom() - static_cast<int>(yFrac * plotArea.height());
+                    p.drawEllipse(QPoint(px, py), 4, 4);
+                }
+            }
+        }
+        p.restore();
     }
 }
 
