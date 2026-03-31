@@ -1505,31 +1505,37 @@ QVariant FormulaEngine::funcVLOOKUP(const std::vector<QVariant>& args) {
     if (colIdx < 1 || colIdx > static_cast<int>(table.empty() ? 0 : table[0].size()))
         return QVariant("#REF!");
 
-    for (size_t r = 0; r < table.size(); ++r) {
-        if (table[r].empty()) continue;
-        QVariant cellVal = table[r][0];
-        bool match = false;
-        if (!rangeLookup) {
-            // Exact match
-            match = (cellVal.toString().compare(lookupVal.toString(), Qt::CaseInsensitive) == 0);
+    if (!rangeLookup) {
+        // Exact match - linear scan
+        for (size_t r = 0; r < table.size(); ++r) {
+            if (table[r].empty()) continue;
+            QVariant cellVal = table[r][0];
+            bool match = (cellVal.toString().compare(lookupVal.toString(), Qt::CaseInsensitive) == 0);
             if (!match) {
                 bool ok1, ok2;
                 double d1 = cellVal.toDouble(&ok1);
                 double d2 = lookupVal.toDouble(&ok2);
                 if (ok1 && ok2) match = (d1 == d2);
             }
-        } else {
-            // Approximate match (sorted ascending) - find largest value <= lookup
-            double cv = toNumber(cellVal);
-            double lv = toNumber(lookupVal);
-            if (cv <= lv) {
-                // Check if next row exceeds
-                if (r + 1 >= table.size() || toNumber(table[r + 1][0]) > lv) {
-                    match = true;
-                }
+            if (match) return table[r][colIdx - 1];
+        }
+    } else {
+        // Approximate match - find largest value <= lookup_value
+        // Scan all rows to handle duplicates correctly
+        int bestMatch = -1;
+        double bestVal = -std::numeric_limits<double>::infinity();
+        double lv = toNumber(lookupVal);
+        for (size_t r = 0; r < table.size(); ++r) {
+            if (table[r].empty()) continue;
+            double cv = toNumber(table[r][0]);
+            if (cv <= lv && cv >= bestVal) {
+                bestVal = cv;
+                bestMatch = static_cast<int>(r);
             }
         }
-        if (match) return table[r][colIdx - 1];
+        if (bestMatch >= 0) {
+            return table[bestMatch][colIdx - 1];
+        }
     }
     return QVariant("#N/A");
 }
@@ -1574,23 +1580,176 @@ QVariant FormulaEngine::funcXLOOKUP(const std::vector<QVariant>& args) {
     QVariant lookupVal = args[0];
     QVariant ifNotFound = args.size() >= 4 ? args[3] : QVariant("#N/A");
 
+    // match_mode: 0=exact (default), -1=exact or next smaller, 1=exact or next larger, 2=wildcard
+    int matchMode = 0;
+    // search_mode: 1=first-to-last (default), -1=last-to-first, 2=binary asc, -2=binary desc
+    int searchMode = 1;
+    if (args.size() > 4) matchMode = static_cast<int>(toNumber(args[4]));
+    if (args.size() > 5) searchMode = static_cast<int>(toNumber(args[5]));
+
     if (m_lastRangeArgs.size() < 2) return QVariant("#REF!");
     CellRange lookupRange = m_lastRangeArgs[0];
     CellRange returnRange = m_lastRangeArgs[1];
 
     auto lookupVals = getRangeValues(lookupRange);
     auto returnVals = getRangeValues(returnRange);
+    int n = static_cast<int>(std::min(lookupVals.size(), returnVals.size()));
+    if (n == 0) return ifNotFound;
 
-    for (size_t i = 0; i < lookupVals.size() && i < returnVals.size(); ++i) {
-        bool match = (lookupVals[i].toString().compare(lookupVal.toString(), Qt::CaseInsensitive) == 0);
-        if (!match) {
-            bool ok1, ok2;
-            double d1 = lookupVals[i].toDouble(&ok1);
-            double d2 = lookupVal.toDouble(&ok2);
-            if (ok1 && ok2) match = (d1 == d2);
+    // Helper: check if two values match exactly (string or numeric)
+    auto exactMatch = [&](const QVariant& cellVal, const QVariant& target) -> bool {
+        if (cellVal.toString().compare(target.toString(), Qt::CaseInsensitive) == 0)
+            return true;
+        bool ok1, ok2;
+        double d1 = cellVal.toDouble(&ok1);
+        double d2 = target.toDouble(&ok2);
+        return (ok1 && ok2 && d1 == d2);
+    };
+
+    // Helper: wildcard match (Excel-style * and ?)
+    auto wildcardMatch = [&](const QString& text, const QString& pattern) -> bool {
+        // Convert Excel wildcard pattern to QRegularExpression
+        QString regexStr;
+        for (int k = 0; k < pattern.size(); ++k) {
+            QChar ch = pattern[k];
+            if (ch == '~' && k + 1 < pattern.size()) {
+                // ~ escapes the next wildcard character
+                regexStr += QRegularExpression::escape(QString(pattern[k + 1]));
+                ++k;
+            } else if (ch == '*') {
+                regexStr += ".*";
+            } else if (ch == '?') {
+                regexStr += ".";
+            } else {
+                regexStr += QRegularExpression::escape(QString(ch));
+            }
         }
-        if (match) return returnVals[i];
+        QRegularExpression re("^" + regexStr + "$", QRegularExpression::CaseInsensitiveOption);
+        return re.match(text).hasMatch();
+    };
+
+    // Helper: check match based on matchMode (exact part only)
+    auto isExactOrWildcardMatch = [&](int idx) -> bool {
+        if (matchMode == 2) {
+            // Wildcard match
+            return wildcardMatch(lookupVals[idx].toString(), lookupVal.toString());
+        } else {
+            // Exact match (used by matchMode 0, -1, 1 as the exact-check phase)
+            return exactMatch(lookupVals[idx], lookupVal);
+        }
+    };
+
+    // --- Binary search modes ---
+    if (searchMode == 2 || searchMode == -2) {
+        // Binary search: searchMode 2 = ascending data, -2 = descending data
+        bool ascending = (searchMode == 2);
+        int lo = 0, hi = n - 1;
+        int bestMatch = -1;
+
+        if (matchMode == 0 || matchMode == 2) {
+            // Binary search for exact match
+            while (lo <= hi) {
+                int mid = lo + (hi - lo) / 2;
+                double cv = toNumber(lookupVals[mid]);
+                double lv = toNumber(lookupVal);
+                if (isExactOrWildcardMatch(mid)) {
+                    return returnVals[mid];
+                }
+                if (ascending) {
+                    if (cv < lv) lo = mid + 1; else hi = mid - 1;
+                } else {
+                    if (cv > lv) lo = mid + 1; else hi = mid - 1;
+                }
+            }
+            return ifNotFound;
+        } else if (matchMode == -1) {
+            // Exact or next smaller (binary search on ascending data)
+            while (lo <= hi) {
+                int mid = lo + (hi - lo) / 2;
+                double cv = toNumber(lookupVals[mid]);
+                double lv = toNumber(lookupVal);
+                if (cv == lv) { return returnVals[mid]; }
+                if (ascending) {
+                    if (cv < lv) { bestMatch = mid; lo = mid + 1; }
+                    else hi = mid - 1;
+                } else {
+                    if (cv < lv) { bestMatch = mid; hi = mid - 1; }
+                    else lo = mid + 1;
+                }
+            }
+            if (bestMatch >= 0) return returnVals[bestMatch];
+            return ifNotFound;
+        } else if (matchMode == 1) {
+            // Exact or next larger (binary search on ascending data)
+            while (lo <= hi) {
+                int mid = lo + (hi - lo) / 2;
+                double cv = toNumber(lookupVals[mid]);
+                double lv = toNumber(lookupVal);
+                if (cv == lv) { return returnVals[mid]; }
+                if (ascending) {
+                    if (cv > lv) { bestMatch = mid; hi = mid - 1; }
+                    else lo = mid + 1;
+                } else {
+                    if (cv > lv) { bestMatch = mid; lo = mid + 1; }
+                    else hi = mid - 1;
+                }
+            }
+            if (bestMatch >= 0) return returnVals[bestMatch];
+            return ifNotFound;
+        }
     }
+
+    // --- Linear search modes ---
+    // Determine iteration order based on searchMode
+    int start, end, step;
+    if (searchMode == -1) {
+        // Last-to-first
+        start = n - 1; end = -1; step = -1;
+    } else {
+        // First-to-last (default, searchMode == 1)
+        start = 0; end = n; step = 1;
+    }
+
+    if (matchMode == 0 || matchMode == 2) {
+        // Exact match or wildcard match
+        for (int i = start; i != end; i += step) {
+            if (isExactOrWildcardMatch(i)) return returnVals[i];
+        }
+        return ifNotFound;
+    } else if (matchMode == -1) {
+        // Exact or next smaller: find the largest value <= lookup_value
+        int bestIdx = -1;
+        double bestVal = -std::numeric_limits<double>::infinity();
+        double lv = toNumber(lookupVal);
+        for (int i = start; i != end; i += step) {
+            // Check exact match first
+            if (exactMatch(lookupVals[i], lookupVal)) return returnVals[i];
+            double cv = toNumber(lookupVals[i]);
+            if (cv <= lv && cv > bestVal) {
+                bestVal = cv;
+                bestIdx = i;
+            }
+        }
+        if (bestIdx >= 0) return returnVals[bestIdx];
+        return ifNotFound;
+    } else if (matchMode == 1) {
+        // Exact or next larger: find the smallest value >= lookup_value
+        int bestIdx = -1;
+        double bestVal = std::numeric_limits<double>::infinity();
+        double lv = toNumber(lookupVal);
+        for (int i = start; i != end; i += step) {
+            // Check exact match first
+            if (exactMatch(lookupVals[i], lookupVal)) return returnVals[i];
+            double cv = toNumber(lookupVals[i]);
+            if (cv >= lv && cv < bestVal) {
+                bestVal = cv;
+                bestIdx = i;
+            }
+        }
+        if (bestIdx >= 0) return returnVals[bestIdx];
+        return ifNotFound;
+    }
+
     return ifNotFound;
 }
 

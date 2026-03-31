@@ -412,7 +412,10 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             }
             CellAddress addr(logicalRow, col);
             auto cellValue = m_spreadsheet->getCellValue(addr);
-            CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle);
+            auto valueLookup = [this](int r, int c) -> QVariant {
+                return m_spreadsheet->getCellValue(CellAddress(r, c));
+            };
+            CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle, valueLookup);
 
             QFont font(style.fontName);
             font.setPointSize(style.fontSize);
@@ -458,7 +461,10 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             }
             CellAddress addr(logicalRow, col);
             auto cellValue = m_spreadsheet->getCellValue(addr);
-            CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle);
+            auto valueLookup = [this](int r, int c) -> QVariant {
+                return m_spreadsheet->getCellValue(CellAddress(r, c));
+            };
+            CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle, valueLookup);
             auto* table = m_spreadsheet->getTableAt(logicalRow, col);
             if (table && table->hasHeaderRow && logicalRow == table->range.getStart().row) {
                 return table->theme.headerFg;
@@ -514,7 +520,10 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             }
             CellAddress addr(logicalRow, col);
             auto cellValue = m_spreadsheet->getCellValue(addr);
-            CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle);
+            auto valueLookup = [this](int r, int c) -> QVariant {
+                return m_spreadsheet->getCellValue(CellAddress(r, c));
+            };
+            CellStyle style = m_spreadsheet->getConditionalFormatting().getEffectiveStyle(addr, cellValue, baseStyle, valueLookup);
             QColor bg(style.backgroundColor);
             if (!bg.isValid()) {
                 bg = m_spreadsheet->getDocumentTheme().resolveColor(style.backgroundColor);

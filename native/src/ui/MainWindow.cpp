@@ -500,6 +500,24 @@ void MainWindow::onDeleteSheet() {
     m_sheets.erase(m_sheets.begin() + idx);
     m_sheetTabBar->blockSignals(false);
 
+    // Update cross-sheet formula references: replace deleted sheet refs with #REF!
+    for (auto& sheet : m_sheets) {
+        sheet->forEachCell([&](int row, int col, const Cell& cell) {
+            if (cell.getType() == CellType::Formula) {
+                QString formula = cell.getFormula();
+                // Check if formula references the deleted sheet
+                // Patterns: SheetName!A1 or 'Sheet Name'!A1
+                if (formula.contains(name + "!") ||
+                    formula.contains("'" + name + "'!")) {
+                    QString updated = formula;
+                    updated.replace("'" + name + "'!", "#REF!.");
+                    updated.replace(name + "!", "#REF!.");
+                    sheet->setCellFormula(CellAddress{row, col}, updated);
+                }
+            }
+        });
+    }
+
     int newIdx = qMin(idx, static_cast<int>(m_sheets.size()) - 1);
     m_sheetTabBar->setCurrentIndex(newIdx);
     switchToSheet(newIdx);
@@ -516,17 +534,41 @@ void MainWindow::onDuplicateSheet() {
     copy->setSheetName(source->getSheetName() + " (Copy)");
     copy->setAutoRecalculate(false);
 
-    // Copy all cells
+    // Copy all cells (values, formulas, and styles)
     source->forEachCell([&](int row, int col, const Cell& cell) {
-        CellAddress addr(row, col);
-        auto val = source->getCellValue(addr);
-        if (val.isValid() && !val.toString().isEmpty()) {
-            copy->setCellValue(addr, val);
-        }
-        auto srcCell = source->getCell(addr);
-        auto dstCell = copy->getCell(addr);
-        dstCell->setStyle(srcCell->getStyle());
+        auto dst = copy->getOrCreateCellFast(row, col);
+        dst->setValue(cell.getValue());
+        if (!cell.getFormula().isEmpty()) dst->setFormula(cell.getFormula());
+        if (cell.hasCustomStyle()) dst->setStyle(cell.getStyle());
     });
+    copy->finishBulkImport();
+
+    // Copy merged regions
+    for (const auto& region : source->getMergedRegions()) {
+        copy->mergeCells(region.range);
+    }
+    // Copy validation rules
+    for (const auto& rule : source->getValidationRules()) {
+        copy->addValidationRule(rule);
+    }
+    // Copy conditional formatting
+    for (const auto& cfRule : source->getConditionalFormatting().getAllRules()) {
+        copy->getConditionalFormatting().addRule(cfRule);
+    }
+    // Copy row heights
+    for (const auto& [row, height] : source->getRowHeights()) {
+        copy->setRowHeight(row, height);
+    }
+    // Copy column widths
+    for (const auto& [col, width] : source->getColumnWidths()) {
+        copy->setColumnWidth(col, width);
+    }
+    // Copy sparklines
+    for (const auto& [key, config] : source->getSparklines()) {
+        copy->setSparkline(CellAddress{key.row, key.col}, config);
+    }
+    // Copy gridlines setting
+    copy->setShowGridlines(source->showGridlines());
 
     copy->setRowCount(source->getRowCount());
     copy->setColumnCount(source->getColumnCount());
@@ -628,6 +670,34 @@ void MainWindow::showSheetContextMenu(const QPoint& pos) {
                     if (cell.hasCustomStyle()) dst->setStyle(cell.getStyle());
                 });
                 copy->finishBulkImport();
+
+                // Copy merged regions
+                for (const auto& region : src.getMergedRegions()) {
+                    copy->mergeCells(region.range);
+                }
+                // Copy validation rules
+                for (const auto& rule : src.getValidationRules()) {
+                    copy->addValidationRule(rule);
+                }
+                // Copy conditional formatting
+                for (const auto& cfRule : src.getConditionalFormatting().getAllRules()) {
+                    copy->getConditionalFormatting().addRule(cfRule);
+                }
+                // Copy row heights
+                for (const auto& [row, height] : src.getRowHeights()) {
+                    copy->setRowHeight(row, height);
+                }
+                // Copy column widths
+                for (const auto& [col, width] : src.getColumnWidths()) {
+                    copy->setColumnWidth(col, width);
+                }
+                // Copy sparklines
+                for (const auto& [key, config] : src.getSparklines()) {
+                    copy->setSparkline(CellAddress{key.row, key.col}, config);
+                }
+                // Copy gridlines setting
+                copy->setShowGridlines(src.showGridlines());
+
                 copy->setAutoRecalculate(true);
                 int insertAt = (targetPos >= static_cast<int>(m_sheets.size())) ? static_cast<int>(m_sheets.size()) : targetPos;
                 m_sheets.insert(m_sheets.begin() + insertAt, copy);

@@ -396,6 +396,9 @@ private:
     QPoint m_lastDoubleClickPos;
     bool m_editTriggeredByDoubleClick = false;
 
+    // Cut operation deferred delete (Excel behavior: source cells cleared on paste, not on cut)
+    bool m_isCutOperation = false;
+
     // Marching ants for clipboard (Ctrl+C animated dashed border)
     QTimer* m_marchingAntsTimer = nullptr;
     int m_marchingAntsOffset = 0;

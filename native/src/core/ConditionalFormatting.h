@@ -146,11 +146,14 @@ public:
     using FormulaEvaluator = ConditionalFormat::FormulaEvaluator;
     void setFormulaEvaluator(const FormulaEvaluator& evaluator) { m_evaluator = evaluator; }
 
-    // Get style for a cell
-    CellStyle getEffectiveStyle(const CellAddress& addr, const QVariant& cellValue, const CellStyle& baseStyle) const;
+    // Value lookup function for range-level evaluation
+    using ValueLookup = std::function<QVariant(int row, int col)>;
+
+    // Get style for a cell (valueLookup needed for range-level rules like TopN, AboveAverage, etc.)
+    CellStyle getEffectiveStyle(const CellAddress& addr, const QVariant& cellValue, const CellStyle& baseStyle,
+                                const ValueLookup& valueLookup = nullptr) const;
 
     // Get visual formatting result for a cell (data bar, color scale, icon set)
-    using ValueLookup = std::function<QVariant(int row, int col)>;
     std::optional<VisualFormatResult> getVisualFormat(const CellAddress& addr, const QVariant& cellValue,
                                                        const ValueLookup& valueLookup = nullptr) const;
 
@@ -166,6 +169,10 @@ private:
 
     // Helper: compute min/max across a range for auto-range
     static std::pair<double, double> computeRangeMinMax(const CellRange& range, const ValueLookup& valueLookup);
+
+    // Helper: evaluate range-level conditional formatting rules (TopN, AboveAverage, Duplicate, etc.)
+    bool evaluateRangeRule(const std::shared_ptr<ConditionalFormat>& rule, const QVariant& cellValue,
+                           const ValueLookup& valueLookup) const;
 };
 
 #endif // CONDITIONALFORMATTING_H

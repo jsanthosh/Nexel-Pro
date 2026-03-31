@@ -1181,23 +1181,55 @@ void Spreadsheet::recalculate(const CellAddress& addr) {
 }
 
 void Spreadsheet::recalculateAll() {
-    // Use formula cell tracker for O(f) instead of scanning all O(n) cells
-    if (!m_formulaCells.empty()) {
-        for (const auto& key : m_formulaCells) {
-            if (m_columnStore.getCellType(key.row, key.col) == CellDataType::Formula) {
-                QString formula = m_columnStore.getCellFormula(key.row, key.col);
-                m_columnStore.setComputedValue(key.row, key.col, m_formulaEngine->evaluate(formula));
-            }
-        }
-    } else {
-        // Fallback: scan all cells (only needed if formula tracker wasn't populated)
+    // Ensure formula tracker is populated
+    if (m_formulaCells.empty()) {
         m_columnStore.forEachCell([&](int row, int col, CellDataType type, const QVariant&) {
             if (type == CellDataType::Formula) {
-                QString formula = m_columnStore.getCellFormula(row, col);
-                m_columnStore.setComputedValue(row, col, m_formulaEngine->evaluate(formula));
                 m_formulaCells.insert(CellKey{row, col});
             }
         });
+    }
+
+    if (m_formulaCells.empty()) return;
+
+    // Build list of all formula cell addresses for topological sorting
+    std::vector<CellAddress> allFormulaCells;
+    allFormulaCells.reserve(m_formulaCells.size());
+    for (const auto& key : m_formulaCells) {
+        allFormulaCells.emplace_back(key.row, key.col);
+    }
+
+    // Get topological evaluation order using dependency graph (Kahn's algorithm).
+    // getRecalcLevels returns levels where each level's cells are independent and
+    // depend only on cells in previous levels — guaranteeing correct evaluation order.
+    auto levels = m_depGraph.getRecalcLevels(allFormulaCells);
+
+    // Track which cells were evaluated via the dependency graph
+    std::unordered_set<CellKey, CellKeyHash> evaluated;
+
+    for (const auto& level : levels) {
+        for (const auto& addr : level) {
+            if (m_columnStore.getCellType(addr.row, addr.col) == CellDataType::Formula) {
+                QString formula = m_columnStore.getCellFormula(addr.row, addr.col);
+                if (!formula.isEmpty()) {
+                    m_columnStore.setComputedValue(addr.row, addr.col, m_formulaEngine->evaluate(formula));
+                }
+                evaluated.insert(CellKey{addr.row, addr.col});
+            }
+        }
+    }
+
+    // Evaluate any remaining formula cells not in the dependency graph
+    // (e.g., formulas with no dependencies on other formula cells)
+    for (const auto& key : m_formulaCells) {
+        if (evaluated.find(key) == evaluated.end()) {
+            if (m_columnStore.getCellType(key.row, key.col) == CellDataType::Formula) {
+                QString formula = m_columnStore.getCellFormula(key.row, key.col);
+                if (!formula.isEmpty()) {
+                    m_columnStore.setComputedValue(key.row, key.col, m_formulaEngine->evaluate(formula));
+                }
+            }
+        }
     }
 }
 
@@ -1368,8 +1400,8 @@ void Spreadsheet::sortRange(const CellRange& range, int sortColumn, bool ascendi
         for (int i = 0; i < numRows; ++i) extractKey(i);
     }
 
-    // Sort (std::sort is already quite fast; parallel sort needs TBB or C++17 execution policies)
-    std::sort(keys.begin(), keys.end(), [ascending](const SortKey& a, const SortKey& b) {
+    // Stable sort preserves relative order of equal elements (Excel-compatible behavior)
+    std::stable_sort(keys.begin(), keys.end(), [ascending](const SortKey& a, const SortKey& b) {
         if (a.isEmpty && b.isEmpty) return false;
         if (a.isEmpty) return false;
         if (b.isEmpty) return true;
@@ -1480,7 +1512,7 @@ void Spreadsheet::sortRangeMulti(const CellRange& range, const std::vector<std::
     std::vector<int> indices(numRows);
     std::iota(indices.begin(), indices.end(), 0);
 
-    std::sort(indices.begin(), indices.end(), [&](int ai, int bi) {
+    std::stable_sort(indices.begin(), indices.end(), [&](int ai, int bi) {
         for (int k = 0; k < numKeys; ++k) {
             const auto& a = allKeys[k][ai];
             const auto& b = allKeys[k][bi];

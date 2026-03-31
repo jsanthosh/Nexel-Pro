@@ -609,13 +609,18 @@ void SpreadsheetView::cut() {
             }
         }
     }
+    // Excel behavior: cut only copies and marks cells with marching ants.
+    // Source cells are cleared only when paste actually happens.
     copy();
-    deleteSelection();
+    m_isCutOperation = true;
 }
 
 void SpreadsheetView::copy() {
     QModelIndexList selected = selectionModel()->selectedIndexes();
     if (selected.isEmpty() || !m_spreadsheet) return;
+
+    // A new copy cancels any pending cut operation
+    m_isCutOperation = false;
 
     std::sort(selected.begin(), selected.end(), [](const QModelIndex& a, const QModelIndex& b) {
         if (a.row() != b.row()) return a.row() < b.row();
@@ -792,8 +797,51 @@ void SpreadsheetView::paste() {
     }
     m_model->setSuppressUndo(false);
 
-    m_spreadsheet->getUndoManager().pushCommand(
-        std::make_unique<MultiCellEditCommand>(before, after, "Paste"));
+    // If this is a cut-paste, also clear the source cells
+    std::vector<CellSnapshot> cutBefore, cutAfter;
+    if (m_isCutOperation && !m_internalClipboard.empty()) {
+        m_model->setSuppressUndo(true);
+        for (int r = 0; r < static_cast<int>(m_internalClipboard.size()); ++r) {
+            for (int c = 0; c < static_cast<int>(m_internalClipboard[r].size()); ++c) {
+                const auto& clipCell = m_internalClipboard[r][c];
+                CellAddress srcAddr = clipCell.sourceAddr;
+                // Don't clear the source cell if it's the same as a destination cell
+                // (paste in place should not destroy data)
+                bool isDestination = false;
+                for (int pr = 0; pr < static_cast<int>(m_internalClipboard.size()); ++pr) {
+                    for (int pc = 0; pc < static_cast<int>(m_internalClipboard[pr].size()); ++pc) {
+                        if (srcAddr.row == startRow + pr && srcAddr.col == startCol + pc) {
+                            isDestination = true;
+                            break;
+                        }
+                    }
+                    if (isDestination) break;
+                }
+                if (isDestination) continue;
+
+                cutBefore.push_back(m_spreadsheet->takeCellSnapshot(srcAddr));
+                auto cell = m_spreadsheet->getCell(srcAddr);
+                cell->setValue(QVariant());
+                cell->setFormula(QString());
+                cutAfter.push_back(m_spreadsheet->takeCellSnapshot(srcAddr));
+            }
+        }
+        m_model->setSuppressUndo(false);
+        m_isCutOperation = false;
+        m_internalClipboard.clear();
+        m_internalClipboardText.clear();
+    }
+
+    // Combine paste + cut-source-clear into a single undo command
+    if (!cutBefore.empty()) {
+        auto compound = std::make_unique<CompoundUndoCommand>("Cut & Paste");
+        compound->addChild(std::make_unique<MultiCellEditCommand>(before, after, "Paste"));
+        compound->addChild(std::make_unique<MultiCellEditCommand>(cutBefore, cutAfter, "Clear Cut Source"));
+        m_spreadsheet->getUndoManager().pushCommand(std::move(compound));
+    } else {
+        m_spreadsheet->getUndoManager().pushCommand(
+            std::make_unique<MultiCellEditCommand>(before, after, "Paste"));
+    }
 
     // Clear marching ants after paste (Excel behavior)
     clearClipboardRange();
@@ -1508,7 +1556,37 @@ void SpreadsheetView::sortAscending() {
         range = CellRange(CellAddress(0, 0), CellAddress(maxRow, qMax(maxCol, col)));
     }
 
+    // BUG 3 FIX: Check for merged cells in sort range
+    const auto& merged = m_spreadsheet->getMergedRegions();
+    for (const auto& region : merged) {
+        if (range.intersects(region.range)) {
+            QMessageBox::warning(this, "Sort Warning",
+                "This operation requires identically sized merged cells.\n"
+                "Please unmerge cells before sorting.");
+            return;
+        }
+    }
+
+    // BUG 2 FIX: Snapshot cells before sort for undo support
+    std::vector<CellSnapshot> beforeSnapshots;
+    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+            beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+        }
+    }
+
     m_spreadsheet->sortRange(range, col, true);
+
+    // Snapshot cells after sort
+    std::vector<CellSnapshot> afterSnapshots;
+    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+            afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+        }
+    }
+
+    m_spreadsheet->getUndoManager().pushCommand(
+        std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort Ascending"));
 
     // Full model reset to ensure view refreshes completely
     if (m_model) {
@@ -1564,7 +1642,37 @@ void SpreadsheetView::sortDescending() {
         range = CellRange(CellAddress(0, 0), CellAddress(maxRow, qMax(maxCol, col)));
     }
 
+    // BUG 3 FIX: Check for merged cells in sort range
+    const auto& merged = m_spreadsheet->getMergedRegions();
+    for (const auto& region : merged) {
+        if (range.intersects(region.range)) {
+            QMessageBox::warning(this, "Sort Warning",
+                "This operation requires identically sized merged cells.\n"
+                "Please unmerge cells before sorting.");
+            return;
+        }
+    }
+
+    // BUG 2 FIX: Snapshot cells before sort for undo support
+    std::vector<CellSnapshot> beforeSnapshots;
+    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+            beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+        }
+    }
+
     m_spreadsheet->sortRange(range, col, false);
+
+    // Snapshot cells after sort
+    std::vector<CellSnapshot> afterSnapshots;
+    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+            afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+        }
+    }
+
+    m_spreadsheet->getUndoManager().pushCommand(
+        std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort Descending"));
 
     if (m_model) {
         m_model->resetModel();
@@ -1641,6 +1749,17 @@ void SpreadsheetView::showSortDialog() {
                               range.getEnd());
     }
 
+    // BUG 3 FIX: Check for merged cells in sort range
+    const auto& merged = m_spreadsheet->getMergedRegions();
+    for (const auto& region : merged) {
+        if (sortRange.intersects(region.range)) {
+            QMessageBox::warning(this, "Sort Warning",
+                "This operation requires identically sized merged cells.\n"
+                "Please unmerge cells before sorting.");
+            return;
+        }
+    }
+
     // Convert SortLevel to pair<int, bool> for the multi-sort API
     std::vector<std::pair<int, bool>> sortKeys;
     sortKeys.reserve(levels.size());
@@ -1648,7 +1767,26 @@ void SpreadsheetView::showSortDialog() {
         sortKeys.emplace_back(lvl.column, lvl.ascending);
     }
 
+    // BUG 2 FIX: Snapshot cells before sort for undo support
+    std::vector<CellSnapshot> beforeSnapshots;
+    for (int r = sortRange.getStart().row; r <= sortRange.getEnd().row; ++r) {
+        for (int c = sortRange.getStart().col; c <= sortRange.getEnd().col; ++c) {
+            beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+        }
+    }
+
     m_spreadsheet->sortRangeMulti(sortRange, sortKeys);
+
+    // Snapshot cells after sort
+    std::vector<CellSnapshot> afterSnapshots;
+    for (int r = sortRange.getStart().row; r <= sortRange.getEnd().row; ++r) {
+        for (int c = sortRange.getStart().col; c <= sortRange.getEnd().col; ++c) {
+            afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+        }
+    }
+
+    m_spreadsheet->getUndoManager().pushCommand(
+        std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort"));
 
     if (m_model) {
         m_model->resetModel();
@@ -3799,6 +3937,8 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         if (m_hasClipboardRange) {
             clearClipboardRange();
         }
+        // Cancel any pending cut operation
+        m_isCutOperation = false;
         if (m_formulaEditMode) {
             m_formulaEditMode = false;
             if (state() == QAbstractItemView::EditingState) {

@@ -112,14 +112,29 @@ std::vector<std::shared_ptr<ConditionalFormat>> ConditionalFormatting::getRulesF
     return result;
 }
 
-CellStyle ConditionalFormatting::getEffectiveStyle(const CellAddress& addr, const QVariant& cellValue, const CellStyle& baseStyle) const {
+CellStyle ConditionalFormatting::getEffectiveStyle(const CellAddress& addr, const QVariant& cellValue,
+                                                    const CellStyle& baseStyle, const ValueLookup& valueLookup) const {
     CellStyle effective = baseStyle;
 
     for (const auto& rule : m_rules) {
         // Skip visual formatting types — they don't modify CellStyle
         if (rule->isVisualType()) continue;
 
-        if (rule->getRange().contains(addr) && rule->matches(cellValue, m_evaluator)) {
+        if (!rule->getRange().contains(addr)) continue;
+
+        // Check if this is a range-level rule type
+        bool matched = false;
+        ConditionType ruleType = rule->getType();
+        if (ruleType == ConditionType::TopN || ruleType == ConditionType::TopNPercent ||
+            ruleType == ConditionType::BottomN || ruleType == ConditionType::BottomNPercent ||
+            ruleType == ConditionType::AboveAverage || ruleType == ConditionType::BelowAverage ||
+            ruleType == ConditionType::DuplicateValues || ruleType == ConditionType::UniqueValues) {
+            matched = evaluateRangeRule(rule, cellValue, valueLookup);
+        } else {
+            matched = rule->matches(cellValue, m_evaluator);
+        }
+
+        if (matched) {
             const CellStyle& ruleStyle = rule->getStyle();
             if (ruleStyle.bold) effective.bold = true;
             if (ruleStyle.italic) effective.italic = true;
@@ -132,6 +147,102 @@ CellStyle ConditionalFormatting::getEffectiveStyle(const CellAddress& addr, cons
     }
 
     return effective;
+}
+
+bool ConditionalFormatting::evaluateRangeRule(const std::shared_ptr<ConditionalFormat>& rule,
+                                               const QVariant& cellValue,
+                                               const ValueLookup& valueLookup) const {
+    if (!valueLookup) return false;
+
+    bool ok = false;
+    double currentVal = cellValue.toDouble(&ok);
+
+    const CellRange& range = rule->getRange();
+    auto start = range.getStart();
+    auto end = range.getEnd();
+
+    ConditionType type = rule->getType();
+
+    // For Duplicate/Unique, we work with string representations (works for all types)
+    if (type == ConditionType::DuplicateValues || type == ConditionType::UniqueValues) {
+        QString currentStr = cellValue.toString();
+        int count = 0;
+        for (int r = start.row; r <= end.row; ++r) {
+            for (int c = start.col; c <= end.col; ++c) {
+                QVariant v = valueLookup(r, c);
+                if (v.toString() == currentStr) {
+                    ++count;
+                }
+            }
+        }
+        if (type == ConditionType::DuplicateValues) return count > 1;
+        if (type == ConditionType::UniqueValues) return count == 1;
+    }
+
+    // For numeric range rules, the cell must be numeric
+    if (!ok) return false;
+
+    // Collect all numeric values in the range
+    std::vector<double> values;
+    for (int r = start.row; r <= end.row; ++r) {
+        for (int c = start.col; c <= end.col; ++c) {
+            QVariant v = valueLookup(r, c);
+            bool vOk = false;
+            double d = v.toDouble(&vOk);
+            if (vOk) {
+                values.push_back(d);
+            }
+        }
+    }
+
+    if (values.empty()) return false;
+
+    switch (type) {
+        case ConditionType::AboveAverage: {
+            double sum = 0.0;
+            for (double v : values) sum += v;
+            double avg = sum / values.size();
+            return currentVal > avg;
+        }
+        case ConditionType::BelowAverage: {
+            double sum = 0.0;
+            for (double v : values) sum += v;
+            double avg = sum / values.size();
+            return currentVal < avg;
+        }
+        case ConditionType::TopN: {
+            int n = rule->getValue1().toInt();
+            if (n <= 0) n = 10; // default
+            std::sort(values.begin(), values.end(), std::greater<double>());
+            if (n >= static_cast<int>(values.size())) return true;
+            return currentVal >= values[n - 1];
+        }
+        case ConditionType::TopNPercent: {
+            double pct = rule->getValue1().toDouble();
+            if (pct <= 0) pct = 10.0; // default
+            int n = std::max(1, static_cast<int>(std::ceil(values.size() * pct / 100.0)));
+            std::sort(values.begin(), values.end(), std::greater<double>());
+            if (n >= static_cast<int>(values.size())) return true;
+            return currentVal >= values[n - 1];
+        }
+        case ConditionType::BottomN: {
+            int n = rule->getValue1().toInt();
+            if (n <= 0) n = 10; // default
+            std::sort(values.begin(), values.end());
+            if (n >= static_cast<int>(values.size())) return true;
+            return currentVal <= values[n - 1];
+        }
+        case ConditionType::BottomNPercent: {
+            double pct = rule->getValue1().toDouble();
+            if (pct <= 0) pct = 10.0; // default
+            int n = std::max(1, static_cast<int>(std::ceil(values.size() * pct / 100.0)));
+            std::sort(values.begin(), values.end());
+            if (n >= static_cast<int>(values.size())) return true;
+            return currentVal <= values[n - 1];
+        }
+        default:
+            return false;
+    }
 }
 
 // Helper to interpolate between two colors
