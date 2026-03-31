@@ -57,6 +57,7 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QLabel>
+#include <QShortcut>
 #include <QDialogButtonBox>
 #include <QTabBar>
 #include <QToolButton>
@@ -842,6 +843,32 @@ void MainWindow::createMenuBar() {
     fileMenu->addAction("&Export CSV...", this, &MainWindow::onExportCsv);
     fileMenu->addSeparator();
     fileMenu->addAction("E&xit", this, &QWidget::close, QKeySequence::Quit);
+
+    // ===== Global keyboard shortcuts (bypass Qt focus chain) =====
+    // Ctrl+Tab / Cmd+Tab won't work (OS intercepts), so use Meta (physical Control on Mac)
+    auto* nextSheetShortcut = new QShortcut(QKeySequence(Qt::META | Qt::Key_Tab), this);
+    connect(nextSheetShortcut, &QShortcut::activated, this, [this]() {
+        int count = m_sheetTabBar->count();
+        if (count > 1) {
+            m_sheetTabBar->setCurrentIndex((m_activeSheetIndex + 1) % count);
+        }
+    });
+    auto* prevSheetShortcut = new QShortcut(QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Tab), this);
+    connect(prevSheetShortcut, &QShortcut::activated, this, [this]() {
+        int count = m_sheetTabBar->count();
+        if (count > 1) {
+            int idx = m_activeSheetIndex - 1;
+            m_sheetTabBar->setCurrentIndex(idx < 0 ? count - 1 : idx);
+        }
+    });
+    // Also Ctrl+Tab for non-Mac platforms
+    auto* nextSheetCtrl = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Tab), this);
+    connect(nextSheetCtrl, &QShortcut::activated, this, [this]() {
+        int count = m_sheetTabBar->count();
+        if (count > 1) {
+            m_sheetTabBar->setCurrentIndex((m_activeSheetIndex + 1) % count);
+        }
+    });
 
     QMenu* editMenu = menuBar->addMenu("&Edit");
     editMenu->addAction("&Undo", QKeySequence::Undo, this, &MainWindow::onUndo);
@@ -4334,31 +4361,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    // Ctrl+Tab: Switch to next sheet (alternative)
-    // On macOS: Qt maps Cmd to ControlModifier and physical Control to MetaModifier
-    // Cmd+Tab is grabbed by macOS, so we also check MetaModifier (physical Control key)
-    bool metaKey = event->modifiers() & Qt::MetaModifier;
-    if ((ctrl || metaKey) && event->key() == Qt::Key_Tab && !shift) {
-        int count = m_sheetTabBar->count();
-        if (count > 1) {
-            int newIndex = (m_activeSheetIndex + 1) % count;
-            m_sheetTabBar->setCurrentIndex(newIndex);
-        }
-        event->accept();
-        return;
-    }
-
-    // Ctrl+Shift+Tab: Switch to previous sheet (alternative)
-    if ((ctrl || metaKey) && shift && (event->key() == Qt::Key_Backtab || event->key() == Qt::Key_Tab)) {
-        int count = m_sheetTabBar->count();
-        if (count > 1) {
-            int newIndex = m_activeSheetIndex - 1;
-            if (newIndex < 0) newIndex = count - 1;
-            m_sheetTabBar->setCurrentIndex(newIndex);
-        }
-        event->accept();
-        return;
-    }
+    // Ctrl+Tab / Ctrl+Shift+Tab handled via QShortcut (see constructor)
 
     // Shift+F11: New Worksheet
     if (shift && !ctrl && event->key() == Qt::Key_F11) {
