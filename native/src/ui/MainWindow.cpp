@@ -4335,7 +4335,10 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
     }
 
     // Ctrl+Tab: Switch to next sheet (alternative)
-    if (ctrl && event->key() == Qt::Key_Tab && !shift) {
+    // On macOS: Qt maps Cmd to ControlModifier and physical Control to MetaModifier
+    // Cmd+Tab is grabbed by macOS, so we also check MetaModifier (physical Control key)
+    bool metaKey = event->modifiers() & Qt::MetaModifier;
+    if ((ctrl || metaKey) && event->key() == Qt::Key_Tab && !shift) {
         int count = m_sheetTabBar->count();
         if (count > 1) {
             int newIndex = (m_activeSheetIndex + 1) % count;
@@ -4346,7 +4349,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
     }
 
     // Ctrl+Shift+Tab: Switch to previous sheet (alternative)
-    if (ctrl && shift && event->key() == Qt::Key_Backtab) {
+    if ((ctrl || metaKey) && shift && (event->key() == Qt::Key_Backtab || event->key() == Qt::Key_Tab)) {
         int count = m_sheetTabBar->count();
         if (count > 1) {
             int newIndex = m_activeSheetIndex - 1;
