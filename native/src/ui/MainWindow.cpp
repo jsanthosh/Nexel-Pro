@@ -818,7 +818,8 @@ void MainWindow::createMenuBar() {
     fileMenu->addAction("New from &Template...", this, &MainWindow::onTemplateGallery);
     fileMenu->addAction("&Open", this, &MainWindow::onOpenDocument, QKeySequence::Open);
     fileMenu->addAction("&Save", this, &MainWindow::onSaveDocument, QKeySequence::Save);
-    fileMenu->addAction("Save &As", this, &MainWindow::onSaveAs, QKeySequence::SaveAs);
+    auto* saveAsAction = fileMenu->addAction("Save &As", this, &MainWindow::onSaveAs, QKeySequence::SaveAs);
+    saveAsAction->setShortcuts({QKeySequence::SaveAs, QKeySequence(Qt::Key_F12)});
     fileMenu->addAction("&Rename Document...", this, [this]() {
         QString baseName = "Untitled";
         if (!m_currentFilePath.isEmpty()) {
@@ -4305,9 +4306,12 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         deselectAllOverlays();
     }
 
-    // Ctrl+PageUp: Switch to previous sheet tab
+    // Ctrl+PageUp / Alt+PageUp: Switch to previous sheet tab
     bool ctrl = event->modifiers() & Qt::ControlModifier;
-    if (ctrl && event->key() == Qt::Key_PageUp) {
+    bool alt = event->modifiers() & Qt::AltModifier;
+    bool shift = event->modifiers() & Qt::ShiftModifier;
+
+    if ((ctrl || alt) && event->key() == Qt::Key_PageUp) {
         int count = m_sheetTabBar->count();
         if (count > 1) {
             int newIndex = m_activeSheetIndex - 1;
@@ -4318,14 +4322,44 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    // Ctrl+PageDown: Switch to next sheet tab
-    if (ctrl && event->key() == Qt::Key_PageDown) {
+    // Ctrl+PageDown / Alt+PageDown: Switch to next sheet tab
+    if ((ctrl || alt) && event->key() == Qt::Key_PageDown) {
         int count = m_sheetTabBar->count();
         if (count > 1) {
             int newIndex = m_activeSheetIndex + 1;
             if (newIndex >= count) newIndex = 0;
             m_sheetTabBar->setCurrentIndex(newIndex);
         }
+        event->accept();
+        return;
+    }
+
+    // Ctrl+Tab: Switch to next sheet (alternative)
+    if (ctrl && event->key() == Qt::Key_Tab && !shift) {
+        int count = m_sheetTabBar->count();
+        if (count > 1) {
+            int newIndex = (m_activeSheetIndex + 1) % count;
+            m_sheetTabBar->setCurrentIndex(newIndex);
+        }
+        event->accept();
+        return;
+    }
+
+    // Ctrl+Shift+Tab: Switch to previous sheet (alternative)
+    if (ctrl && shift && event->key() == Qt::Key_Backtab) {
+        int count = m_sheetTabBar->count();
+        if (count > 1) {
+            int newIndex = m_activeSheetIndex - 1;
+            if (newIndex < 0) newIndex = count - 1;
+            m_sheetTabBar->setCurrentIndex(newIndex);
+        }
+        event->accept();
+        return;
+    }
+
+    // Shift+F11: New Worksheet
+    if (shift && !ctrl && event->key() == Qt::Key_F11) {
+        onAddSheet();
         event->accept();
         return;
     }

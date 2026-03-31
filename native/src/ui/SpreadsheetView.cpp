@@ -4459,6 +4459,31 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
         }
     }
 
+    // ===== Home key: go to beginning of row (column A) =====
+    if (event->key() == Qt::Key_Home && !ctrl && !shift) {
+        if (state() != QAbstractItemView::EditingState) {
+            QModelIndex idx = model()->index(currentIndex().row(), 0);
+            setCurrentIndex(idx);
+            scrollTo(idx);
+            event->accept();
+            return;
+        }
+    }
+
+    // ===== Shift+Home: select from current cell to column A =====
+    if (event->key() == Qt::Key_Home && shift && !ctrl) {
+        if (state() != QAbstractItemView::EditingState) {
+            QModelIndex cur = currentIndex();
+            QModelIndex first = model()->index(cur.row(), 0);
+            QItemSelection sel(first, cur);
+            selectionModel()->select(sel, QItemSelectionModel::ClearAndSelect);
+            selectionModel()->setCurrentIndex(first, QItemSelectionModel::NoUpdate);
+            scrollTo(first);
+            event->accept();
+            return;
+        }
+    }
+
     // ===== Alt+= : AutoSum (insert =SUM() with auto-detected range above) =====
     if (event->key() == Qt::Key_Equal && (event->modifiers() & Qt::AltModifier)) {
         if (m_spreadsheet) {
