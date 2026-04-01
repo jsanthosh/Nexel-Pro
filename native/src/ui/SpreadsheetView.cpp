@@ -5008,6 +5008,15 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
+    // Store anchor for range selection (Excel: first cell = active cell)
+    if (event->button() == Qt::LeftButton) {
+        QModelIndex idx = indexAt(event->pos());
+        if (idx.isValid() && !(event->modifiers() & Qt::ControlModifier)) {
+            m_selectionAnchor = idx;
+            m_isDragSelecting = true;
+        }
+    }
+
     QTableView::mousePressEvent(event);
 }
 
@@ -5083,6 +5092,17 @@ void SpreadsheetView::mouseReleaseEvent(QMouseEvent* event) {
     }
 
     QTableView::mouseReleaseEvent(event);
+
+    // Excel behavior: after drag selection, the anchor cell (where mouse-down started)
+    // is the active cell, not the cell where mouse was released
+    if (m_isDragSelecting && m_selectionAnchor.isValid()) {
+        m_isDragSelecting = false;
+        QModelIndex current = currentIndex();
+        if (current != m_selectionAnchor) {
+            // Set anchor as current without changing the selection
+            selectionModel()->setCurrentIndex(m_selectionAnchor, QItemSelectionModel::NoUpdate);
+        }
+    }
 }
 
 void SpreadsheetView::paintEvent(QPaintEvent* event) {

@@ -394,6 +394,10 @@ private:
     // Picklist popup re-entry guard
     bool m_picklistPopupOpen = false;
 
+    // Selection anchor: the cell where mouse-down started a range selection (Excel: active cell)
+    QModelIndex m_selectionAnchor;
+    bool m_isDragSelecting = false;
+
     // Double-click cursor positioning
     QPoint m_lastDoubleClickPos;
     bool m_editTriggeredByDoubleClick = false;
