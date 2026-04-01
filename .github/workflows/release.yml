@@ -34,6 +34,12 @@ jobs:
       - name: Build
         run: cmake --build native/build --config Release -j$(sysctl -n hw.ncpu)
 
+      - name: Run Tests (507 tests must pass)
+        run: |
+          cmake --build native/build --target test_all --config Release -j$(sysctl -n hw.ncpu)
+          cmake --build native/build --target test_regression --config Release -j$(sysctl -n hw.ncpu)
+          cd native/build && ./test_all && ./test_regression
+
       - name: Install
         run: cmake --install native/build --prefix native/install
 
