@@ -650,6 +650,9 @@ void ColumnStore::setCellValue(int row, int col, const QVariant& value) {
     auto* chunk = column->getOrCreateChunk(row);
     int offset = row - chunk->baseRow;
 
+    // Preserve existing style when overwriting cell value
+    uint16_t existingStyle = chunk->hasData(offset) ? chunk->getStyleIndex(offset) : 0;
+
     switch (value.typeId()) {
         case QMetaType::Double:
         case QMetaType::Float:
@@ -657,23 +660,23 @@ void ColumnStore::setCellValue(int row, int col, const QVariant& value) {
         case QMetaType::LongLong:
         case QMetaType::UInt:
         case QMetaType::ULongLong:
-            chunk->setNumeric(offset, value.toDouble());
+            chunk->setNumeric(offset, value.toDouble(), existingStyle);
             break;
         case QMetaType::Bool:
-            chunk->setBoolean(offset, value.toBool());
+            chunk->setBoolean(offset, value.toBool(), existingStyle);
             break;
         case QMetaType::QString: {
             const QString& str = value.toString();
             if (str.startsWith('=')) {
-                chunk->setFormula(offset, str);
+                chunk->setFormula(offset, str, existingStyle);
             } else {
                 bool ok;
                 double d = str.toDouble(&ok);
                 if (ok) {
-                    chunk->setNumeric(offset, d);
+                    chunk->setNumeric(offset, d, existingStyle);
                 } else {
                     uint32_t id = StringPool::instance().intern(str);
-                    chunk->setString(offset, id);
+                    chunk->setString(offset, id, existingStyle);
                 }
             }
             break;

@@ -3940,9 +3940,28 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
             }
         }
 
-        int newRow = currentIndex().row() + (shift ? -1 : 1);
+        int curRow = currentIndex().row();
+        int curCol = currentIndex().column();
+        int newRow;
+
+        // Skip past merged cell region
+        if (m_spreadsheet) {
+            int lr = (m_model && m_model->isVirtualMode()) ? m_model->toLogicalRow(curRow) : curRow;
+            auto* mr = m_spreadsheet->getMergedRegionAt(lr, curCol);
+            if (mr) {
+                if (shift) {
+                    newRow = mr->range.getStart().row - 1; // row above merge
+                } else {
+                    newRow = mr->range.getEnd().row + 1;   // row below merge
+                }
+            } else {
+                newRow = curRow + (shift ? -1 : 1);
+            }
+        } else {
+            newRow = curRow + (shift ? -1 : 1);
+        }
         newRow = qBound(0, newRow, model()->rowCount() - 1);
-        QModelIndex next = model()->index(newRow, currentIndex().column());
+        QModelIndex next = model()->index(newRow, curCol);
         if (next.isValid()) {
             setCurrentIndex(next);
             scrollTo(next);
