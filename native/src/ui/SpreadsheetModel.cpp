@@ -375,27 +375,31 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
             return m_spreadsheet->getCellValue(CellAddress(logicalRow, col));
         }
         case Qt::FontRole: {
-            // Check style overlays first (instant visual feedback for bulk operations)
+            // Check style overlays (instant visual feedback for bulk formatting)
+            // Use last matching overlay only (most recent operation wins)
             const auto& overlays = m_spreadsheet->getStyleOverlays();
-            if (!overlays.empty()) {
-                for (const auto& ov : overlays) {
-                    if (logicalRow >= ov.minRow && logicalRow <= ov.maxRow &&
-                        col >= ov.minCol && col <= ov.maxCol) {
-                        // Apply overlay modifier to the effective style
-                        CellStyle style = hasCustomStyle ? baseStyle : m_spreadsheet->getDefaultCellStyle();
-                        ov.modifier(style);
-                        QFont font(style.fontName);
-                        font.setPointSize(style.fontSize);
-                        font.setBold(style.bold);
-                        font.setItalic(style.italic);
-                        font.setUnderline(style.underline);
-                        font.setStrikeOut(style.strikethrough);
-                        return QVariant(font);
-                    }
+            const Spreadsheet::StyleOverlay* matchedOverlay = nullptr;
+            for (auto it = overlays.rbegin(); it != overlays.rend(); ++it) {
+                if (logicalRow >= it->minRow && logicalRow <= it->maxRow &&
+                    col >= it->minCol && col <= it->maxCol) {
+                    matchedOverlay = &(*it);
+                    break;
                 }
             }
-            // Fast path: cells with default style (vast majority) — return cached default font
-            if (!hasCustomStyle && m_spreadsheet->getConditionalFormatting().getAllRules().empty()) {
+            if (matchedOverlay) {
+                CellStyle style = hasCustomStyle ? baseStyle : m_spreadsheet->getDefaultCellStyle();
+                matchedOverlay->modifier(style);
+                QFont font(style.fontName);
+                font.setPointSize(style.fontSize);
+                font.setBold(style.bold);
+                font.setItalic(style.italic);
+                font.setUnderline(style.underline);
+                font.setStrikeOut(style.strikethrough);
+                return QVariant(font);
+            }
+            // Fast path: cells with default style and no conditional formatting
+            bool hasCondRules = !m_spreadsheet->getConditionalFormatting().getAllRules().empty();
+            if (!hasCustomStyle && !hasCondRules) {
                 // Check if default style has any formatting
                 if (m_spreadsheet->hasDefaultCellStyle()) {
                     const auto& ds = m_spreadsheet->getDefaultCellStyle();
@@ -455,7 +459,7 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
                     }
                 }
             }
-            // Fast path: default style = black text
+            // Fast path: default style = black text, no conditional formatting
             if (!hasCustomStyle && m_spreadsheet->getConditionalFormatting().getAllRules().empty()) {
                 return QVariant(); // Default foreground (black)
             }

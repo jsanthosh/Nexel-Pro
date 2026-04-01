@@ -1186,13 +1186,7 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
     bool isLargeSelection = totalCells > LARGE_SELECTION_THRESHOLD && !useFastPath;
     bool isMassiveSelection = useFastPath;
 
-    qDebug() << "[applyStyleChange] totalCells=" << totalCells
-             << "minRow=" << minRow << "maxRow=" << maxRow
-             << "minCol=" << minCol << "maxCol=" << maxCol
-             << "modelRowCount=" << modelRowCount
-             << "isFullCol=" << isFullColumnOrRow
-             << "useFast=" << useFastPath
-             << "isMassive=" << isMassiveSelection;
+    // Debug logging removed for performance
 
     std::vector<CellSnapshot> before, after;
 
@@ -1236,10 +1230,9 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
         timer->setInterval(0);
         connect(timer, &QTimer::timeout, this, [=]() mutable {
             if (chunkStart > bgMaxRow) {
-                // All done — remove overlay (backend now matches)
-                // Keep overlays — they provide visual style for cells that have no
-                // backend data (blank cells). Overlays are lightweight and persist
-                // until the user clears formatting or undoes the action.
+                // All done — clear overlays now that backend has caught up
+                // The overlay was only needed for instant visual feedback
+                spreadsheet->clearStyleOverlays();
                 timer->stop();
                 timer->deleteLater();
                 return;
