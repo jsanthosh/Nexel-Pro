@@ -432,6 +432,25 @@ target_include_directories(test_all PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# ============================================================================
+# Regression Test Suite
+# Build: cmake --build build --target test_regression
+# ============================================================================
+add_executable(test_regression EXCLUDE_FROM_ALL
+    tests/test_regression.cpp
+    ${CORE_SOURCES}
+    ${DATABASE_SOURCES}
+    ${SERVICES_SOURCES}
+)
+target_link_libraries(test_regression
+    Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent Qt6::Network
+    SQLite::SQLite3
+    Threads::Threads
+)
+target_include_directories(test_regression PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 # Install
 install(TARGETS NativeSpreadsheet
     BUNDLE DESTINATION . COMPONENT Runtime
