@@ -1230,22 +1230,22 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
         timer->setInterval(0);
         connect(timer, &QTimer::timeout, this, [=]() mutable {
             if (chunkStart > bgMaxRow) {
-                // Apply to merged cell top-left cells that overlap the styled range
-                // (merged cells may be empty and skipped by scanColumnValues)
+                // Apply to merged cell top-left cells ONLY if the top-left
+                // is within the styled range (not just overlapping)
                 for (const auto& region : spreadsheet->getMergedRegions()) {
                     int mrTop = region.range.getStart().row;
                     int mrLeft = region.range.getStart().col;
-                    int mrBottom = region.range.getEnd().row;
-                    int mrRight = region.range.getEnd().col;
-                    if (mrBottom >= 0 && mrTop <= bgMaxRow && mrRight >= bgMinCol && mrLeft <= bgMaxCol) {
+                    // Only style if top-left cell is within selection bounds
+                    if (mrTop >= 0 && mrTop <= bgMaxRow &&
+                        mrLeft >= bgMinCol && mrLeft <= bgMaxCol) {
                         auto cell = spreadsheet->getCell(CellAddress(mrTop, mrLeft));
                         CellStyle style = cell->getStyle();
                         modifierCopy(style);
                         cell->setStyle(style);
                     }
                 }
-                // All done — clear overlays now that backend has caught up
-                spreadsheet->clearStyleOverlays();
+                // Keep overlays — they provide formatting for empty cells
+                // that have no ColumnStore data. Overlays are lightweight.
                 timer->stop();
                 timer->deleteLater();
                 return;
@@ -1282,15 +1282,13 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
             after.push_back(m_spreadsheet->takeCellSnapshot(addr));
         });
 
-        // Also apply to merged cell top-left cells that overlap selection
-        // (merged cells may be empty and skipped by forEachCell)
+        // Also apply to merged cell top-left cells whose top-left is within selection
         for (const auto& region : m_spreadsheet->getMergedRegions()) {
             int mrTop = region.range.getStart().row;
             int mrLeft = region.range.getStart().col;
-            int mrBottom = region.range.getEnd().row;
-            int mrRight = region.range.getEnd().col;
 
-            if (mrBottom >= minRow && mrTop <= maxRow && mrRight >= minCol && mrLeft <= maxCol) {
+            // Only if top-left cell itself is within selection bounds
+            if (mrTop >= minRow && mrTop <= maxRow && mrLeft >= minCol && mrLeft <= maxCol) {
                 CellAddress addr(mrTop, mrLeft);
                 auto cell = m_spreadsheet->getCell(addr); // creates if empty
                 CellStyle style = cell->getStyle();
@@ -1314,11 +1312,20 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
             int lr = logicalRow(index);
             int lc = index.column();
 
-            // If this cell is part of a merged region, style the top-left cell instead
+            // If this cell is part of a merged region, style the top-left cell
+            // ONLY if the top-left is within the selection bounds
             auto* mr = m_spreadsheet->getMergedRegionAt(lr, lc);
             if (mr) {
-                lr = mr->range.getStart().row;
-                lc = mr->range.getStart().col;
+                int mrTopRow = mr->range.getStart().row;
+                int mrTopCol = mr->range.getStart().col;
+                if (mrTopRow >= minRow && mrTopRow <= maxRow &&
+                    mrTopCol >= minCol && mrTopCol <= maxCol) {
+                    lr = mrTopRow;
+                    lc = mrTopCol;
+                } else {
+                    // Top-left is outside selection — skip this merged sub-cell
+                    continue;
+                }
             }
 
             auto key = qMakePair(lr, lc);
@@ -1341,11 +1348,9 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
         for (const auto& region : m_spreadsheet->getMergedRegions()) {
             int mrTop = region.range.getStart().row;
             int mrLeft = region.range.getStart().col;
-            int mrBottom = region.range.getEnd().row;
-            int mrRight = region.range.getEnd().col;
 
-            // Check if any part of the merge overlaps the selection bounds
-            if (mrBottom >= minRow && mrTop <= maxRow && mrRight >= minCol && mrLeft <= maxCol) {
+            // Only if top-left cell itself is within selection bounds
+            if (mrTop >= minRow && mrTop <= maxRow && mrLeft >= minCol && mrLeft <= maxCol) {
                 auto key = qMakePair(mrTop, mrLeft);
                 if (styled.contains(key)) continue;
                 styled.insert(key);
