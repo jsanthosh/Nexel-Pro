@@ -749,20 +749,12 @@ void ColumnStore::setCellStyle(int row, int col, uint16_t styleIndex) {
     }
     int offset = row - chunk->baseRow;
     if (!chunk->hasData(offset)) {
-        // Cell has no data — create an Empty cell slot so style can be stored
-        // This is equivalent to setCellValue with empty, but we set style too
-        int denseIdx = chunk->denseIndex(offset);
-        chunk->setPresence(offset);
-        chunk->types.insert(chunk->types.begin() + denseIdx, static_cast<uint8_t>(CellDataType::Empty));
-        chunk->values.insert(chunk->values.begin() + denseIdx, 0.0);
-        if (chunk->styleIndices) {
-            chunk->styleIndices->insert(chunk->styleIndices->begin() + denseIdx, styleIndex);
-        } else if (styleIndex != 0) {
-            chunk->styleIndices = std::make_unique<std::vector<uint16_t>>(chunk->populatedCount, 0);
-            (*chunk->styleIndices)[denseIdx] = styleIndex;
-        }
-        ++chunk->populatedCount;
-        return;
+        // Cell has no data — create an empty string cell so it has a slot for the style.
+        // Use setCellValue with empty string (not null, which would remove).
+        setCellValue(row, col, QString(""));
+        // Re-fetch chunk (may have been reallocated)
+        chunk = column->getChunk(row);
+        if (!chunk || !chunk->hasData(offset)) return;
     }
     chunk->setStyleIndex(offset, styleIndex);
 }
