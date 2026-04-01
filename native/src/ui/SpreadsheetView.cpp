@@ -1230,8 +1230,21 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
         timer->setInterval(0);
         connect(timer, &QTimer::timeout, this, [=]() mutable {
             if (chunkStart > bgMaxRow) {
+                // Apply to merged cell top-left cells that overlap the styled range
+                // (merged cells may be empty and skipped by scanColumnValues)
+                for (const auto& region : spreadsheet->getMergedRegions()) {
+                    int mrTop = region.range.getStart().row;
+                    int mrLeft = region.range.getStart().col;
+                    int mrBottom = region.range.getEnd().row;
+                    int mrRight = region.range.getEnd().col;
+                    if (mrBottom >= 0 && mrTop <= bgMaxRow && mrRight >= bgMinCol && mrLeft <= bgMaxCol) {
+                        auto cell = spreadsheet->getCell(CellAddress(mrTop, mrLeft));
+                        CellStyle style = cell->getStyle();
+                        modifierCopy(style);
+                        cell->setStyle(style);
+                    }
+                }
                 // All done — clear overlays now that backend has caught up
-                // The overlay was only needed for instant visual feedback
                 spreadsheet->clearStyleOverlays();
                 timer->stop();
                 timer->deleteLater();
