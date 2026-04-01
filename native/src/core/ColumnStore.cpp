@@ -738,11 +738,33 @@ void ColumnStore::removeCell(int row, int col) {
 }
 
 void ColumnStore::setCellStyle(int row, int col, uint16_t styleIndex) {
+    ensureColumn(col);
     auto* column = getColumn(col);
     if (!column) return;
     auto* chunk = column->getChunk(row);
-    if (!chunk) return;
-    chunk->setStyleIndex(row - chunk->baseRow, styleIndex);
+    if (!chunk) {
+        // Create chunk so style-only cells (no value) can store formatting
+        chunk = column->getOrCreateChunk(row);
+        if (!chunk) return;
+    }
+    int offset = row - chunk->baseRow;
+    if (!chunk->hasData(offset)) {
+        // Cell has no data — create an Empty cell slot so style can be stored
+        // This is equivalent to setCellValue with empty, but we set style too
+        int denseIdx = chunk->denseIndex(offset);
+        chunk->setPresence(offset);
+        chunk->types.insert(chunk->types.begin() + denseIdx, static_cast<uint8_t>(CellDataType::Empty));
+        chunk->values.insert(chunk->values.begin() + denseIdx, 0.0);
+        if (chunk->styleIndices) {
+            chunk->styleIndices->insert(chunk->styleIndices->begin() + denseIdx, styleIndex);
+        } else if (styleIndex != 0) {
+            chunk->styleIndices = std::make_unique<std::vector<uint16_t>>(chunk->populatedCount, 0);
+            (*chunk->styleIndices)[denseIdx] = styleIndex;
+        }
+        ++chunk->populatedCount;
+        return;
+    }
+    chunk->setStyleIndex(offset, styleIndex);
 }
 
 uint16_t ColumnStore::getCellStyleIndex(int row, int col) const {
