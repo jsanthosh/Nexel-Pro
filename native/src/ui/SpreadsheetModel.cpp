@@ -220,8 +220,24 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
     // Use getCellIfExists to avoid creating Cell objects for empty cells
     auto cell = m_spreadsheet->getCellIfExists(logicalRow, col);
 
+    // If this cell is part of a merged region, redirect to the top-left cell
+    // (Qt only renders the top-left cell for merged regions via setSpan)
+    auto* mergedRegion = m_spreadsheet->getMergedRegionAt(logicalRow, col);
+    if (mergedRegion && !cell) {
+        int mrRow = mergedRegion->range.getStart().row;
+        int mrCol = mergedRegion->range.getStart().col;
+        if (mrRow != logicalRow || mrCol != col) {
+            cell = m_spreadsheet->getCellIfExists(mrRow, mrCol);
+        }
+    }
+
     // Check style overlays first (applies to ALL cells, empty or not)
     const auto& overlays = m_spreadsheet->getStyleOverlays();
+
+    // Determine if cell has custom style (needed by multiple roles below)
+    bool hasCustomStyle = cell && cell->hasCustomStyle();
+    CellStyle baseStyle;
+    if (hasCustomStyle) baseStyle = cell->getStyle();
 
     // Fast path for empty cells
     if (!cell) {
@@ -327,9 +343,14 @@ QVariant SpreadsheetModel::data(const QModelIndex& index, int role) const {
         }
     }
 
-    // Shared state: get cell style once, get cell value once (avoid repeated hash lookups)
-    const auto& baseStyle = cell->getStyle();
-    const bool hasCustomStyle = cell->hasCustomStyle();
+    // Refresh style info now that we're past the empty-cell fast path
+    // (cell is guaranteed non-null here; may have been redirected from merged region)
+    if (!hasCustomStyle && cell->hasCustomStyle()) {
+        hasCustomStyle = true;
+        baseStyle = cell->getStyle();
+    } else if (hasCustomStyle) {
+        baseStyle = cell->getStyle(); // refresh in case cell changed
+    }
 
     switch (role) {
         case Qt::DisplayRole: {
