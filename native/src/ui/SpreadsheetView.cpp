@@ -5018,6 +5018,11 @@ void SpreadsheetView::mousePressEvent(QMouseEvent* event) {
     }
 
     QTableView::mousePressEvent(event);
+
+    // Immediately set anchor as current index so it stays white during drag
+    if (m_isDragSelecting && m_selectionAnchor.isValid()) {
+        selectionModel()->setCurrentIndex(m_selectionAnchor, QItemSelectionModel::NoUpdate);
+    }
 }
 
 void SpreadsheetView::mouseMoveEvent(QMouseEvent* event) {
@@ -5073,6 +5078,11 @@ void SpreadsheetView::mouseMoveEvent(QMouseEvent* event) {
     }
 
     QTableView::mouseMoveEvent(event);
+
+    // Keep anchor as active cell during drag selection (Excel: anchor stays white)
+    if (m_isDragSelecting && m_selectionAnchor.isValid()) {
+        selectionModel()->setCurrentIndex(m_selectionAnchor, QItemSelectionModel::NoUpdate);
+    }
 }
 
 void SpreadsheetView::mouseReleaseEvent(QMouseEvent* event) {
