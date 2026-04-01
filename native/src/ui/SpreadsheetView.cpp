@@ -1652,26 +1652,32 @@ void SpreadsheetView::sortAscending() {
         }
     }
 
-    // BUG 2 FIX: Snapshot cells before sort for undo support
-    std::vector<CellSnapshot> beforeSnapshots;
-    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
-        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
-            beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+    // Undo support: only snapshot for small ranges (< 50K cells)
+    // For large datasets, sort is too expensive to undo via cell snapshots
+    int totalCells = (range.getEnd().row - range.getStart().row + 1) *
+                     (range.getEnd().col - range.getStart().col + 1);
+    std::vector<CellSnapshot> beforeSnapshots, afterSnapshots;
+    bool canUndo = totalCells <= 50000;
+
+    if (canUndo) {
+        for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+            for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+                beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+            }
         }
     }
 
     m_spreadsheet->sortRange(range, col, true);
 
-    // Snapshot cells after sort
-    std::vector<CellSnapshot> afterSnapshots;
-    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
-        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
-            afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+    if (canUndo) {
+        for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+            for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+                afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+            }
         }
+        m_spreadsheet->getUndoManager().pushCommand(
+            std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort Ascending"));
     }
-
-    m_spreadsheet->getUndoManager().pushCommand(
-        std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort Ascending"));
 
     // Full model reset to ensure view refreshes completely
     if (m_model) {
@@ -1738,26 +1744,31 @@ void SpreadsheetView::sortDescending() {
         }
     }
 
-    // BUG 2 FIX: Snapshot cells before sort for undo support
-    std::vector<CellSnapshot> beforeSnapshots;
-    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
-        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
-            beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+    // Undo support: only for small ranges (< 50K cells)
+    int totalCells = (range.getEnd().row - range.getStart().row + 1) *
+                     (range.getEnd().col - range.getStart().col + 1);
+    std::vector<CellSnapshot> beforeSnapshots, afterSnapshots;
+    bool canUndo = totalCells <= 50000;
+
+    if (canUndo) {
+        for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+            for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+                beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+            }
         }
     }
 
     m_spreadsheet->sortRange(range, col, false);
 
-    // Snapshot cells after sort
-    std::vector<CellSnapshot> afterSnapshots;
-    for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
-        for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
-            afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+    if (canUndo) {
+        for (int r = range.getStart().row; r <= range.getEnd().row; ++r) {
+            for (int c = range.getStart().col; c <= range.getEnd().col; ++c) {
+                afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+            }
         }
+        m_spreadsheet->getUndoManager().pushCommand(
+            std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort Descending"));
     }
-
-    m_spreadsheet->getUndoManager().pushCommand(
-        std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort Descending"));
 
     if (m_model) {
         m_model->resetModel();
@@ -1852,26 +1863,31 @@ void SpreadsheetView::showSortDialog() {
         sortKeys.emplace_back(lvl.column, lvl.ascending);
     }
 
-    // BUG 2 FIX: Snapshot cells before sort for undo support
-    std::vector<CellSnapshot> beforeSnapshots;
-    for (int r = sortRange.getStart().row; r <= sortRange.getEnd().row; ++r) {
-        for (int c = sortRange.getStart().col; c <= sortRange.getEnd().col; ++c) {
-            beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+    // Undo support: only for small ranges (< 50K cells)
+    int totalCells = (sortRange.getEnd().row - sortRange.getStart().row + 1) *
+                     (sortRange.getEnd().col - sortRange.getStart().col + 1);
+    std::vector<CellSnapshot> beforeSnapshots, afterSnapshots;
+    bool canUndo = totalCells <= 50000;
+
+    if (canUndo) {
+        for (int r = sortRange.getStart().row; r <= sortRange.getEnd().row; ++r) {
+            for (int c = sortRange.getStart().col; c <= sortRange.getEnd().col; ++c) {
+                beforeSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+            }
         }
     }
 
     m_spreadsheet->sortRangeMulti(sortRange, sortKeys);
 
-    // Snapshot cells after sort
-    std::vector<CellSnapshot> afterSnapshots;
-    for (int r = sortRange.getStart().row; r <= sortRange.getEnd().row; ++r) {
-        for (int c = sortRange.getStart().col; c <= sortRange.getEnd().col; ++c) {
-            afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+    if (canUndo) {
+        for (int r = sortRange.getStart().row; r <= sortRange.getEnd().row; ++r) {
+            for (int c = sortRange.getStart().col; c <= sortRange.getEnd().col; ++c) {
+                afterSnapshots.push_back(m_spreadsheet->takeCellSnapshot({r, c}));
+            }
         }
+        m_spreadsheet->getUndoManager().pushCommand(
+            std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort"));
     }
-
-    m_spreadsheet->getUndoManager().pushCommand(
-        std::make_unique<MultiCellEditCommand>(beforeSnapshots, afterSnapshots, "Sort"));
 
     if (m_model) {
         m_model->resetModel();
