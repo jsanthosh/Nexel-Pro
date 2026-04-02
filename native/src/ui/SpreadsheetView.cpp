@@ -1224,10 +1224,10 @@ void SpreadsheetView::applyStyleChange(std::function<void(CellStyle&)> modifier,
         int bgMinCol = minCol, bgMaxCol = maxCol;
         int chunkStart = minRow;
         int bgMaxRow = maxRow;
-        static constexpr int CHUNK_SIZE = 50000;
+        static constexpr int CHUNK_SIZE = 10000;
 
         auto* timer = new QTimer(this);
-        timer->setInterval(0);
+        timer->setInterval(50); // yield to UI thread between chunks for smooth scrolling
         connect(timer, &QTimer::timeout, this, [=]() mutable {
             if (chunkStart > bgMaxRow) {
                 // Apply to merged cell top-left cells ONLY if the top-left

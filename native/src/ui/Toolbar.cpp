@@ -871,6 +871,50 @@ void Toolbar::createActions() {
 
     addSeparator();
 
+    // ===== Borders (moved from Row 2 for visibility) =====
+    QToolButton* borderBtn = new QToolButton(this);
+    borderBtn->setIcon(createBorderIcon());
+    borderBtn->setToolTip("Borders");
+    borderBtn->setPopupMode(QToolButton::MenuButtonPopup);
+    borderBtn->setFixedSize(52, 28);
+    borderBtn->setStyleSheet(
+        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px 6px; }"
+        "QToolButton:hover { background-color: #E8ECF0; border-color: #D0D5DD; }"
+        "QToolButton::menu-button { width: 10px; border-left: 1px solid #D0D5DD; }"
+        "QToolButton::menu-button:hover { background-color: #D8DCE0; }"
+    );
+
+    QMenu* borderMenu = new QMenu(borderBtn);
+    borderMenu->setStyleSheet(
+        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; }"
+        "QMenu::item { padding: 5px 16px 5px 8px; border-radius: 4px; font-size: 12px; }"
+        "QMenu::item:selected { background-color: #E8F0FE; }"
+        "QMenu::icon { margin-right: 8px; }"
+        "QMenu::separator { height: 1px; background: #E0E3E8; margin: 3px 8px; }"
+    );
+    auto emitBorder = [this](const QString& type) {
+        emit borderStyleSelected(type, m_lastBorderColor, m_lastBorderWidth, m_lastBorderPenStyle);
+    };
+    borderMenu->addAction(createBorderMenuIcon("bottom"), "Bottom Border", this, [emitBorder]() { emitBorder("bottom"); });
+    borderMenu->addAction(createBorderMenuIcon("top"), "Top Border", this, [emitBorder]() { emitBorder("top"); });
+    borderMenu->addAction(createBorderMenuIcon("left"), "Left Border", this, [emitBorder]() { emitBorder("left"); });
+    borderMenu->addAction(createBorderMenuIcon("right"), "Right Border", this, [emitBorder]() { emitBorder("right"); });
+    borderMenu->addSeparator();
+    borderMenu->addAction(createBorderMenuIcon("all"), "All Borders", this, [emitBorder]() { emitBorder("all"); });
+    borderMenu->addAction(createBorderMenuIcon("outside"), "Outside Borders", this, [emitBorder]() { emitBorder("outside"); });
+    borderMenu->addAction(createBorderMenuIcon("thick_outside"), "Thick Box Border", this, [emitBorder]() { emitBorder("thick_outside"); });
+    borderMenu->addSeparator();
+    borderMenu->addAction(createBorderMenuIcon("inside_h"), "Inside Horizontal", this, [emitBorder]() { emitBorder("inside_h"); });
+    borderMenu->addAction(createBorderMenuIcon("inside_v"), "Inside Vertical", this, [emitBorder]() { emitBorder("inside_v"); });
+    borderMenu->addAction(createBorderMenuIcon("inside"), "Inside Borders", this, [emitBorder]() { emitBorder("inside"); });
+    borderMenu->addSeparator();
+    borderMenu->addAction(createBorderMenuIcon("none"), "No Border", this, [emitBorder]() { emitBorder("none"); });
+    borderBtn->setMenu(borderMenu);
+    connect(borderBtn, &QToolButton::clicked, this, [emitBorder]() { emitBorder("all"); });
+    addWidget(borderBtn);
+
+    addSeparator();
+
     // ===== Colors =====
     m_fgColorBtn = new QToolButton(this);
     m_fgColorBtn->setText("A");
@@ -908,6 +952,182 @@ void Toolbar::createActions() {
             emit backgroundColorChanged(pick.colorString, pick.displayColor);
         }
     });
+
+    addSeparator();
+
+    // ===== Horizontal Alignment (in Row 1) =====
+    m_alignLeftBtn = new QToolButton(this);
+    m_alignLeftBtn->setIcon(createHAlignIcon("left"));
+    m_alignLeftBtn->setToolTip("Align Left");
+    m_alignLeftBtn->setCheckable(true);
+    m_alignLeftBtn->setFixedSize(26, 28);
+    addWidget(m_alignLeftBtn);
+
+    m_alignCenterBtn = new QToolButton(this);
+    m_alignCenterBtn->setIcon(createHAlignIcon("center"));
+    m_alignCenterBtn->setToolTip("Center");
+    m_alignCenterBtn->setCheckable(true);
+    m_alignCenterBtn->setFixedSize(26, 28);
+    addWidget(m_alignCenterBtn);
+
+    m_alignRightBtn = new QToolButton(this);
+    m_alignRightBtn->setIcon(createHAlignIcon("right"));
+    m_alignRightBtn->setToolTip("Align Right");
+    m_alignRightBtn->setCheckable(true);
+    m_alignRightBtn->setFixedSize(26, 28);
+    addWidget(m_alignRightBtn);
+
+    auto uncheckHAligns = [this](QToolButton* except) {
+        if (m_alignLeftBtn != except) m_alignLeftBtn->setChecked(false);
+        if (m_alignCenterBtn != except) m_alignCenterBtn->setChecked(false);
+        if (m_alignRightBtn != except) m_alignRightBtn->setChecked(false);
+    };
+
+    connect(m_alignLeftBtn, &QToolButton::clicked, this, [this, uncheckHAligns]() {
+        uncheckHAligns(m_alignLeftBtn);
+        emit hAlignChanged(HorizontalAlignment::Left);
+    });
+    connect(m_alignCenterBtn, &QToolButton::clicked, this, [this, uncheckHAligns]() {
+        uncheckHAligns(m_alignCenterBtn);
+        emit hAlignChanged(HorizontalAlignment::Center);
+    });
+    connect(m_alignRightBtn, &QToolButton::clicked, this, [this, uncheckHAligns]() {
+        uncheckHAligns(m_alignRightBtn);
+        emit hAlignChanged(HorizontalAlignment::Right);
+    });
+
+    // ===== Vertical Alignment (in Row 1) =====
+    m_vAlignTopBtn = new QToolButton(this);
+    m_vAlignTopBtn->setIcon(createVAlignIcon("top"));
+    m_vAlignTopBtn->setToolTip("Top Align");
+    m_vAlignTopBtn->setCheckable(true);
+    m_vAlignTopBtn->setFixedSize(26, 28);
+    addWidget(m_vAlignTopBtn);
+
+    m_vAlignMiddleBtn = new QToolButton(this);
+    m_vAlignMiddleBtn->setIcon(createVAlignIcon("middle"));
+    m_vAlignMiddleBtn->setToolTip("Middle Align");
+    m_vAlignMiddleBtn->setCheckable(true);
+    m_vAlignMiddleBtn->setChecked(true);
+    m_vAlignMiddleBtn->setFixedSize(26, 28);
+    addWidget(m_vAlignMiddleBtn);
+
+    m_vAlignBottomBtn = new QToolButton(this);
+    m_vAlignBottomBtn->setIcon(createVAlignIcon("bottom"));
+    m_vAlignBottomBtn->setToolTip("Bottom Align");
+    m_vAlignBottomBtn->setCheckable(true);
+    m_vAlignBottomBtn->setFixedSize(26, 28);
+    addWidget(m_vAlignBottomBtn);
+
+    auto uncheckVAligns = [this](QToolButton* except) {
+        if (m_vAlignTopBtn != except) m_vAlignTopBtn->setChecked(false);
+        if (m_vAlignMiddleBtn != except) m_vAlignMiddleBtn->setChecked(false);
+        if (m_vAlignBottomBtn != except) m_vAlignBottomBtn->setChecked(false);
+    };
+
+    connect(m_vAlignTopBtn, &QToolButton::clicked, this, [this, uncheckVAligns]() {
+        uncheckVAligns(m_vAlignTopBtn);
+        emit vAlignChanged(VerticalAlignment::Top);
+    });
+    connect(m_vAlignMiddleBtn, &QToolButton::clicked, this, [this, uncheckVAligns]() {
+        uncheckVAligns(m_vAlignMiddleBtn);
+        emit vAlignChanged(VerticalAlignment::Middle);
+    });
+    connect(m_vAlignBottomBtn, &QToolButton::clicked, this, [this, uncheckVAligns]() {
+        uncheckVAligns(m_vAlignBottomBtn);
+        emit vAlignChanged(VerticalAlignment::Bottom);
+    });
+
+    addSeparator();
+
+    // ===== Text Overflow (moved from Row 2) =====
+    m_textOverflowBtn = new QToolButton(this);
+    m_textOverflowBtn->setToolTip("Text Overflow");
+    m_textOverflowBtn->setPopupMode(QToolButton::MenuButtonPopup);
+    m_textOverflowBtn->setFixedSize(38, 28);
+    m_textOverflowBtn->setIcon(createIcon(16, [](QPainter& p, int) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QColor clr("#344054");
+        p.setPen(QPen(clr, 1.3, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(1, 4, 11, 4);
+        p.drawLine(1, 12, 7, 12);
+        p.drawLine(1, 8, 11, 8);
+        QPainterPath arrow;
+        arrow.moveTo(11, 8);
+        arrow.cubicTo(14, 8, 14, 12, 10, 12);
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(arrow);
+        p.drawLine(QPointF(10, 12), QPointF(12, 10.5));
+        p.drawLine(QPointF(10, 12), QPointF(12, 13.5));
+    }));
+    QMenu* overflowMenu = new QMenu(m_textOverflowBtn);
+    connect(overflowMenu->addAction("Overflow"), &QAction::triggered, this, [this]() { emit textOverflowChanged(TextOverflowMode::Overflow); });
+    connect(overflowMenu->addAction("Wrap Text"), &QAction::triggered, this, [this]() { emit textOverflowChanged(TextOverflowMode::Wrap); });
+    connect(overflowMenu->addAction("Shrink to Fit"), &QAction::triggered, this, [this]() { emit textOverflowChanged(TextOverflowMode::ShrinkToFit); });
+    m_textOverflowBtn->setMenu(overflowMenu);
+    addWidget(m_textOverflowBtn);
+
+    // ===== Indent =====
+    QToolButton* indentIncBtn = new QToolButton(this);
+    indentIncBtn->setIcon(createIndentIcon(true));
+    indentIncBtn->setToolTip("Increase Indent");
+    indentIncBtn->setFixedSize(26, 28);
+    addWidget(indentIncBtn);
+    connect(indentIncBtn, &QToolButton::clicked, this, &Toolbar::increaseIndent);
+
+    QToolButton* indentDecBtn = new QToolButton(this);
+    indentDecBtn->setIcon(createIndentIcon(false));
+    indentDecBtn->setToolTip("Decrease Indent");
+    indentDecBtn->setFixedSize(26, 28);
+    addWidget(indentDecBtn);
+    connect(indentDecBtn, &QToolButton::clicked, this, &Toolbar::decreaseIndent);
+
+    addSeparator();
+
+    // ===== Merge (moved from Row 2) =====
+    QToolButton* mergeBtn = new QToolButton(this);
+    mergeBtn->setIcon(createMergeIcon());
+    mergeBtn->setText("Merge");
+    mergeBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    mergeBtn->setToolTip("Merge & Center");
+    mergeBtn->setPopupMode(QToolButton::MenuButtonPopup);
+    mergeBtn->setFixedSize(80, 28);
+    QMenu* mergeMenu = new QMenu(mergeBtn);
+    connect(mergeMenu->addAction("Merge && Center"), &QAction::triggered, this, &Toolbar::mergeCellsRequested);
+    connect(mergeMenu->addAction("Unmerge Cells"), &QAction::triggered, this, &Toolbar::unmergeCellsRequested);
+    mergeBtn->setMenu(mergeMenu);
+    connect(mergeBtn, &QToolButton::clicked, this, &Toolbar::mergeCellsRequested);
+    addWidget(mergeBtn);
+
+    // ===== Text Rotation (moved from Row 2) =====
+    QToolButton* rotateBtn = new QToolButton(this);
+    rotateBtn->setToolTip("Text Rotation");
+    rotateBtn->setPopupMode(QToolButton::InstantPopup);
+    rotateBtn->setFixedSize(38, 28);
+    rotateBtn->setIcon(createIcon(16, [](QPainter& p, int) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor("#555"), 1.2));
+        QFont f = p.font();
+        f.setPixelSize(9);
+        f.setBold(true);
+        p.setFont(f);
+        p.translate(8, 8);
+        p.rotate(-45);
+        p.drawText(QRect(-10, -6, 20, 12), Qt::AlignCenter, "ab");
+        p.rotate(45);
+        p.translate(-8, -8);
+    }));
+    QMenu* rotateMenu = new QMenu(rotateBtn);
+    rotateMenu->addAction("Angle Counterclockwise", this, [this]() { emit textRotationChanged(45); });
+    rotateMenu->addAction("Angle Clockwise", this, [this]() { emit textRotationChanged(-45); });
+    rotateMenu->addSeparator();
+    rotateMenu->addAction("Vertical Text", this, [this]() { emit textRotationChanged(270); });
+    rotateMenu->addAction("Rotate Text Up", this, [this]() { emit textRotationChanged(90); });
+    rotateMenu->addAction("Rotate Text Down", this, [this]() { emit textRotationChanged(-90); });
+    rotateMenu->addSeparator();
+    rotateMenu->addAction("No Rotation", this, [this]() { emit textRotationChanged(0); });
+    rotateBtn->setMenu(rotateMenu);
+    addWidget(rotateBtn);
 
 }
 
@@ -975,402 +1195,7 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
     bar->setIconSize(QSize(16, 16));
     bar->setStyleSheet(buildToolbarStyleRow2());
 
-    // ===== Horizontal Alignment =====
-    m_alignLeftBtn = new QToolButton(bar);
-    m_alignLeftBtn->setIcon(createHAlignIcon("left"));
-    m_alignLeftBtn->setToolTip("Align Left");
-    m_alignLeftBtn->setCheckable(true);
-    m_alignLeftBtn->setFixedSize(26, 24);
-    bar->addWidget(m_alignLeftBtn);
-
-    m_alignCenterBtn = new QToolButton(bar);
-    m_alignCenterBtn->setIcon(createHAlignIcon("center"));
-    m_alignCenterBtn->setToolTip("Center");
-    m_alignCenterBtn->setCheckable(true);
-    m_alignCenterBtn->setFixedSize(26, 24);
-    bar->addWidget(m_alignCenterBtn);
-
-    m_alignRightBtn = new QToolButton(bar);
-    m_alignRightBtn->setIcon(createHAlignIcon("right"));
-    m_alignRightBtn->setToolTip("Align Right");
-    m_alignRightBtn->setCheckable(true);
-    m_alignRightBtn->setFixedSize(26, 24);
-    bar->addWidget(m_alignRightBtn);
-
-    auto uncheckHAligns = [this](QToolButton* except) {
-        if (m_alignLeftBtn != except) m_alignLeftBtn->setChecked(false);
-        if (m_alignCenterBtn != except) m_alignCenterBtn->setChecked(false);
-        if (m_alignRightBtn != except) m_alignRightBtn->setChecked(false);
-    };
-
-    connect(m_alignLeftBtn, &QToolButton::clicked, this, [this, uncheckHAligns]() {
-        uncheckHAligns(m_alignLeftBtn);
-        emit hAlignChanged(HorizontalAlignment::Left);
-    });
-    connect(m_alignCenterBtn, &QToolButton::clicked, this, [this, uncheckHAligns]() {
-        uncheckHAligns(m_alignCenterBtn);
-        emit hAlignChanged(HorizontalAlignment::Center);
-    });
-    connect(m_alignRightBtn, &QToolButton::clicked, this, [this, uncheckHAligns]() {
-        uncheckHAligns(m_alignRightBtn);
-        emit hAlignChanged(HorizontalAlignment::Right);
-    });
-
-    bar->addSeparator();
-
-    // ===== Vertical Alignment =====
-    m_vAlignTopBtn = new QToolButton(bar);
-    m_vAlignTopBtn->setIcon(createVAlignIcon("top"));
-    m_vAlignTopBtn->setToolTip("Top Align");
-    m_vAlignTopBtn->setCheckable(true);
-    m_vAlignTopBtn->setFixedSize(26, 24);
-    bar->addWidget(m_vAlignTopBtn);
-
-    m_vAlignMiddleBtn = new QToolButton(bar);
-    m_vAlignMiddleBtn->setIcon(createVAlignIcon("middle"));
-    m_vAlignMiddleBtn->setToolTip("Middle Align");
-    m_vAlignMiddleBtn->setCheckable(true);
-    m_vAlignMiddleBtn->setChecked(true);
-    m_vAlignMiddleBtn->setFixedSize(26, 24);
-    bar->addWidget(m_vAlignMiddleBtn);
-
-    m_vAlignBottomBtn = new QToolButton(bar);
-    m_vAlignBottomBtn->setIcon(createVAlignIcon("bottom"));
-    m_vAlignBottomBtn->setToolTip("Bottom Align");
-    m_vAlignBottomBtn->setCheckable(true);
-    m_vAlignBottomBtn->setFixedSize(26, 24);
-    bar->addWidget(m_vAlignBottomBtn);
-
-    auto uncheckVAligns = [this](QToolButton* except) {
-        if (m_vAlignTopBtn != except) m_vAlignTopBtn->setChecked(false);
-        if (m_vAlignMiddleBtn != except) m_vAlignMiddleBtn->setChecked(false);
-        if (m_vAlignBottomBtn != except) m_vAlignBottomBtn->setChecked(false);
-    };
-
-    connect(m_vAlignTopBtn, &QToolButton::clicked, this, [this, uncheckVAligns]() {
-        uncheckVAligns(m_vAlignTopBtn);
-        emit vAlignChanged(VerticalAlignment::Top);
-    });
-    connect(m_vAlignMiddleBtn, &QToolButton::clicked, this, [this, uncheckVAligns]() {
-        uncheckVAligns(m_vAlignMiddleBtn);
-        emit vAlignChanged(VerticalAlignment::Middle);
-    });
-    connect(m_vAlignBottomBtn, &QToolButton::clicked, this, [this, uncheckVAligns]() {
-        uncheckVAligns(m_vAlignBottomBtn);
-        emit vAlignChanged(VerticalAlignment::Bottom);
-    });
-
-    // ===== Text Overflow (Wrap / Shrink to Fit) =====
-    m_textOverflowBtn = new QToolButton(bar);
-    m_textOverflowBtn->setToolTip("Text Overflow");
-    m_textOverflowBtn->setPopupMode(QToolButton::MenuButtonPopup);
-    m_textOverflowBtn->setFixedSize(38, 24);
-    // Wrap text icon: text with wrap-around arrow (Excel style)
-    m_textOverflowBtn->setIcon(createIcon(16, [](QPainter& p, int) {
-        p.setRenderHint(QPainter::Antialiasing, true);
-        QColor clr("#344054");
-        p.setPen(QPen(clr, 1.3, Qt::SolidLine, Qt::RoundCap));
-        // Two text lines
-        p.drawLine(1, 4, 11, 4);
-        p.drawLine(1, 12, 7, 12);
-        // Line that wraps: goes right, curves down to second line
-        p.drawLine(1, 8, 11, 8);
-        QPainterPath arrow;
-        arrow.moveTo(11, 8);
-        arrow.cubicTo(14, 8, 14, 12, 10, 12);
-        p.setBrush(Qt::NoBrush);
-        p.drawPath(arrow);
-        // Arrowhead pointing left at the end of curve
-        p.drawLine(QPointF(10, 12), QPointF(12, 10.5));
-        p.drawLine(QPointF(10, 12), QPointF(12, 13.5));
-    }));
-    m_textOverflowBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 0px 2px; }"
-        "QToolButton:hover { background-color: #E8ECF0; border-color: #D0D5DD; }"
-        "QToolButton::menu-button { width: 12px; border: none; }"
-        "QToolButton::menu-arrow { image: url(none); width: 6px; height: 6px; }"
-        "QToolButton::menu-indicator { image: none; width: 0px; }");
-
-    QMenu* overflowMenu = new QMenu(m_textOverflowBtn);
-    overflowMenu->setStyleSheet(
-        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; min-width: 160px; }"
-        "QMenu::item { padding: 6px 16px; border-radius: 4px; font-size: 12px; }"
-        "QMenu::item:selected { background-color: #E8F0FE; }");
-    connect(overflowMenu->addAction("Overflow"), &QAction::triggered, this, [this]() {
-        emit textOverflowChanged(TextOverflowMode::Overflow);
-    });
-    connect(overflowMenu->addAction("Wrap Text"), &QAction::triggered, this, [this]() {
-        emit textOverflowChanged(TextOverflowMode::Wrap);
-    });
-    connect(overflowMenu->addAction("Shrink to Fit"), &QAction::triggered, this, [this]() {
-        emit textOverflowChanged(TextOverflowMode::ShrinkToFit);
-    });
-    m_textOverflowBtn->setMenu(overflowMenu);
-    bar->addWidget(m_textOverflowBtn);
-
-    bar->addSeparator();
-
-    // ===== Indent =====
-    QToolButton* indentIncBtn = new QToolButton(bar);
-    indentIncBtn->setIcon(createIndentIcon(true));
-    indentIncBtn->setToolTip("Increase Indent");
-    indentIncBtn->setFixedSize(26, 24);
-    bar->addWidget(indentIncBtn);
-    connect(indentIncBtn, &QToolButton::clicked, this, &Toolbar::increaseIndent);
-
-    QToolButton* indentDecBtn = new QToolButton(bar);
-    indentDecBtn->setIcon(createIndentIcon(false));
-    indentDecBtn->setToolTip("Decrease Indent");
-    indentDecBtn->setFixedSize(26, 24);
-    bar->addWidget(indentDecBtn);
-    connect(indentDecBtn, &QToolButton::clicked, this, &Toolbar::decreaseIndent);
-
-    // ===== Text Rotation =====
-    QToolButton* rotateBtn = new QToolButton(bar);
-    rotateBtn->setToolTip("Text Rotation");
-    rotateBtn->setPopupMode(QToolButton::InstantPopup);
-    rotateBtn->setFixedSize(38, 24);
-    rotateBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px 4px; }"
-        "QToolButton:hover { background-color: #E8ECF0; border-color: #D0D5DD; }"
-    );
-    // Create rotation icon: tilted "ab" text
-    rotateBtn->setIcon(createIcon(16, [](QPainter& p, int) {
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(QColor("#555"), 1.2));
-        QFont f = p.font();
-        f.setPixelSize(9);
-        f.setBold(true);
-        p.setFont(f);
-        p.translate(8, 8);
-        p.rotate(-45);
-        p.drawText(QRect(-10, -6, 20, 12), Qt::AlignCenter, "ab");
-        p.rotate(45);
-        p.translate(-8, -8);
-    }));
-
-    QMenu* rotateMenu = new QMenu(rotateBtn);
-    rotateMenu->setStyleSheet(
-        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; }"
-        "QMenu::item { padding: 5px 16px 5px 8px; border-radius: 4px; font-size: 12px; }"
-        "QMenu::item:selected { background-color: #E8F0FE; }"
-        "QMenu::separator { height: 1px; background: #E0E3E8; margin: 3px 8px; }"
-    );
-    rotateMenu->addAction("Angle Counterclockwise", this, [this]() { emit textRotationChanged(45); });
-    rotateMenu->addAction("Angle Clockwise", this, [this]() { emit textRotationChanged(-45); });
-    rotateMenu->addSeparator();
-    rotateMenu->addAction("Vertical Text", this, [this]() { emit textRotationChanged(270); });
-    rotateMenu->addAction("Rotate Text Up", this, [this]() { emit textRotationChanged(90); });
-    rotateMenu->addAction("Rotate Text Down", this, [this]() { emit textRotationChanged(-90); });
-    rotateMenu->addSeparator();
-    rotateMenu->addAction("No Rotation", this, [this]() { emit textRotationChanged(0); });
-    rotateBtn->setMenu(rotateMenu);
-    bar->addWidget(rotateBtn);
-
-    bar->addSeparator();
-
-    // ===== Borders (Excel-style split button) =====
-    QToolButton* borderBtn = new QToolButton(bar);
-    borderBtn->setIcon(createBorderIcon());
-    borderBtn->setToolTip("Borders");
-    borderBtn->setPopupMode(QToolButton::MenuButtonPopup);
-    borderBtn->setFixedSize(52, 24);
-    borderBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px 6px; }"
-        "QToolButton:hover { background-color: #E8ECF0; border-color: #D0D5DD; }"
-        "QToolButton::menu-button { width: 10px; border-left: 1px solid #D0D5DD; }"
-        "QToolButton::menu-button:hover { background-color: #D8DCE0; }"
-    );
-
-    QMenu* borderMenu = new QMenu(borderBtn);
-    borderMenu->setStyleSheet(
-        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; }"
-        "QMenu::item { padding: 5px 16px 5px 8px; border-radius: 4px; font-size: 12px; }"
-        "QMenu::item:selected { background-color: #E8F0FE; }"
-        "QMenu::icon { margin-right: 8px; }"
-        "QMenu::separator { height: 1px; background: #E0E3E8; margin: 3px 8px; }"
-    );
-
-    auto emitBorder = [this](const QString& type) {
-        emit borderStyleSelected(type, m_lastBorderColor, m_lastBorderWidth, m_lastBorderPenStyle);
-    };
-
-    borderMenu->addAction(createBorderMenuIcon("bottom"), "Bottom Border", this, [emitBorder]() { emitBorder("bottom"); });
-    borderMenu->addAction(createBorderMenuIcon("top"), "Top Border", this, [emitBorder]() { emitBorder("top"); });
-    borderMenu->addAction(createBorderMenuIcon("left"), "Left Border", this, [emitBorder]() { emitBorder("left"); });
-    borderMenu->addAction(createBorderMenuIcon("right"), "Right Border", this, [emitBorder]() { emitBorder("right"); });
-    borderMenu->addSeparator();
-    borderMenu->addAction(createBorderMenuIcon("all"), "All Borders", this, [emitBorder]() { emitBorder("all"); });
-    borderMenu->addAction(createBorderMenuIcon("outside"), "Outside Borders", this, [emitBorder]() { emitBorder("outside"); });
-    borderMenu->addAction(createBorderMenuIcon("thick_outside"), "Thick Box Border", this, [emitBorder]() { emitBorder("thick_outside"); });
-    borderMenu->addSeparator();
-    borderMenu->addAction(createBorderMenuIcon("inside_h"), "Inside Horizontal", this, [emitBorder]() { emitBorder("inside_h"); });
-    borderMenu->addAction(createBorderMenuIcon("inside_v"), "Inside Vertical", this, [emitBorder]() { emitBorder("inside_v"); });
-    borderMenu->addAction(createBorderMenuIcon("inside"), "Inside Borders", this, [emitBorder]() { emitBorder("inside"); });
-    borderMenu->addSeparator();
-    borderMenu->addAction(createBorderMenuIcon("none"), "No Border", this, [emitBorder]() { emitBorder("none"); });
-
-    borderMenu->addSeparator();
-
-    // Helper: re-open border menu after Line Style / Line Color changes
-    auto reopenBorderMenu = [borderMenu, borderBtn]() {
-        QTimer::singleShot(100, borderMenu, [borderMenu, borderBtn]() {
-            borderMenu->popup(borderBtn->mapToGlobal(QPoint(0, borderBtn->height())));
-        });
-    };
-
-    // ===== Line Style submenu =====
-    auto makeLineStyleIcon = [](int width, int style) {
-        return createIcon(16, [width, style](QPainter& p, int) {
-            QPen pen(QColor("#333"), width * 1.2);
-            if (style == 1) pen.setStyle(Qt::DashLine);
-            else if (style == 2) pen.setStyle(Qt::DotLine);
-            p.setPen(pen);
-            p.drawLine(1, 8, 15, 8);
-        });
-    };
-
-    QMenu* lineStyleMenu = borderMenu->addMenu(
-        makeLineStyleIcon(m_lastBorderWidth, m_lastBorderPenStyle),
-        "Line Style: Thin");
-    lineStyleMenu->setStyleSheet(borderMenu->styleSheet());
-
-    // Collect all line style actions for exclusive checking
-    QList<QAction*> lineActions;
-
-    auto* thinAction = lineStyleMenu->addAction(makeLineStyleIcon(1, 0), "Thin");
-    lineActions << thinAction;
-    auto* mediumAction = lineStyleMenu->addAction(makeLineStyleIcon(2, 0), "Medium");
-    lineActions << mediumAction;
-    auto* thickAction = lineStyleMenu->addAction(makeLineStyleIcon(3, 0), "Thick");
-    lineActions << thickAction;
-
-    lineStyleMenu->addSeparator();
-
-    auto* thinDashedAction = lineStyleMenu->addAction(makeLineStyleIcon(1, 1), "Thin Dashed");
-    lineActions << thinDashedAction;
-    auto* mediumDashedAction = lineStyleMenu->addAction(makeLineStyleIcon(2, 1), "Medium Dashed");
-    lineActions << mediumDashedAction;
-
-    lineStyleMenu->addSeparator();
-
-    auto* thinDottedAction = lineStyleMenu->addAction(makeLineStyleIcon(1, 2), "Dotted");
-    lineActions << thinDottedAction;
-
-    for (auto* a : lineActions) a->setCheckable(true);
-    thinAction->setChecked(true);
-
-    auto uncheckAllLineStyles = [lineActions](QAction* except) {
-        for (auto* a : lineActions) a->setChecked(a == except);
-    };
-
-    auto updateLineStyleLabel = [lineStyleMenu, makeLineStyleIcon](int width, int penStyle, const QString& name) {
-        lineStyleMenu->setTitle(QString("Line Style: %1").arg(name));
-        lineStyleMenu->setIcon(makeLineStyleIcon(width, penStyle));
-    };
-
-    connect(thinAction, &QAction::triggered, this, [this, uncheckAllLineStyles, thinAction, updateLineStyleLabel, reopenBorderMenu]() {
-        m_lastBorderWidth = 1; m_lastBorderPenStyle = 0;
-        uncheckAllLineStyles(thinAction);
-        updateLineStyleLabel(1, 0, "Thin");
-        reopenBorderMenu();
-    });
-    connect(mediumAction, &QAction::triggered, this, [this, uncheckAllLineStyles, mediumAction, updateLineStyleLabel, reopenBorderMenu]() {
-        m_lastBorderWidth = 2; m_lastBorderPenStyle = 0;
-        uncheckAllLineStyles(mediumAction);
-        updateLineStyleLabel(2, 0, "Medium");
-        reopenBorderMenu();
-    });
-    connect(thickAction, &QAction::triggered, this, [this, uncheckAllLineStyles, thickAction, updateLineStyleLabel, reopenBorderMenu]() {
-        m_lastBorderWidth = 3; m_lastBorderPenStyle = 0;
-        uncheckAllLineStyles(thickAction);
-        updateLineStyleLabel(3, 0, "Thick");
-        reopenBorderMenu();
-    });
-    connect(thinDashedAction, &QAction::triggered, this, [this, uncheckAllLineStyles, thinDashedAction, updateLineStyleLabel, reopenBorderMenu]() {
-        m_lastBorderWidth = 1; m_lastBorderPenStyle = 1;
-        uncheckAllLineStyles(thinDashedAction);
-        updateLineStyleLabel(1, 1, "Thin Dashed");
-        reopenBorderMenu();
-    });
-    connect(mediumDashedAction, &QAction::triggered, this, [this, uncheckAllLineStyles, mediumDashedAction, updateLineStyleLabel, reopenBorderMenu]() {
-        m_lastBorderWidth = 2; m_lastBorderPenStyle = 1;
-        uncheckAllLineStyles(mediumDashedAction);
-        updateLineStyleLabel(2, 1, "Medium Dashed");
-        reopenBorderMenu();
-    });
-    connect(thinDottedAction, &QAction::triggered, this, [this, uncheckAllLineStyles, thinDottedAction, updateLineStyleLabel, reopenBorderMenu]() {
-        m_lastBorderWidth = 1; m_lastBorderPenStyle = 2;
-        uncheckAllLineStyles(thinDottedAction);
-        updateLineStyleLabel(1, 2, "Dotted");
-        reopenBorderMenu();
-    });
-
-    // ===== Line Color =====
-    auto makeColorSwatchIcon = [](const QColor& color) {
-        return createIcon(16, [color](QPainter& p, int) {
-            p.setRenderHint(QPainter::Antialiasing, true);
-            p.setPen(QPen(QColor("#888"), 0.8));
-            p.setBrush(color);
-            p.drawRoundedRect(1, 1, 14, 14, 2, 2);
-        });
-    };
-    auto* lineColorAction = borderMenu->addAction(
-        makeColorSwatchIcon(m_lastBorderColor),
-        QString("Line Color: %1").arg(m_lastBorderColor.name().toUpper()),
-        this, [this, makeColorSwatchIcon, borderMenu, reopenBorderMenu]() {
-            const DocumentTheme& dt = m_docTheme ? *m_docTheme : defaultDocumentTheme();
-            auto pick = showColorPalette(this, m_lastBorderColorStr, dt, "Border Color");
-            if (pick.isValid) {
-                m_lastBorderColor = pick.displayColor;
-                m_lastBorderColorStr = pick.colorString;
-                // Update the action text and icon to show new color
-                auto actions = borderMenu->actions();
-                for (auto* a : actions) {
-                    if (a->text().startsWith("Line Color:")) {
-                        a->setText(QString("Line Color: %1").arg(pick.displayColor.name().toUpper()));
-                        a->setIcon(makeColorSwatchIcon(pick.displayColor));
-                        break;
-                    }
-                }
-            }
-            reopenBorderMenu();
-        });
-
-    borderBtn->setMenu(borderMenu);
-    connect(borderBtn, &QToolButton::clicked, this, [emitBorder]() { emitBorder("all"); });
-    bar->addWidget(borderBtn);
-
-    // ===== Merge (Excel-style split button with text) =====
-    QToolButton* mergeBtn = new QToolButton(bar);
-    mergeBtn->setIcon(createMergeIcon());
-    mergeBtn->setText("Merge");
-    mergeBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    mergeBtn->setToolTip("Merge & Center");
-    mergeBtn->setPopupMode(QToolButton::MenuButtonPopup);
-    mergeBtn->setFixedHeight(24);
-    mergeBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; "
-        "padding: 2px 5px; font-size: 11px; color: #344054; }"
-        "QToolButton:hover { background-color: #E8ECF0; border-color: #D0D5DD; }"
-        "QToolButton::menu-button { width: 10px; border-left: 1px solid #D0D5DD; }"
-        "QToolButton::menu-button:hover { background-color: #D8DCE0; }"
-    );
-
-    QMenu* mergeMenu = new QMenu(mergeBtn);
-    mergeMenu->setStyleSheet(
-        "QMenu { background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 6px; padding: 4px; }"
-        "QMenu::item { padding: 5px 16px 5px 8px; border-radius: 4px; }"
-        "QMenu::item:selected { background-color: #E8F0FE; }"
-    );
-    mergeMenu->addAction(createMergeIcon(), "Merge && Center", this, &Toolbar::mergeCellsRequested);
-    mergeMenu->addAction("Unmerge Cells", this, &Toolbar::unmergeCellsRequested);
-
-    mergeBtn->setMenu(mergeMenu);
-    connect(mergeBtn, &QToolButton::clicked, this, &Toolbar::mergeCellsRequested);
-    bar->addWidget(mergeBtn);
-
-    bar->addSeparator();
+    // (Borders, Merge, Text Overflow, Indent, Rotation moved to Row 1)
 
     // ===== Number Format Dropdown (Google Sheets style) =====
     m_numberFormatBtn = new QToolButton(bar);
@@ -1799,7 +1624,7 @@ QToolBar* Toolbar::createSecondaryToolbar(QWidget* parent) {
 
     bar->addSeparator();
 
-    // ===== Chat Assistant (at end of row 2) =====
+    // ===== Chat Assistant (end of row 2) =====
     m_chatBtn = new QToolButton(bar);
     m_chatBtn->setIcon(createChatIcon());
     m_chatBtn->setText("Claude");
