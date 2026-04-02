@@ -1056,8 +1056,11 @@ void CellDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
             }
         }
     }
-    if (m_showGridlines && !hasBgColor) {
-        painter->setPen(QPen(ThemeManager::instance().currentTheme().gridLineColor, 1, Qt::SolidLine));
+    if (m_showGridlines) {
+        // For cells with bg color, use a slightly darker gridline so borders are visible
+        QColor gridColor = ThemeManager::instance().currentTheme().gridLineColor;
+        if (hasBgColor) gridColor = gridColor.darker(115);
+        painter->setPen(QPen(gridColor, 1, Qt::SolidLine));
         if (!hideRightGridline)
             painter->drawLine(rect.right(), rect.top(), rect.right(), rect.bottom());
         painter->drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom());

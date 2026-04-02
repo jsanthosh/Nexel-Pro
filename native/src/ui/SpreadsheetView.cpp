@@ -1829,8 +1829,16 @@ void SpreadsheetView::showSortDialog() {
         range = CellRange(CellAddress(0, 0), CellAddress(maxRow, maxCol));
     }
 
+    // Collect header names from first row of the range
+    QStringList headerNames;
+    int headerRow = range.getStart().row;
+    for (int c = minC; c <= maxC; ++c) {
+        auto val = m_spreadsheet->getCellValue(CellAddress(headerRow, c));
+        headerNames.append(val.isValid() ? val.toString() : QString());
+    }
+
     // Show the sort dialog
-    SortDialog dialog(minC, maxC, false, this);
+    SortDialog dialog(minC, maxC, false, headerNames, this);
     if (dialog.exec() != QDialog::Accepted) return;
 
     auto levels = dialog.getSortLevels();

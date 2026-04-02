@@ -4,8 +4,9 @@
 #include <QLabel>
 #include <QFrame>
 
-SortDialog::SortDialog(int startCol, int endCol, bool hasHeaders, QWidget* parent)
-    : QDialog(parent), m_startCol(startCol), m_endCol(endCol) {
+SortDialog::SortDialog(int startCol, int endCol, bool hasHeaders,
+                       const QStringList& headerNames, QWidget* parent)
+    : QDialog(parent), m_startCol(startCol), m_endCol(endCol), m_headerNames(headerNames) {
     setWindowTitle("Sort");
     setMinimumWidth(480);
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
@@ -60,6 +61,7 @@ SortDialog::SortDialog(int startCol, int endCol, bool hasHeaders, QWidget* paren
 
     connect(m_addBtn, &QPushButton::clicked, this, &SortDialog::addLevel);
     connect(m_deleteBtn, &QPushButton::clicked, this, &SortDialog::deleteLevel);
+    connect(m_headersCheckbox, &QCheckBox::toggled, this, &SortDialog::updateColumnLabels);
 
     mainLayout->addStretch();
 
@@ -172,8 +174,28 @@ bool SortDialog::hasHeaders() const {
     return m_headersCheckbox->isChecked();
 }
 
+void SortDialog::updateColumnLabels() {
+    for (auto& lvl : m_levels) {
+        int currentData = lvl.columnCombo->currentData().toInt();
+        lvl.columnCombo->clear();
+        for (int c = m_startCol; c <= m_endCol; ++c) {
+            lvl.columnCombo->addItem(columnLabel(c), c);
+        }
+        // Restore selection
+        int idx = lvl.columnCombo->findData(currentData);
+        if (idx >= 0) lvl.columnCombo->setCurrentIndex(idx);
+    }
+}
+
 QString SortDialog::columnLabel(int col) const {
-    // Convert 0-based column index to Excel-style letter (A, B, ..., Z, AA, AB, ...)
+    // If headers enabled and we have header names, show them
+    if (m_headersCheckbox->isChecked()) {
+        int headerIdx = col - m_startCol;
+        if (headerIdx >= 0 && headerIdx < m_headerNames.size() && !m_headerNames[headerIdx].isEmpty()) {
+            return m_headerNames[headerIdx];
+        }
+    }
+    // Fallback: Excel-style column letter
     QString label;
     int c = col;
     do {

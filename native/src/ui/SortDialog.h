@@ -16,7 +16,8 @@ struct SortLevel {
 class SortDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit SortDialog(int startCol, int endCol, bool hasHeaders, QWidget* parent = nullptr);
+    explicit SortDialog(int startCol, int endCol, bool hasHeaders,
+                        const QStringList& headerNames = {}, QWidget* parent = nullptr);
 
     std::vector<SortLevel> getSortLevels() const;
     bool hasHeaders() const;
@@ -30,10 +31,12 @@ private:
 
     void addLevel();
     void deleteLevel();
+    void updateColumnLabels();
     QString columnLabel(int col) const;
 
     int m_startCol;
     int m_endCol;
+    QStringList m_headerNames;
     QCheckBox* m_headersCheckbox;
     QPushButton* m_addBtn;
     QPushButton* m_deleteBtn;
