@@ -4048,9 +4048,28 @@ void SpreadsheetView::keyPressEvent(QKeyEvent* event) {
             }
         }
 
-        int newCol = currentIndex().column() + (event->key() == Qt::Key_Backtab ? -1 : 1);
+        int curRow = currentIndex().row();
+        int curCol = currentIndex().column();
+        int newCol;
+
+        // Skip past merged cell region (same logic as Enter handler)
+        if (m_spreadsheet) {
+            int lr = (m_model && m_model->isVirtualMode()) ? m_model->toLogicalRow(curRow) : curRow;
+            auto* mr = m_spreadsheet->getMergedRegionAt(lr, curCol);
+            if (mr) {
+                if (event->key() == Qt::Key_Backtab) {
+                    newCol = mr->range.getStart().col - 1;
+                } else {
+                    newCol = mr->range.getEnd().col + 1;
+                }
+            } else {
+                newCol = curCol + (event->key() == Qt::Key_Backtab ? -1 : 1);
+            }
+        } else {
+            newCol = curCol + (event->key() == Qt::Key_Backtab ? -1 : 1);
+        }
         newCol = qBound(0, newCol, model()->columnCount() - 1);
-        QModelIndex next = model()->index(currentIndex().row(), newCol);
+        QModelIndex next = model()->index(curRow, newCol);
         if (next.isValid()) {
             setCurrentIndex(next);
             scrollTo(next);

@@ -495,6 +495,30 @@ target_include_directories(test_ui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/database
 )
 
+# ============================================================================
+# Behavioral Test Suite
+# Build: cmake --build build --target test_behavior
+# ============================================================================
+add_executable(test_behavior EXCLUDE_FROM_ALL
+    tests/test_behavior.cpp
+    ${CORE_SOURCES}
+    ${DATABASE_SOURCES}
+    ${SERVICES_SOURCES}
+    ${UI_SOURCES}
+)
+target_link_libraries(test_behavior
+    Qt6::Core Qt6::CorePrivate Qt6::Gui Qt6::Widgets Qt6::Sql Qt6::Network Qt6::Concurrent Qt6::Qml Qt6::Test
+    SQLite::SQLite3
+    Threads::Threads
+)
+target_include_directories(test_behavior PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/database
+)
+
 # Install
 install(TARGETS NativeSpreadsheet
     BUNDLE DESTINATION . COMPONENT Runtime
