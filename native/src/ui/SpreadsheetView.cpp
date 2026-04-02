@@ -2968,9 +2968,16 @@ void SpreadsheetView::insertEntireRow() {
     }
 
     if (m_model && m_model->isVirtualMode()) {
+        int totalRows = m_spreadsheet->getRowCount();
+        if (totalRows > 500000) {
+            QMessageBox::information(this, "Insert Row",
+                QString("Cannot insert rows in a dataset with %1 rows.\n"
+                        "This operation would require shifting all data and may take too long.\n\n"
+                        "Tip: Add new data at the end of the dataset instead.")
+                    .arg(QLocale().toString(totalRows)));
+            return;
+        }
         m_spreadsheet->getUndoManager().execute(std::move(compound), m_spreadsheet.get());
-        // Don't resetModel — it destroys scroll position and all visible data.
-        // Just refresh visible cells via dataChanged.
         int visRows = m_model->rowCount();
         int visCols = m_model->columnCount();
         emit m_model->dataChanged(m_model->index(0, 0), m_model->index(visRows - 1, visCols - 1));
@@ -3104,6 +3111,18 @@ void SpreadsheetView::deleteEntireRow() {
     bool isVirtual = m_model && m_model->isVirtualMode();
     int count = static_cast<int>(rows.size());
 
+    if (isVirtual) {
+        int totalRows = m_spreadsheet->getRowCount();
+        if (totalRows > 500000) {
+            QMessageBox::information(this, "Delete Row",
+                QString("Cannot delete rows in a dataset with %1 rows.\n"
+                        "This operation would require shifting all data and may take too long.")
+                    .arg(QLocale().toString(totalRows)));
+            verticalHeader()->blockSignals(false);
+            return;
+        }
+    }
+
     if (!isVirtual) {
         m_model->beginRowRemoval(focusRow, count);
     }
@@ -3115,7 +3134,6 @@ void SpreadsheetView::deleteEntireRow() {
     }
 
     if (isVirtual) {
-        // Don't resetModel — refresh visible cells only
         int visRows = m_model->rowCount();
         int visCols = m_model->columnCount();
         emit m_model->dataChanged(m_model->index(0, 0), m_model->index(visRows - 1, visCols - 1));
