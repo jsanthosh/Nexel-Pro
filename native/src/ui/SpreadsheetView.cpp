@@ -2075,12 +2075,22 @@ void SpreadsheetView::applyTableStyle(int themeIndex) {
     std::vector<SpreadsheetTable> tablesBefore = m_spreadsheet->getTables();
     CellRange affectedRange = table.range;
 
-    // Also capture the old table's range for dataChanged (if replacing)
+    // Check if we're re-theming an existing table — use its range and column names
     CellRange oldRange = affectedRange;
     const auto& existing = m_spreadsheet->getTables();
     for (const auto& t : existing) {
         if (t.range.intersects(table.range)) {
             oldRange = t.range;
+            // Preserve the original table's range and column names
+            table.range = t.range;
+            table.columnNames = t.columnNames;
+            table.hasHeaderRow = t.hasHeaderRow;
+            table.bandedRows = t.bandedRows;
+            table.name = t.name; // keep same name
+            minRow = t.range.getStart().row;
+            maxRow = t.range.getEnd().row;
+            minCol = t.range.getStart().col;
+            maxCol = t.range.getEnd().col;
             m_spreadsheet->removeTable(t.name);
             break;
         }
