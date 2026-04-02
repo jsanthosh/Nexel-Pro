@@ -37,7 +37,8 @@ size_t StyleTable::hashStyle(const CellStyle& s) {
 
     // Pack boolean flags into a single byte for hashing
     uint8_t flags = (s.bold) | (s.italic << 1) | (s.underline << 2) |
-                    (s.strikethrough << 3) | (s.useThousandsSeparator << 4);
+                    (s.strikethrough << 3) | (s.useThousandsSeparator << 4) |
+                    (s.locked << 5) | (s.hidden << 6);
     combine(std::hash<uint8_t>()(flags));
 
     // Borders
@@ -75,6 +76,8 @@ bool StyleTable::stylesEqual(const CellStyle& a, const CellStyle& b) {
            a.underline == b.underline &&
            a.strikethrough == b.strikethrough &&
            a.useThousandsSeparator == b.useThousandsSeparator &&
+           a.locked == b.locked &&
+           a.hidden == b.hidden &&
            a.borderTop.color == b.borderTop.color &&
            a.borderTop.width == b.borderTop.width &&
            a.borderTop.penStyle == b.borderTop.penStyle &&

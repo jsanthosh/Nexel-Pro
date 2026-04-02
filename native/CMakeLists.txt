@@ -433,6 +433,25 @@ target_include_directories(test_all PRIVATE
 )
 
 # ============================================================================
+# E2E & XLSX Compatibility Test Suite
+# Build: cmake --build build --target test_e2e
+# ============================================================================
+add_executable(test_e2e EXCLUDE_FROM_ALL
+    tests/test_e2e.cpp
+    ${CORE_SOURCES}
+    ${DATABASE_SOURCES}
+    ${SERVICES_SOURCES}
+)
+target_link_libraries(test_e2e
+    Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent
+    SQLite::SQLite3
+    Threads::Threads
+)
+target_include_directories(test_e2e PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# ============================================================================
 # Regression Test Suite
 # Build: cmake --build build --target test_regression
 # ============================================================================
@@ -449,6 +468,31 @@ target_link_libraries(test_regression
 )
 target_include_directories(test_regression PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# ============================================================================
+# UI Interaction Test Suite
+# Build: cmake --build build --target test_ui
+# ============================================================================
+find_package(Qt6 COMPONENTS Test QUIET)
+add_executable(test_ui EXCLUDE_FROM_ALL
+    tests/test_ui.cpp
+    ${CORE_SOURCES}
+    ${DATABASE_SOURCES}
+    ${SERVICES_SOURCES}
+    ${UI_SOURCES}
+)
+target_link_libraries(test_ui
+    Qt6::Core Qt6::CorePrivate Qt6::Gui Qt6::Widgets Qt6::Sql Qt6::Network Qt6::Concurrent Qt6::Qml Qt6::Test
+    SQLite::SQLite3
+    Threads::Threads
+)
+target_include_directories(test_ui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/database
 )
 
 # Install
