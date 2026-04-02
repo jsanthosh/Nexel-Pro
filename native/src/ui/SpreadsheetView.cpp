@@ -1684,8 +1684,9 @@ void SpreadsheetView::sortAscending() {
         m_model->resetModel();
     }
 
-    // Restore selection
-    int selMinR = 0, selMaxR = std::min(range.getEnd().row, m_model ? m_model->rowCount() - 1 : 0);
+    // Select only the sorted range (not from row 0)
+    int selMinR = range.getStart().row;
+    int selMaxR = std::min(range.getEnd().row, m_model ? m_model->rowCount() - 1 : range.getEnd().row);
     int selMinC = range.getStart().col, selMaxC = range.getEnd().col;
     QModelIndex topLeft = m_model->index(selMinR, selMinC);
     QModelIndex bottomRight = m_model->index(selMaxR, selMaxC);
@@ -1774,7 +1775,8 @@ void SpreadsheetView::sortDescending() {
         m_model->resetModel();
     }
 
-    int selMinR = 0, selMaxR = std::min(range.getEnd().row, m_model ? m_model->rowCount() - 1 : 0);
+    int selMinR = range.getStart().row;
+    int selMaxR = std::min(range.getEnd().row, m_model ? m_model->rowCount() - 1 : range.getEnd().row);
     int selMinC = range.getStart().col, selMaxC = range.getEnd().col;
     QModelIndex topLeft = m_model->index(selMinR, selMinC);
     QModelIndex bottomRight = m_model->index(selMaxR, selMaxC);
@@ -1901,9 +1903,10 @@ void SpreadsheetView::showSortDialog() {
         m_model->resetModel();
     }
 
-    // Restore selection
-    int selMinR = 0, selMaxR = std::min(range.getEnd().row, m_model ? m_model->rowCount() - 1 : 0);
-    int selMinC = range.getStart().col, selMaxC = range.getEnd().col;
+    // Select sorted range (use actual sort range start, not row 0)
+    int selMinR = sortRange.getStart().row;
+    int selMaxR = std::min(sortRange.getEnd().row, m_model ? m_model->rowCount() - 1 : sortRange.getEnd().row);
+    int selMinC = sortRange.getStart().col, selMaxC = sortRange.getEnd().col;
     QModelIndex topLeft = m_model->index(selMinR, selMinC);
     QModelIndex bottomRight = m_model->index(selMaxR, selMaxC);
     selectionModel()->setCurrentIndex(topLeft, QItemSelectionModel::NoUpdate);
