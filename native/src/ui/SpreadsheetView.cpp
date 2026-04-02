@@ -2968,12 +2968,13 @@ void SpreadsheetView::insertEntireRow() {
     }
 
     if (m_model && m_model->isVirtualMode()) {
-        int totalRows = m_spreadsheet->getRowCount();
-        if (totalRows > 500000) {
-            qDebug() << "[InsertRow] Skipped: dataset too large (" << totalRows << " rows)";
-        }
         m_spreadsheet->getUndoManager().execute(std::move(compound), m_spreadsheet.get());
-        m_model->resetModel();
+        // Don't resetModel — it destroys scroll position and all visible data.
+        // Just refresh visible cells via dataChanged.
+        int visRows = m_model->rowCount();
+        int visCols = m_model->columnCount();
+        emit m_model->dataChanged(m_model->index(0, 0), m_model->index(visRows - 1, visCols - 1));
+        viewport()->update();
     } else {
         int minRow = *std::min_element(rows.begin(), rows.end());
         int count = static_cast<int>(rows.size());
@@ -3114,7 +3115,11 @@ void SpreadsheetView::deleteEntireRow() {
     }
 
     if (isVirtual) {
-        m_model->resetModel();
+        // Don't resetModel — refresh visible cells only
+        int visRows = m_model->rowCount();
+        int visCols = m_model->columnCount();
+        emit m_model->dataChanged(m_model->index(0, 0), m_model->index(visRows - 1, visCols - 1));
+        viewport()->update();
     }
 
     verticalHeader()->blockSignals(false);
