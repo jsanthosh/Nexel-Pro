@@ -310,119 +310,16 @@ void Spreadsheet::insertRow(int row, int count) {
     int totalRows = getRowCount();
 
     // FAST PATH for large datasets: O(chunks) not O(cells).
-    // Shift chunk baseRows for chunks STRICTLY below insertion point.
-    // The chunk containing the insertion row is left in place (no intra-chunk shift
-    // needed — we just adjust baseRows of subsequent chunks).
-    // This is safe because insertRow at position R means:
-    //   - All data at row >= R moves to row+count
-    //   - Row R becomes empty
-    // We achieve this by simply incrementing baseRow of every chunk whose
-    // baseRow >= row. The chunk that contains row R (baseRow < R) doesn't need
-    // internal shifting because the empty row R is "absorbed" by the gap between
-    // the chunk's logical end and the next chunk's shifted baseRow.
-    //
-    // IMPORTANT: For the chunk containing R, cells at offset >= (R - baseRow)
-    // are now at logical positions shifted by +count. We DON'T move cells within
-    // the chunk — instead we shift the baseRow of ALL subsequent chunks. The data
-    // within the containing chunk at offsets >= insertOffset effectively occupies
-    // rows (baseRow + offset + count) when looked up via the shifted chunk layout.
-    //
-    // Simplest correct approach: shift baseRow of chunks with baseRow > row (strictly greater).
-    // For the chunk containing row: leave baseRow unchanged. The logical row mapping
-    // handles the rest because subsequent chunks are shifted.
+    // Simply shift baseRow of ALL chunks where baseRow >= row.
+    // This creates an empty gap at logical row `row` — which IS the inserted row.
+    // No intra-chunk cell shifting needed. No overflow. O(chunks) time.
     if (totalRows > 100000) {
         for (int c = 0; c <= maxCol; ++c) {
             Column* col = m_columnStore.getColumn(c);
             if (!col) continue;
             for (auto& chunk : col->chunks()) {
-                if (chunk->baseRow > row) {
-                    // Chunk is strictly below insertion — shift baseRow
+                if (chunk->baseRow >= row) {
                     chunk->baseRow += count;
-                } else if (chunk->baseRow + ColumnChunk::CHUNK_SIZE > row && chunk->baseRow <= row) {
-                    // This chunk contains the insertion point
-                    // Shift cells within the chunk from bottom to top
-                    int insertOffset = row - chunk->baseRow;
-
-                    // Collect cells that would overflow past CHUNK_SIZE
-                    struct OverflowCell {
-                        int logicalRow;
-                        CellDataType type;
-                        double value;
-                        uint16_t style;
-                        QString formula;
-                    };
-                    std::vector<OverflowCell> overflow;
-
-                    // First pass: collect overflow cells (those that shift past chunk boundary)
-                    for (int off = ColumnChunk::CHUNK_SIZE - count; off < ColumnChunk::CHUNK_SIZE; ++off) {
-                        if (off >= insertOffset && chunk->hasData(off)) {
-                            int denseIdx = chunk->denseIndex(off);
-                            OverflowCell oc;
-                            oc.logicalRow = chunk->baseRow + off + count; // shifted logical row
-                            oc.type = static_cast<CellDataType>(chunk->types[denseIdx]);
-                            oc.value = chunk->values[denseIdx];
-                            oc.style = (chunk->styleIndices && denseIdx < (int)chunk->styleIndices->size())
-                                ? (*chunk->styleIndices)[denseIdx] : 0;
-                            if (oc.type == CellDataType::Formula && chunk->formulas) {
-                                auto it = chunk->formulas->find(off);
-                                if (it != chunk->formulas->end()) oc.formula = it->second;
-                            }
-                            overflow.push_back(oc);
-                        }
-                    }
-
-                    // Second pass: shift cells from (CHUNK_SIZE - count - 1) down to insertOffset
-                    for (int off = ColumnChunk::CHUNK_SIZE - 1 - count; off >= insertOffset; --off) {
-                        if (chunk->hasData(off)) {
-                            int denseIdx = chunk->denseIndex(off);
-                            auto type = static_cast<CellDataType>(chunk->types[denseIdx]);
-                            double val = chunk->values[denseIdx];
-                            uint16_t style = (chunk->styleIndices && denseIdx < (int)chunk->styleIndices->size())
-                                ? (*chunk->styleIndices)[denseIdx] : 0;
-                            int newOff = off + count;
-                            switch (type) {
-                                case CellDataType::Double: chunk->setNumeric(newOff, val, style); break;
-                                case CellDataType::Date: chunk->setDate(newOff, val, style); break;
-                                case CellDataType::Boolean: chunk->setBoolean(newOff, val != 0.0, style); break;
-                                case CellDataType::String: chunk->setString(newOff, ColumnChunk::unpackId(val), style); break;
-                                case CellDataType::Formula:
-                                    if (chunk->formulas) {
-                                        auto it = chunk->formulas->find(off);
-                                        if (it != chunk->formulas->end())
-                                            chunk->setFormula(newOff, it->second, style);
-                                    }
-                                    break;
-                                default: break;
-                            }
-                            chunk->removeCell(off);
-                        }
-                    }
-                    // Clear the inserted rows
-                    for (int i = 0; i < count && insertOffset + i < ColumnChunk::CHUNK_SIZE; ++i) {
-                        chunk->removeCell(insertOffset + i);
-                    }
-
-                    // Write overflow cells to the ColumnStore at their shifted logical positions
-                    // (they'll land in the next chunk which has already been shifted)
-                    for (const auto& oc : overflow) {
-                        CellAddress addr(oc.logicalRow, c);
-                        switch (oc.type) {
-                            case CellDataType::Double: setCellValue(addr, QVariant(oc.value)); break;
-                            case CellDataType::String: {
-                                uint32_t strId = ColumnChunk::unpackId(oc.value);
-                                const QString& s = StringPool::instance().get(strId);
-                                setCellValue(addr, QVariant(s));
-                                break;
-                            }
-                            case CellDataType::Formula: setCellFormula(addr, oc.formula); break;
-                            case CellDataType::Boolean: setCellValue(addr, QVariant(oc.value != 0.0)); break;
-                            case CellDataType::Date: setCellValue(addr, QVariant(oc.value)); break;
-                            default: break;
-                        }
-                        if (oc.style != 0) {
-                            m_columnStore.setCellStyle(oc.logicalRow, c, oc.style);
-                        }
-                    }
                 }
             }
         }
