@@ -560,6 +560,49 @@ int main(int argc, char* argv[]) {
     testStyles();
     testScalability();
 
+    // Large-dataset insert row test
+    {
+        SECTION("Insert Row on Large Dataset (200K rows)");
+        Spreadsheet sheet;
+        sheet.setAutoRecalculate(false);
+        for (int r = 0; r < 200000; ++r) {
+            sheet.getOrCreateCellFast(r, 0)->setValue(QVariant((double)r));
+        }
+        sheet.finishBulkImport();
+        sheet.setRowCount(200000);
+
+        // Test insert at row 0
+        sheet.insertRow(0, 1);
+        auto v0 = sheet.getCellValue({0, 0});
+        check(!v0.isValid() || v0.toString().isEmpty(), "insert@0: row 0 empty");
+        checkApprox(sheet.getCellValue({1, 0}).toDouble(), 0.0, "insert@0: row 1 = 0");
+        checkApprox(sheet.getCellValue({2, 0}).toDouble(), 1.0, "insert@0: row 2 = 1");
+        checkApprox(sheet.getCellValue({100, 0}).toDouble(), 99.0, "insert@0: row 100 = 99");
+        checkApprox(sheet.getCellValue({65536, 0}).toDouble(), 65535.0, "insert@0: row 65536 = 65535");
+        checkApprox(sheet.getCellValue({65537, 0}).toDouble(), 65536.0, "insert@0: row 65537 = 65536");
+        checkApprox(sheet.getCellValue({100000, 0}).toDouble(), 99999.0, "insert@0: row 100000 = 99999");
+        checkApprox(sheet.getCellValue({200000, 0}).toDouble(), 199999.0, "insert@0: row 200000 = 199999");
+        std::cout << "  Insert@0 row count: " << sheet.getRowCount() << std::endl;
+
+        // Test insert at middle (row 50000)
+        Spreadsheet sheet2;
+        sheet2.setAutoRecalculate(false);
+        for (int r = 0; r < 200000; ++r) {
+            sheet2.getOrCreateCellFast(r, 0)->setValue(QVariant((double)r));
+        }
+        sheet2.finishBulkImport();
+        sheet2.setRowCount(200000);
+
+        sheet2.insertRow(50000, 1);
+        checkApprox(sheet2.getCellValue({49999, 0}).toDouble(), 49999.0, "insert@50K: row 49999 = 49999");
+        auto v50k = sheet2.getCellValue({50000, 0});
+        check(!v50k.isValid() || v50k.toString().isEmpty(), "insert@50K: row 50000 empty");
+        checkApprox(sheet2.getCellValue({50001, 0}).toDouble(), 50000.0, "insert@50K: row 50001 = 50000");
+        checkApprox(sheet2.getCellValue({65536, 0}).toDouble(), 65535.0, "insert@50K: row 65536 = 65535");
+        checkApprox(sheet2.getCellValue({65537, 0}).toDouble(), 65536.0, "insert@50K: row 65537 = 65536");
+        checkApprox(sheet2.getCellValue({200000, 0}).toDouble(), 199999.0, "insert@50K: row 200000 = 199999");
+    }
+
     std::cout << "\n==============================================" << std::endl;
     std::cout << "  RESULTS: " << g_pass << " passed, " << g_fail << " failed, " << g_total << " total" << std::endl;
     if (g_fail == 0) {

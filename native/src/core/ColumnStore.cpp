@@ -358,14 +358,15 @@ std::unique_ptr<ColumnChunk> ColumnChunk::clone() const {
 // ============================================================================
 
 int Column::findChunkIndex(int row) const {
-    int chunkBase = (row / ColumnChunk::CHUNK_SIZE) * ColumnChunk::CHUNK_SIZE;
-
+    // Find chunk where baseRow <= row < baseRow + CHUNK_SIZE
+    // Chunks may have non-aligned baseRows after insert/delete operations.
     int lo = 0, hi = static_cast<int>(m_chunks.size()) - 1;
     while (lo <= hi) {
         int mid = lo + (hi - lo) / 2;
-        if (m_chunks[mid]->baseRow == chunkBase) return mid;
-        if (m_chunks[mid]->baseRow < chunkBase) lo = mid + 1;
-        else hi = mid - 1;
+        int base = m_chunks[mid]->baseRow;
+        if (row >= base && row < base + ColumnChunk::CHUNK_SIZE) return mid;
+        if (base > row) hi = mid - 1;
+        else lo = mid + 1;
     }
     return -1;
 }
@@ -376,16 +377,21 @@ ColumnChunk* Column::getChunk(int row) const {
 }
 
 ColumnChunk* Column::getOrCreateChunk(int row) {
+    // First try to find an existing chunk that contains this row
+    // (chunks may have non-aligned baseRows after insert/delete)
+    for (auto& c : m_chunks) {
+        if (row >= c->baseRow && row < c->baseRow + ColumnChunk::CHUNK_SIZE) {
+            return c.get();
+        }
+    }
+
+    // No existing chunk covers this row — create a new one
     int chunkBase = (row / ColumnChunk::CHUNK_SIZE) * ColumnChunk::CHUNK_SIZE;
 
     auto it = std::lower_bound(m_chunks.begin(), m_chunks.end(), chunkBase,
         [](const std::unique_ptr<ColumnChunk>& chunk, int base) {
             return chunk->baseRow < base;
         });
-
-    if (it != m_chunks.end() && (*it)->baseRow == chunkBase) {
-        return it->get();
-    }
 
     auto chunk = std::make_unique<ColumnChunk>();
     chunk->baseRow = chunkBase;
