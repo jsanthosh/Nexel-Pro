@@ -367,13 +367,43 @@ void Spreadsheet::insertRow(int row, int count) {
                         }
                     }
 
-                    // Insert the new chunk right after the current one
+                    // Replace the old chunk with a fresh one containing only pre-insert data.
+                    // This prevents the old chunk from overlapping with the new split chunk
+                    // in scanning functions (nextEmptyRow, nextOccupiedRow).
+                    auto freshChunk = std::make_unique<ColumnChunk>();
+                    freshChunk->baseRow = chunk->baseRow;
+                    for (int off = 0; off < insertOffset; ++off) {
+                        if (chunk->hasData(off)) {
+                            int denseIdx = chunk->denseIndex(off);
+                            auto type = static_cast<CellDataType>(chunk->types[denseIdx]);
+                            double val = chunk->values[denseIdx];
+                            uint16_t style = (chunk->styleIndices && denseIdx < (int)chunk->styleIndices->size())
+                                ? (*chunk->styleIndices)[denseIdx] : 0;
+                            switch (type) {
+                                case CellDataType::Double: freshChunk->setNumeric(off, val, style); break;
+                                case CellDataType::Date: freshChunk->setDate(off, val, style); break;
+                                case CellDataType::Boolean: freshChunk->setBoolean(off, val != 0.0, style); break;
+                                case CellDataType::String: freshChunk->setString(off, ColumnChunk::unpackId(val), style); break;
+                                case CellDataType::Formula: {
+                                    QString formula;
+                                    if (chunk->formulas) {
+                                        auto it = chunk->formulas->find(off);
+                                        if (it != chunk->formulas->end()) formula = it->second;
+                                    }
+                                    freshChunk->setFormula(off, formula, style);
+                                    break;
+                                }
+                                default: break;
+                            }
+                        }
+                    }
+
+                    // Replace old chunk with fresh (no overlap) and insert new chunk after
+                    chunks[ci] = std::move(freshChunk);
                     if (newChunk->populatedCount > 0) {
                         chunks.insert(chunks.begin() + ci + 1, std::move(newChunk));
                         ++ci; // skip the newly inserted chunk in iteration
                     }
-
-                    // Now shift all remaining chunks (already handled by the loop)
                 }
             }
         }

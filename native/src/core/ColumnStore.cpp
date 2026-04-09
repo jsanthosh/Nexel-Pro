@@ -359,8 +359,8 @@ std::unique_ptr<ColumnChunk> ColumnChunk::clone() const {
 
 int Column::findChunkIndex(int row) const {
     // Find chunk where baseRow <= row < baseRow + CHUNK_SIZE
-    // After split/insert, multiple chunks may cover the same logical row range.
-    // Return the one with the HIGHEST baseRow (most specific/recent chunk).
+    // After split, multiple chunks may cover the same row range.
+    // Return the one with the HIGHEST baseRow (most specific — the split chunk).
     int bestIdx = -1;
     int bestBase = -1;
     for (int i = 0; i < static_cast<int>(m_chunks.size()); ++i) {
@@ -955,29 +955,16 @@ int ColumnStore::nextOccupiedRow(int col, int startRow) const {
     if (col < 0 || col >= static_cast<int>(m_columns.size()) || !m_columns[col]) return -1;
     auto* column = m_columns[col].get();
 
+    // Find the max possible row from chunks
+    int maxRow = -1;
     for (const auto& chunk : column->chunks()) {
         int chunkEnd = chunk->baseRow + ColumnChunk::CHUNK_SIZE;
-        if (chunkEnd <= startRow) continue;  // chunk entirely before startRow
-        if (chunk->populatedCount == 0) continue;
+        if (chunkEnd > maxRow) maxRow = chunkEnd;
+    }
 
-        int firstOffset = std::max(0, startRow - chunk->baseRow);
-        int firstWord = firstOffset / 64;
-        int firstBit = firstOffset % 64;
-
-        // Check first partial word
-        uint64_t word = chunk->presence[firstWord] & (~0ULL << firstBit);
-        if (word) {
-            int bit = ctzll(word);
-            return chunk->baseRow + firstWord * 64 + bit;
-        }
-        // Check remaining words in this chunk
-        for (int w = firstWord + 1; w < ColumnChunk::BITMAP_WORDS; ++w) {
-            word = chunk->presence[w];
-            if (word) {
-                int bit = ctzll(word);
-                return chunk->baseRow + w * 64 + bit;
-            }
-        }
+    // Scan using hasCell (handles overlapping/split chunks correctly)
+    for (int r = startRow; r < maxRow; ++r) {
+        if (hasCell(r, col)) return r;
     }
     return -1;
 }
@@ -1016,40 +1003,12 @@ int ColumnStore::prevOccupiedRow(int col, int startRow) const {
 }
 
 int ColumnStore::nextEmptyRow(int col, int startRow) const {
-    if (col < 0 || col >= static_cast<int>(m_columns.size()) || !m_columns[col]) return startRow;
-    auto* column = m_columns[col].get();
-
-    for (const auto& chunk : column->chunks()) {
-        int chunkEnd = chunk->baseRow + ColumnChunk::CHUNK_SIZE;
-        if (chunkEnd <= startRow) continue;
-        if (chunk->populatedCount == 0) return startRow;  // whole chunk empty
-
-        // If startRow is before this chunk, the gap is empty
-        if (startRow < chunk->baseRow) return startRow;
-
-        int firstOffset = startRow - chunk->baseRow;
-        int firstWord = firstOffset / 64;
-        int firstBit = firstOffset % 64;
-
-        // Check first partial word for zero bits
-        uint64_t word = chunk->presence[firstWord] | ((1ULL << firstBit) - 1);  // fill lower bits
-        if (~word) {  // has at least one zero bit at or above firstBit
-            uint64_t inv = ~word;
-            int bit = ctzll(inv);
-            if (bit < 64) return chunk->baseRow + firstWord * 64 + bit;
-        }
-        for (int w = firstWord + 1; w < ColumnChunk::BITMAP_WORDS; ++w) {
-            if (~chunk->presence[w]) {
-                int bit = ctzll(~chunk->presence[w]);
-                return chunk->baseRow + w * 64 + bit;
-            }
-        }
-        // Entire rest of chunk is full — continue to next chunk gap
-        if (chunkEnd > startRow) {
-            startRow = chunkEnd;  // skip to end of this chunk
-        }
+    // Simple per-row scan using hasCell (which correctly uses findChunkIndex
+    // to handle overlapping/split chunks). Scans at most a few hundred rows
+    // before finding a gap in typical usage (Ctrl+Down jumps).
+    for (int r = startRow; ; ++r) {
+        if (!hasCell(r, col)) return r;
     }
-    return startRow;
 }
 
 int ColumnStore::prevEmptyRow(int col, int startRow) const {
