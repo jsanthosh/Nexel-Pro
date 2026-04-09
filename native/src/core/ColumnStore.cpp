@@ -1024,28 +1024,48 @@ int ColumnStore::nextEmptyRow(int col, int startRow) const {
     int row = startRow;
     while (true) {
         int chunkIdx = column->findChunkIndex(row);
-        if (chunkIdx < 0) return row; // no chunk covers this row → it's empty
+        if (chunkIdx < 0) {
+            // No chunk covers this row — but after split, another chunk
+            // with higher baseRow might. Check with hasCell as fallback.
+            if (!hasCell(row, col)) return row;
+            // hasCell found it in another chunk — advance and retry
+            ++row;
+            continue;
+        }
 
         auto* chunk = column->chunks()[chunkIdx].get();
         int offset = row - chunk->baseRow;
 
         // Bitmap scan within this chunk for the first zero bit at/after offset
-        int word = offset / 64;
-        int bit = offset % 64;
+        int wordIdx = offset / 64;
+        int bitIdx = offset % 64;
 
         // Check first partial word
-        uint64_t w = chunk->presence[word] | ((1ULL << bit) - 1); // mask lower bits
+        uint64_t w = chunk->presence[wordIdx] | ((1ULL << bitIdx) - 1);
         if (~w) {
             int zeroBit = __builtin_ctzll(~w);
-            if (zeroBit < 64) return chunk->baseRow + word * 64 + zeroBit;
-        }
-        // Scan remaining words
-        for (int wi = word + 1; wi < ColumnChunk::BITMAP_WORDS; ++wi) {
-            if (~chunk->presence[wi]) {
-                int zeroBit = __builtin_ctzll(~chunk->presence[wi]);
-                return chunk->baseRow + wi * 64 + zeroBit;
+            if (zeroBit < 64) {
+                int candidate = chunk->baseRow + wordIdx * 64 + zeroBit;
+                // Verify it's truly empty (another chunk might cover this row)
+                if (!hasCell(candidate, col)) return candidate;
+                // Another chunk has data here — continue from next row
+                row = candidate + 1;
+                continue;
             }
         }
+        // Scan remaining words
+        bool found = false;
+        for (int wi = wordIdx + 1; wi < ColumnChunk::BITMAP_WORDS; ++wi) {
+            if (~chunk->presence[wi]) {
+                int zeroBit = __builtin_ctzll(~chunk->presence[wi]);
+                int candidate = chunk->baseRow + wi * 64 + zeroBit;
+                if (!hasCell(candidate, col)) return candidate;
+                row = candidate + 1;
+                found = true;
+                break;
+            }
+        }
+        if (found) continue;
         // Entire chunk is full — jump past it
         row = chunk->baseRow + ColumnChunk::CHUNK_SIZE;
     }
