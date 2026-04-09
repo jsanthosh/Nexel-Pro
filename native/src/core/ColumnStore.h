@@ -199,12 +199,12 @@ public:
     // Clear all data
     void clear();
 
+    // Find chunk containing row (range-based, handles non-aligned baseRows)
+    int findChunkIndex(int row) const;
+
 private:
     // Chunks sorted by baseRow. Typically sparse (most columns have few chunks).
     std::vector<std::unique_ptr<ColumnChunk>> m_chunks;
-
-    // Binary search for chunk containing row
-    int findChunkIndex(int row) const;
 };
 
 

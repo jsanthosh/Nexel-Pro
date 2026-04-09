@@ -955,16 +955,31 @@ int ColumnStore::nextOccupiedRow(int col, int startRow) const {
     if (col < 0 || col >= static_cast<int>(m_columns.size()) || !m_columns[col]) return -1;
     auto* column = m_columns[col].get();
 
-    // Find the max possible row from chunks
-    int maxRow = -1;
+    int row = startRow;
+    // Iterate through chunks sorted by baseRow
     for (const auto& chunk : column->chunks()) {
         int chunkEnd = chunk->baseRow + ColumnChunk::CHUNK_SIZE;
-        if (chunkEnd > maxRow) maxRow = chunkEnd;
-    }
+        if (chunkEnd <= row) continue; // chunk entirely before our search start
+        if (chunk->populatedCount == 0) continue; // empty chunk
 
-    // Scan using hasCell (handles overlapping/split chunks correctly)
-    for (int r = startRow; r < maxRow; ++r) {
-        if (hasCell(r, col)) return r;
+        // If row is before this chunk's start, check if THIS chunk has any data
+        int offset = std::max(0, row - chunk->baseRow);
+
+        // Bitmap scan for first set bit at/after offset
+        int word = offset / 64;
+        int bit = offset % 64;
+
+        uint64_t w = chunk->presence[word] & (~0ULL << bit); // mask lower bits
+        if (w) {
+            int setBit = __builtin_ctzll(w);
+            return chunk->baseRow + word * 64 + setBit;
+        }
+        for (int wi = word + 1; wi < ColumnChunk::BITMAP_WORDS; ++wi) {
+            if (chunk->presence[wi]) {
+                int setBit = __builtin_ctzll(chunk->presence[wi]);
+                return chunk->baseRow + wi * 64 + setBit;
+            }
+        }
     }
     return -1;
 }
@@ -1003,11 +1018,36 @@ int ColumnStore::prevOccupiedRow(int col, int startRow) const {
 }
 
 int ColumnStore::nextEmptyRow(int col, int startRow) const {
-    // Simple per-row scan using hasCell (which correctly uses findChunkIndex
-    // to handle overlapping/split chunks). Scans at most a few hundred rows
-    // before finding a gap in typical usage (Ctrl+Down jumps).
-    for (int r = startRow; ; ++r) {
-        if (!hasCell(r, col)) return r;
+    if (col < 0 || col >= static_cast<int>(m_columns.size()) || !m_columns[col]) return startRow;
+    auto* column = m_columns[col].get();
+
+    int row = startRow;
+    while (true) {
+        int chunkIdx = column->findChunkIndex(row);
+        if (chunkIdx < 0) return row; // no chunk covers this row → it's empty
+
+        auto* chunk = column->chunks()[chunkIdx].get();
+        int offset = row - chunk->baseRow;
+
+        // Bitmap scan within this chunk for the first zero bit at/after offset
+        int word = offset / 64;
+        int bit = offset % 64;
+
+        // Check first partial word
+        uint64_t w = chunk->presence[word] | ((1ULL << bit) - 1); // mask lower bits
+        if (~w) {
+            int zeroBit = __builtin_ctzll(~w);
+            if (zeroBit < 64) return chunk->baseRow + word * 64 + zeroBit;
+        }
+        // Scan remaining words
+        for (int wi = word + 1; wi < ColumnChunk::BITMAP_WORDS; ++wi) {
+            if (~chunk->presence[wi]) {
+                int zeroBit = __builtin_ctzll(~chunk->presence[wi]);
+                return chunk->baseRow + wi * 64 + zeroBit;
+            }
+        }
+        // Entire chunk is full — jump past it
+        row = chunk->baseRow + ColumnChunk::CHUNK_SIZE;
     }
 }
 
