@@ -2972,6 +2972,13 @@ void SpreadsheetView::insertEntireRow() {
         m_spreadsheet->getUndoManager().execute(std::move(compound), m_spreadsheet.get());
         // Recenter window at same position (data shifted down by insert)
         m_model->recenterWindow(currentBase);
+        // Update virtual scrollbar range (total rows changed)
+        updateVirtualScrollBarRange();
+        // Force full visible refresh
+        int visRows = m_model->rowCount();
+        int visCols = m_model->columnCount();
+        emit m_model->dataChanged(m_model->index(0, 0), m_model->index(visRows - 1, visCols - 1));
+        emit m_model->headerDataChanged(Qt::Vertical, 0, visRows - 1);
         viewport()->update();
     } else {
         int minRow = *std::min_element(rows.begin(), rows.end());
