@@ -359,16 +359,20 @@ std::unique_ptr<ColumnChunk> ColumnChunk::clone() const {
 
 int Column::findChunkIndex(int row) const {
     // Find chunk where baseRow <= row < baseRow + CHUNK_SIZE
-    // Chunks may have non-aligned baseRows after insert/delete operations.
-    int lo = 0, hi = static_cast<int>(m_chunks.size()) - 1;
-    while (lo <= hi) {
-        int mid = lo + (hi - lo) / 2;
-        int base = m_chunks[mid]->baseRow;
-        if (row >= base && row < base + ColumnChunk::CHUNK_SIZE) return mid;
-        if (base > row) hi = mid - 1;
-        else lo = mid + 1;
+    // After split/insert, multiple chunks may cover the same logical row range.
+    // Return the one with the HIGHEST baseRow (most specific/recent chunk).
+    int bestIdx = -1;
+    int bestBase = -1;
+    for (int i = 0; i < static_cast<int>(m_chunks.size()); ++i) {
+        int base = m_chunks[i]->baseRow;
+        if (row >= base && row < base + ColumnChunk::CHUNK_SIZE) {
+            if (base > bestBase) {
+                bestBase = base;
+                bestIdx = i;
+            }
+        }
     }
-    return -1;
+    return bestIdx;
 }
 
 ColumnChunk* Column::getChunk(int row) const {

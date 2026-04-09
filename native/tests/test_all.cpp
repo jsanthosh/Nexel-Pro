@@ -603,6 +603,100 @@ int main(int argc, char* argv[]) {
         checkApprox(sheet2.getCellValue({200000, 0}).toDouble(), 199999.0, "insert@50K: row 200000 = 199999");
     }
 
+    // Test 3: Insert at row 0 with 500K rows (multiple chunks)
+    {
+        SECTION("Insert Row at 0 on 500K rows (8 chunks)");
+        Spreadsheet sheet;
+        sheet.setAutoRecalculate(false);
+        for (int r = 0; r < 500000; ++r) {
+            sheet.getOrCreateCellFast(r, 0)->setValue(QVariant((double)r));
+        }
+        sheet.finishBulkImport();
+        sheet.setRowCount(500000);
+
+        sheet.insertRow(0, 1);
+
+        auto v0 = sheet.getCellValue({0, 0});
+        check(!v0.isValid() || v0.toString().isEmpty(), "500K insert@0: row 0 empty");
+        checkApprox(sheet.getCellValue({1, 0}).toDouble(), 0.0, "500K insert@0: row 1 = 0");
+        checkApprox(sheet.getCellValue({1000, 0}).toDouble(), 999.0, "500K insert@0: row 1000 = 999");
+        checkApprox(sheet.getCellValue({65536, 0}).toDouble(), 65535.0, "500K insert@0: row 65536 = 65535");
+        checkApprox(sheet.getCellValue({65537, 0}).toDouble(), 65536.0, "500K insert@0: row 65537 = 65536");
+        checkApprox(sheet.getCellValue({65538, 0}).toDouble(), 65537.0, "500K insert@0: row 65538 = 65537");
+        checkApprox(sheet.getCellValue({100000, 0}).toDouble(), 99999.0, "500K insert@0: row 100000 = 99999");
+        checkApprox(sheet.getCellValue({131072, 0}).toDouble(), 131071.0, "500K insert@0: row 131072 = 131071");
+        checkApprox(sheet.getCellValue({131073, 0}).toDouble(), 131072.0, "500K insert@0: row 131073 = 131072");
+        checkApprox(sheet.getCellValue({200000, 0}).toDouble(), 199999.0, "500K insert@0: row 200000 = 199999");
+        checkApprox(sheet.getCellValue({300000, 0}).toDouble(), 299999.0, "500K insert@0: row 300000 = 299999");
+        checkApprox(sheet.getCellValue({400000, 0}).toDouble(), 399999.0, "500K insert@0: row 400000 = 399999");
+        checkApprox(sheet.getCellValue({500000, 0}).toDouble(), 499999.0, "500K insert@0: row 500000 = 499999");
+    }
+
+    // Test 4: Insert at mid-chunk boundary (row 65536) with 500K rows
+    {
+        SECTION("Insert Row at chunk boundary (65536) on 500K rows");
+        Spreadsheet sheet;
+        sheet.setAutoRecalculate(false);
+        for (int r = 0; r < 500000; ++r) {
+            sheet.getOrCreateCellFast(r, 0)->setValue(QVariant((double)r));
+        }
+        sheet.finishBulkImport();
+        sheet.setRowCount(500000);
+
+        sheet.insertRow(65536, 1);
+
+        checkApprox(sheet.getCellValue({65535, 0}).toDouble(), 65535.0, "boundary: row 65535 = 65535");
+        auto v = sheet.getCellValue({65536, 0});
+        check(!v.isValid() || v.toString().isEmpty(), "boundary: row 65536 empty");
+        checkApprox(sheet.getCellValue({65537, 0}).toDouble(), 65536.0, "boundary: row 65537 = 65536");
+        checkApprox(sheet.getCellValue({131073, 0}).toDouble(), 131072.0, "boundary: row 131073 = 131072");
+        checkApprox(sheet.getCellValue({500000, 0}).toDouble(), 499999.0, "boundary: row 500000 = 499999");
+    }
+
+    // Test 5: Insert at row 5 with 2M rows — verify data at many chunk boundaries
+    {
+        SECTION("Insert Row at 5 on 2M rows (31 chunks)");
+        Spreadsheet sheet;
+        sheet.setAutoRecalculate(false);
+        for (int r = 0; r < 2000000; ++r) {
+            sheet.getOrCreateCellFast(r, 0)->setValue(QVariant((double)r));
+        }
+        sheet.finishBulkImport();
+        sheet.setRowCount(2000000);
+
+        sheet.insertRow(5, 1);
+
+        checkApprox(sheet.getCellValue({4, 0}).toDouble(), 4.0, "2M: row 4 = 4");
+        auto v5 = sheet.getCellValue({5, 0});
+        check(!v5.isValid() || v5.toString().isEmpty(), "2M: row 5 empty");
+        checkApprox(sheet.getCellValue({6, 0}).toDouble(), 5.0, "2M: row 6 = 5");
+        // Check every chunk boundary
+        checkApprox(sheet.getCellValue({65536, 0}).toDouble(), 65535.0, "2M: row 65536 = 65535");
+        // Debug: check what's at 65537
+        {
+            auto v65537 = sheet.getCellValue({65537, 0});
+            std::cout << "  DEBUG row 65537: " << (v65537.isValid() ? v65537.toString().toStdString() : "(empty)") << std::endl;
+            // Check chunk layout for column 0
+            Column* col0 = sheet.getColumnStore().getColumn(0);
+            if (col0) {
+                std::cout << "  DEBUG chunks in col 0:" << std::endl;
+                for (size_t i = 0; i < col0->chunks().size() && i < 5; ++i) {
+                    auto& ch = col0->chunks()[i];
+                    std::cout << "    chunk[" << i << "] baseRow=" << ch->baseRow
+                              << " pop=" << ch->populatedCount << std::endl;
+                }
+            }
+        }
+        checkApprox(sheet.getCellValue({65537, 0}).toDouble(), 65536.0, "2M: row 65537 = 65536");
+        checkApprox(sheet.getCellValue({131072, 0}).toDouble(), 131071.0, "2M: row 131072 = 131071");
+        checkApprox(sheet.getCellValue({131073, 0}).toDouble(), 131072.0, "2M: row 131073 = 131072");
+        checkApprox(sheet.getCellValue({196608, 0}).toDouble(), 196607.0, "2M: row 196608 = 196607");
+        checkApprox(sheet.getCellValue({500000, 0}).toDouble(), 499999.0, "2M: row 500000 = 499999");
+        checkApprox(sheet.getCellValue({1000000, 0}).toDouble(), 999999.0, "2M: row 1000000 = 999999");
+        checkApprox(sheet.getCellValue({1999999, 0}).toDouble(), 1999998.0, "2M: row 1999999 = 1999998");
+        checkApprox(sheet.getCellValue({2000000, 0}).toDouble(), 1999999.0, "2M: row 2000000 = 1999999");
+    }
+
     std::cout << "\n==============================================" << std::endl;
     std::cout << "  RESULTS: " << g_pass << " passed, " << g_fail << " failed, " << g_total << " total" << std::endl;
     if (g_fail == 0) {
