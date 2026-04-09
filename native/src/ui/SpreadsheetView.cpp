@@ -2980,6 +2980,14 @@ void SpreadsheetView::insertEntireRow() {
         emit m_model->dataChanged(m_model->index(0, 0), m_model->index(visRows - 1, visCols - 1));
         emit m_model->headerDataChanged(Qt::Vertical, 0, visRows - 1);
         viewport()->update();
+        // Restore focus to the inserted row
+        int focusRow = *std::min_element(rows.begin(), rows.end());
+        int modelRow = m_model->toModelRow(focusRow);
+        if (modelRow >= 0) {
+            QModelIndex focusIdx = m_model->index(modelRow, currentIndex().column());
+            setCurrentIndex(focusIdx);
+            setFocus();
+        }
     } else {
         int minRow = *std::min_element(rows.begin(), rows.end());
         int count = static_cast<int>(rows.size());
