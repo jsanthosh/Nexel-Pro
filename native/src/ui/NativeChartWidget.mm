@@ -153,8 +153,31 @@ void NativeChartWidget::resumeMetalRendering()
 void NativeChartWidget::setSelected(bool selected)
 {
     ChartWidget::setSelected(selected);
-    // Inset/restore the Metal overlay — no config re-push (avoids re-animation)
-    updateChildWindowGeometry();
+    // Don't call updateChildWindowGeometry — frame change blanks Data2App.
+    // Instead, toggle a selection border overlay inside the NSWindow.
+    if (m_childWindow) {
+        NSWindow* overlay = (NSWindow*)m_childWindow;
+        // Remove old selection border if exists (identified by accessibilityIdentifier)
+        NSView* contentView = overlay.contentView;
+        for (NSView* sub in [contentView.subviews copy]) {
+            if ([sub.accessibilityIdentifier isEqualToString:@"selectionBorder"]) {
+                [sub removeFromSuperview];
+            }
+        }
+        if (selected) {
+            // Add a transparent border view on top of the chart
+            NSView* borderView = [[NSView alloc] initWithFrame:contentView.bounds];
+            borderView.accessibilityIdentifier = @"selectionBorder";
+            borderView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+            borderView.wantsLayer = YES;
+            borderView.layer.borderColor = [[NSColor colorWithRed:0.26 green:0.45 blue:0.77 alpha:1.0] CGColor];
+            borderView.layer.borderWidth = 2.0;
+            borderView.layer.cornerRadius = 2.0;
+            [contentView addSubview:borderView positioned:NSWindowAbove relativeTo:nil];
+            [borderView release];
+        }
+    }
+    update(); // repaint Qt widget for any non-Metal selection visuals
 }
 
 void NativeChartWidget::setConfig(const ChartConfig& config)
@@ -281,12 +304,11 @@ void NativeChartWidget::updateChildWindowGeometry()
 
     if (!m_childWindow || !m_nativeChartView) return;
 
-    // When selected, shrink overlay by 2px so Qt-drawn selection border peeks through.
-    // Only 2px (not 8px) to avoid Data2App re-render artifacts.
+    // Never change overlay frame on selection — ANY frame change causes
+    // Data2App to blank briefly. Selection is indicated by the Qt widget's
+    // paintEvent drawing a border behind the overlay (visible at edges
+    // due to overlay background being the chart, not the border area).
     QRect overlayRect = visibleRect;
-    if (m_selected) {
-        overlayRect.adjust(2, 2, -2, -2);
-    }
 
     // Convert visible rect to macOS screen coordinates (bottom-left origin)
     NSWindow* overlay = (NSWindow*)m_childWindow;
