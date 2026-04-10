@@ -317,17 +317,33 @@ void NativeChartWidget::updateChildWindowGeometry()
     CGFloat ox = overlayRect.x();
     CGFloat oy = screenH - overlayRect.y() - overlayRect.height();
 
-    [overlay setFrame:NSMakeRect(ox, oy, overlayRect.width(), overlayRect.height()) display:YES];
+    NSRect newFrame = NSMakeRect(ox, oy, overlayRect.width(), overlayRect.height());
+    NSRect oldFrame = overlay.frame;
+
+    // Only update frame if it actually changed — frame changes cause Data2App
+    // to clear the plot area and redraw, which causes bars to disappear briefly.
+    bool frameChanged = (newFrame.origin.x != oldFrame.origin.x ||
+                         newFrame.origin.y != oldFrame.origin.y ||
+                         newFrame.size.width != oldFrame.size.width ||
+                         newFrame.size.height != oldFrame.size.height);
+    if (frameChanged) {
+        [overlay setFrame:newFrame display:NO]; // NO = don't trigger redisplay
+    }
 
     // Position ChartView within the overlay to show the correct portion.
-    // The overlay is smaller than the chart when clipped/inset, so we offset
-    // the ChartView so the visible portion aligns with the overlay.
-    CGFloat cvX = widgetRect.x() - overlayRect.x();  // left clip + inset offset
+    CGFloat cvX = widgetRect.x() - overlayRect.x();
     CGFloat clipBottom = (widgetRect.y() + height()) - (overlayRect.y() + overlayRect.height());
-    CGFloat cvY = -clipBottom;  // macOS y is bottom-up: bottom clip = negative y offset
+    CGFloat cvY = -clipBottom;
 
     ChartView* cv = (ChartView*)m_nativeChartView;
-    [cv setFrame:NSMakeRect(cvX, cvY, width(), height())];
+    NSRect newCvFrame = NSMakeRect(cvX, cvY, width(), height());
+    NSRect oldCvFrame = cv.frame;
+    if (newCvFrame.origin.x != oldCvFrame.origin.x ||
+        newCvFrame.origin.y != oldCvFrame.origin.y ||
+        newCvFrame.size.width != oldCvFrame.size.width ||
+        newCvFrame.size.height != oldCvFrame.size.height) {
+        [cv setFrame:newCvFrame];
+    }
 
     // Only act on visibility transitions, not every scroll
     bool wasHidden = overlay.alphaValue < 1.0;
