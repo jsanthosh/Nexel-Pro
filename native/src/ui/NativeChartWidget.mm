@@ -152,9 +152,14 @@ void NativeChartWidget::resumeMetalRendering()
 
 void NativeChartWidget::setSelected(bool selected)
 {
+    bool wasSelected = m_selected;
     ChartWidget::setSelected(selected);
     // Inset/restore the Metal overlay so Qt-drawn selection handles are visible
     updateChildWindowGeometry();
+    // Re-push config after geometry change to force Data2App to re-render bars
+    if (wasSelected != selected && !m_config.series.isEmpty()) {
+        updateNativeConfiguration();
+    }
 }
 
 void NativeChartWidget::setConfig(const ChartConfig& config)
@@ -281,10 +286,9 @@ void NativeChartWidget::updateChildWindowGeometry()
 
     if (!m_childWindow || !m_nativeChartView) return;
 
-    // Don't inset the Metal overlay on selection — it causes the Data2App
-    // renderer to re-render at a smaller size and lose bar rendering.
-    // Selection handles are drawn on top by Qt's paintEvent.
-    int inset = 0;
+    // When selected, inset the Metal overlay so Qt-drawn selection handles
+    // (8px border with resize grips) are visible around the edges.
+    int inset = m_selected ? HANDLE_SIZE : 0;
 
     // Apply inset to the visible rect — shrink all four sides
     QRect overlayRect = visibleRect;
@@ -321,6 +325,11 @@ void NativeChartWidget::updateChildWindowGeometry()
     // Ensure overlay is visible (may have been hidden by clipping or hideEvent)
     if (wasHidden && !m_configPending) {
         overlay.alphaValue = 1.0;
+        // Re-push config after hidden→visible transition to force Data2App
+        // to re-render chart data (bars may be lost after pause/resume cycle)
+        if (!m_config.series.isEmpty()) {
+            updateNativeConfiguration();
+        }
     }
 
     // Always trigger a redraw when the overlay is visible and MTKView is paused.
