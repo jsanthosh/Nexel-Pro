@@ -281,9 +281,10 @@ void NativeChartWidget::updateChildWindowGeometry()
 
     if (!m_childWindow || !m_nativeChartView) return;
 
-    // When selected, inset the Metal overlay so Qt-drawn selection handles
-    // (8px border with resize grips) are visible around the edges.
-    int inset = m_selected ? HANDLE_SIZE : 0;
+    // Don't inset the Metal overlay on selection — it causes the Data2App
+    // renderer to re-render at a smaller size and lose bar rendering.
+    // Selection handles are drawn on top by Qt's paintEvent.
+    int inset = 0;
 
     // Apply inset to the visible rect — shrink all four sides
     QRect overlayRect = visibleRect;
@@ -433,7 +434,10 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config)
     j << "  \"xAxis\": [{\n";
     j << "    \"show\": true,\n";
     j << "    \"labels\": { \"show\": true, \"fontSize\": 11 },\n";
-    j << "    \"gridLine\": { \"show\": " << (config.showGridLines ? "true" : "false") << " },\n";
+    // X-axis gridlines: off for column/bar (Excel default), on for scatter/line if user enabled
+    bool showXGrid = config.showGridLines &&
+        (config.type == ChartType::Scatter || config.type == ChartType::Line);
+    j << "    \"gridLine\": { \"show\": " << (showXGrid ? "true" : "false") << " },\n";
     j << "    \"ticks\": { \"show\": false },\n";
     if (!config.xAxisTitle.isEmpty()) {
         j << "    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" },\n";
