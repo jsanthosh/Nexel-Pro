@@ -410,7 +410,7 @@ void NativeChartWidget::updateNativeConfiguration()
              << "dataRange=" << m_config.dataRange;
 
     // Defer config push to allow the NSView to be properly attached.
-    connect(m_configPushTimer, &QTimer::timeout, this, [this, json]() {
+    connect(m_configPushTimer, &QTimer::timeout, this, [this, json, animate]() {
         if (!m_nativeChartView) return;
 
         ChartView* cv = (ChartView*)m_nativeChartView;
@@ -421,10 +421,24 @@ void NativeChartWidget::updateNativeConfiguration()
 
         // Wait for Metal to render before revealing the overlay,
         // so the user never sees a black/blank flash.
-        QTimer::singleShot(100, this, [this]() {
+        bool wasAnimated = animate;
+        QTimer::singleShot(100, this, [this, wasAnimated]() {
             if (!m_nativeChartView) return;
             m_configPending = false;  // NOW safe to show
             updateChildWindowGeometry();
+
+            // After initial animation completes, re-push config WITHOUT animation
+            // to create a stable Metal buffer. The animated render produces a buffer
+            // that goes stale on scroll (Data2App lib behavior). A non-animated
+            // render creates a stable static buffer that survives pause/resume.
+            if (wasAnimated) {
+                QTimer::singleShot(800, this, [this]() {
+                    if (!m_nativeChartView || m_config.series.isEmpty()) return;
+                    std::string stableJson = chartConfigToJson(m_config, false);
+                    ChartView* cv = (ChartView*)m_nativeChartView;
+                    [cv setConfiguration:stableJson];
+                });
+            }
         });
 
         m_pauseTimer->start();
