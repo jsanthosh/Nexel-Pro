@@ -281,18 +281,11 @@ void NativeChartWidget::updateChildWindowGeometry()
 
     if (!m_childWindow || !m_nativeChartView) return;
 
-    // When selected, inset the Metal overlay so Qt-drawn selection handles
-    // (8px border with resize grips) are visible around the edges.
-    int inset = m_selected ? HANDLE_SIZE : 0;
-
-    // Apply inset to the visible rect — shrink all four sides
+    // When selected, shrink overlay by 2px so Qt-drawn selection border peeks through.
+    // Only 2px (not 8px) to avoid Data2App re-render artifacts.
     QRect overlayRect = visibleRect;
-    if (inset > 0) {
-        overlayRect.adjust(inset, inset, -inset, -inset);
-        if (overlayRect.width() < 20 || overlayRect.height() < 20) {
-            overlayRect = visibleRect;  // chart too small for inset — skip
-            inset = 0;
-        }
+    if (m_selected) {
+        overlayRect.adjust(2, 2, -2, -2);
     }
 
     // Convert visible rect to macOS screen coordinates (bottom-left origin)
