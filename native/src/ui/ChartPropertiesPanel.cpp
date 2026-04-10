@@ -313,7 +313,70 @@ void ChartPropertiesPanel::createLayout() {
     connect(m_themeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ChartPropertiesPanel::onPropertyChanged);
 
-    styleSectionLayout->addSpacing(6);
+    styleSectionLayout->addSpacing(8);
+
+    // ── Chart & Plot Area Colors ──
+    auto makeColorBtn = [](const QColor& initial, const QString& tooltip) {
+        QPushButton* btn = new QPushButton();
+        btn->setFixedSize(28, 22);
+        btn->setToolTip(tooltip);
+        btn->setStyleSheet(QString(
+            "QPushButton { background: %1; border: 1px solid #D0D5DD; border-radius: 4px; }"
+            "QPushButton:hover { border-color: #98A2B3; }")
+            .arg(initial.name()));
+        return btn;
+    };
+
+    QGridLayout* plotGrid = new QGridLayout();
+    plotGrid->setSpacing(6);
+    plotGrid->setColumnStretch(1, 1);
+
+    m_chartBgColorBtn = makeColorBtn(Qt::white, "Chart Background Color");
+    plotGrid->addWidget(makeLabel("Chart Bg"), 0, 0);
+    plotGrid->addWidget(m_chartBgColorBtn, 0, 1, Qt::AlignLeft);
+
+    m_plotBgColorBtn = makeColorBtn(Qt::white, "Plot Area Background Color");
+    plotGrid->addWidget(makeLabel("Plot Bg"), 1, 0);
+    plotGrid->addWidget(m_plotBgColorBtn, 1, 1, Qt::AlignLeft);
+
+    m_plotBorderColorBtn = makeColorBtn(QColor("#cccccc"), "Plot Border Color");
+    plotGrid->addWidget(makeLabel("Plot Border"), 2, 0);
+    plotGrid->addWidget(m_plotBorderColorBtn, 2, 1, Qt::AlignLeft);
+
+    m_plotBorderWidthCombo = new QComboBox();
+    m_plotBorderWidthCombo->setFixedHeight(24);
+    m_plotBorderWidthCombo->addItems({"None", "1px", "2px", "3px"});
+    plotGrid->addWidget(makeLabel("Border Width"), 3, 0);
+    plotGrid->addWidget(m_plotBorderWidthCombo, 3, 1);
+
+    styleSectionLayout->addLayout(plotGrid);
+
+    auto connectColorBtn = [this](QPushButton* btn, const QString& title, auto setter) {
+        connect(btn, &QPushButton::clicked, this, [this, btn, title, setter]() {
+            QColor color = QColorDialog::getColor(QColor(btn->toolTip()), this, title);
+            if (color.isValid()) {
+                btn->setStyleSheet(QString(
+                    "QPushButton { background: %1; border: 1px solid #D0D5DD; border-radius: 4px; }"
+                    "QPushButton:hover { border-color: #98A2B3; }").arg(color.name()));
+                setter(color);
+                onPropertyChanged();
+            }
+        });
+    };
+
+    connectColorBtn(m_chartBgColorBtn, "Chart Background", [this](const QColor& c) {
+        if (m_chart) { auto cfg = m_chart->config(); cfg.backgroundColor = c; m_chart->setConfig(cfg); }
+    });
+    connectColorBtn(m_plotBgColorBtn, "Plot Background", [this](const QColor& c) {
+        if (m_chart) { auto cfg = m_chart->config(); cfg.plotBackgroundColor = c; m_chart->setConfig(cfg); }
+    });
+    connectColorBtn(m_plotBorderColorBtn, "Plot Border Color", [this](const QColor& c) {
+        if (m_chart) { auto cfg = m_chart->config(); cfg.plotBorderColor = c; m_chart->setConfig(cfg); }
+    });
+    connect(m_plotBorderWidthCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ChartPropertiesPanel::onPropertyChanged);
+
+    styleSectionLayout->addSpacing(8);
 
     // Premium checkbox style: smaller indicator, refined spacing
     QString checkStyle =
@@ -587,6 +650,24 @@ void ChartPropertiesPanel::updateFromChart() {
     if (m_trendShowEq && !cfg.trendlines.isEmpty()) m_trendShowEq->setChecked(cfg.trendlines[0].displayEquation);
     if (m_trendShowR2 && !cfg.trendlines.isEmpty()) m_trendShowR2->setChecked(cfg.trendlines[0].displayRSquared);
 
+    // Plot area controls
+    if (m_chartBgColorBtn) {
+        m_chartBgColorBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; border: 1px solid #D0D5DD; border-radius: 4px; }"
+            "QPushButton:hover { border-color: #98A2B3; }").arg(cfg.backgroundColor.name()));
+    }
+    if (m_plotBgColorBtn) {
+        m_plotBgColorBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; border: 1px solid #D0D5DD; border-radius: 4px; }"
+            "QPushButton:hover { border-color: #98A2B3; }").arg(cfg.plotBackgroundColor.name()));
+    }
+    if (m_plotBorderColorBtn) {
+        m_plotBorderColorBtn->setStyleSheet(QString(
+            "QPushButton { background: %1; border: 1px solid #D0D5DD; border-radius: 4px; }"
+            "QPushButton:hover { border-color: #98A2B3; }").arg(cfg.plotBorderColor.name()));
+    }
+    if (m_plotBorderWidthCombo) m_plotBorderWidthCombo->setCurrentIndex(cfg.plotBorderWidth);
+
     // Update type button selection
     int typeInt = static_cast<int>(cfg.type);
     for (auto* btn : m_typeButtons) {
@@ -697,6 +778,9 @@ void ChartPropertiesPanel::applyToChart() {
             cfg.trendlines.clear();
         }
     }
+
+    // Plot area settings
+    if (m_plotBorderWidthCombo) cfg.plotBorderWidth = m_plotBorderWidthCombo->currentIndex();
 
     // When theme changes, re-apply theme colors to all series
     if (themeChanged) {

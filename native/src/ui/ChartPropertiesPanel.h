@@ -89,6 +89,12 @@ private:
     QComboBox* m_themeCombo = nullptr;
     QCheckBox* m_legendCheck = nullptr;
     QCheckBox* m_gridCheck = nullptr;
+
+    // Plot area controls
+    QPushButton* m_chartBgColorBtn = nullptr;
+    QPushButton* m_plotBgColorBtn = nullptr;
+    QPushButton* m_plotBorderColorBtn = nullptr;
+    QComboBox* m_plotBorderWidthCombo = nullptr;
     QLineEdit* m_dataRangeEdit = nullptr;
 
     // Series section

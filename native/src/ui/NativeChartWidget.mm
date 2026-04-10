@@ -411,16 +411,21 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     j << "{\n";
 
     // ── Chart area ──
+    std::string plotBg = colorToHex(config.plotBackgroundColor);
+    std::string plotBorderCol = colorToHex(config.plotBorderColor);
+    std::string chartBorderCol = colorToHex(config.chartBorderColor);
+
     j << "  \"chart\": {\n";
     j << "    \"chartArea\": {\n";
     j << "      \"backgroundColor\": \"" << bg << "\",\n";
-    j << "      \"borderWidth\": 1,\n";
-    j << "      \"borderColor\": \"#cccccc\",\n";
+    j << "      \"borderWidth\": " << config.chartBorderWidth << ",\n";
+    j << "      \"borderColor\": \"" << chartBorderCol << "\",\n";
     j << "      \"spacing\": [30, 50, 30, 30]\n";
     j << "    },\n";
     j << "    \"plotArea\": {\n";
-    j << "      \"plotBackgroundColor\": \"" << bg << "\",\n";
-    j << "      \"plotBorderWidth\": 0\n";
+    j << "      \"plotBackgroundColor\": \"" << plotBg << "\",\n";
+    j << "      \"plotBorderWidth\": " << config.plotBorderWidth << ",\n";
+    j << "      \"plotBorderColor\": \"" << plotBorderCol << "\"\n";
     j << "    }\n";
     j << "  },\n";
 

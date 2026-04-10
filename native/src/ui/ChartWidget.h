@@ -104,6 +104,13 @@ struct ChartConfig {
     QColor titleColor = QColor("#333333");
     QColor backgroundColor = Qt::white;
 
+    // Plot area customization
+    QColor plotBackgroundColor = Qt::white;
+    QColor plotBorderColor = QColor("#cccccc");
+    int plotBorderWidth = 0;
+    QColor chartBorderColor = QColor("#cccccc");
+    int chartBorderWidth = 1;
+
     // Series visibility (empty = all visible)
     QVector<bool> seriesVisible;
 
