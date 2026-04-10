@@ -38,7 +38,7 @@ private:
     void pauseMetalRendering();
     void resumeMetalRendering();
 
-    static std::string chartConfigToJson(const ChartConfig& config);
+    static std::string chartConfigToJson(const ChartConfig& config, bool animate = true);
     static std::string chartTypeToString(ChartType type);
     static std::string colorToHex(const QColor& color);
     static std::string escapeJson(const std::string& s);
@@ -49,6 +49,7 @@ private:
     QTimer* m_configPushTimer = nullptr;   // Debounce config pushes to prevent double-fire
     bool m_hasNativeView = false;
     bool m_configPending = false;       // Config stored but not yet pushed (lazy creation)
+    bool m_initialAnimationDone = false; // After first config push, disable re-animation
 
     // Limit concurrent Metal views across all instances
     static constexpr int MAX_METAL_VIEWS = 50;

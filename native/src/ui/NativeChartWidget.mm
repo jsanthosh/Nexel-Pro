@@ -152,14 +152,9 @@ void NativeChartWidget::resumeMetalRendering()
 
 void NativeChartWidget::setSelected(bool selected)
 {
-    bool wasSelected = m_selected;
     ChartWidget::setSelected(selected);
-    // Inset/restore the Metal overlay so Qt-drawn selection handles are visible
+    // Inset/restore the Metal overlay — no config re-push (avoids re-animation)
     updateChildWindowGeometry();
-    // Re-push config after geometry change to force Data2App to re-render bars
-    if (wasSelected != selected && !m_config.series.isEmpty()) {
-        updateNativeConfiguration();
-    }
 }
 
 void NativeChartWidget::setConfig(const ChartConfig& config)
@@ -325,11 +320,6 @@ void NativeChartWidget::updateChildWindowGeometry()
     // Ensure overlay is visible (may have been hidden by clipping or hideEvent)
     if (wasHidden && !m_configPending) {
         overlay.alphaValue = 1.0;
-        // Re-push config after hidden→visible transition to force Data2App
-        // to re-render chart data (bars may be lost after pause/resume cycle)
-        if (!m_config.series.isEmpty()) {
-            updateNativeConfiguration();
-        }
     }
 
     // Always trigger a redraw when the overlay is visible and MTKView is paused.
@@ -376,7 +366,11 @@ void NativeChartWidget::updateNativeConfiguration()
     m_configPushTimer->disconnect();
     m_configPushTimer->stop();
 
-    std::string json = chartConfigToJson(m_config);
+    // Only animate on the first config push (chart creation).
+    // Subsequent pushes (edits, resize, property changes) should not re-animate.
+    bool animate = !m_initialAnimationDone;
+    std::string json = chartConfigToJson(m_config, animate);
+    m_initialAnimationDone = true;
 
     qDebug() << "[NativeChart] updateNativeConfiguration:"
              << "categoryLabels=" << m_config.categoryLabels.size()
@@ -407,7 +401,7 @@ void NativeChartWidget::updateNativeConfiguration()
     m_configPushTimer->start();
 }
 
-std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config)
+std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool animate)
 {
     std::ostringstream j;
 
@@ -482,7 +476,7 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config)
     // ── Plot options ──
     j << "  \"plotOptions\": {\n";
     j << "    \"series\": {\n";
-    j << "      \"animation\": { \"duration\": 500, \"delay\": 200, \"show\": true },\n";
+    j << "      \"animation\": { \"duration\": 500, \"delay\": 200, \"show\": " << (animate ? "true" : "false") << " },\n";
     j << "      \"dataLabels\": { \"show\": false }\n";
     j << "    }\n";
     j << "  },\n";
