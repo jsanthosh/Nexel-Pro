@@ -59,7 +59,7 @@ void NativeChartWidget::createNativeView()
         if ([subview isKindOfClass:[MTKView class]]) {
             MTKView* mtkView = (MTKView*)subview;
             mtkView.framebufferOnly = NO;
-            mtkView.preferredFramesPerSecond = 1;  // low fps until config is pushed
+            mtkView.paused = YES;  // paused until config is pushed
             mtkView.clearColor = MTLClearColorMake(1.0, 1.0, 1.0, 1.0);  // white, not black
             break;
         }
@@ -127,10 +127,8 @@ void NativeChartWidget::pauseMetalRendering()
     for (NSView* subview in cv.subviews) {
         if ([subview isKindOfClass:[MTKView class]]) {
             MTKView* mtkView = (MTKView*)subview;
-            // Don't fully pause — drop to 1fps to keep the buffer alive.
-            // Full pause (paused=YES) causes the render callback's animation
-            // state to go stale, losing data series on resume.
-            mtkView.preferredFramesPerSecond = 1;
+            mtkView.paused = YES;
+            mtkView.enableSetNeedsDisplay = NO;
             break;
         }
     }
@@ -143,7 +141,7 @@ void NativeChartWidget::resumeMetalRendering()
     for (NSView* subview in cv.subviews) {
         if ([subview isKindOfClass:[MTKView class]]) {
             MTKView* mtkView = (MTKView*)subview;
-            mtkView.preferredFramesPerSecond = 60;
+            mtkView.enableSetNeedsDisplay = NO;
             mtkView.paused = NO;
             break;
         }
@@ -355,19 +353,19 @@ void NativeChartWidget::updateChildWindowGeometry()
         overlay.alphaValue = 1.0;
     }
 
-    // When becoming visible after being hidden, bump FPS briefly to refresh.
-    // Since we never fully pause (just 1fps), the buffer stays alive.
-    if (wasHidden && !m_configPending) {
+    // Always trigger a redraw when the overlay is visible and MTKView is paused.
+    if (!m_configPending) {
         for (NSView* subview in cv.subviews) {
             if ([subview isKindOfClass:[MTKView class]]) {
                 MTKView* mtkView = (MTKView*)subview;
-                // Briefly resume full speed to refresh the display
-                mtkView.preferredFramesPerSecond = 60;
-                mtkView.paused = NO;
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)),
-                               dispatch_get_main_queue(), ^{
-                    mtkView.preferredFramesPerSecond = 1;  // back to idle
-                });
+                if (mtkView.paused) {
+                    mtkView.enableSetNeedsDisplay = YES;
+                    [mtkView setNeedsDisplay:YES];
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)),
+                                   dispatch_get_main_queue(), ^{
+                        mtkView.enableSetNeedsDisplay = NO;
+                    });
+                }
                 break;
             }
         }
