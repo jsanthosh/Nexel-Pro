@@ -389,15 +389,22 @@ void ChartPropertiesPanel::createLayout() {
 
     m_legendCheck = new QCheckBox("Show Legend");
     m_legendCheck->setStyleSheet(checkStyle);
-    m_gridCheck = new QCheckBox("Show Grid Lines");
-    m_gridCheck->setStyleSheet(checkStyle);
+    m_hGridCheck = new QCheckBox("Horizontal Grid Lines");
+    m_hGridCheck->setStyleSheet(checkStyle);
+    m_hGridCheck->setChecked(true);  // default on
+    m_vGridCheck = new QCheckBox("Vertical Grid Lines");
+    m_vGridCheck->setStyleSheet(checkStyle);
+    m_vGridCheck->setChecked(false); // default off (Excel convention)
 
     styleSectionLayout->addWidget(m_legendCheck);
     styleSectionLayout->addSpacing(4);
-    styleSectionLayout->addWidget(m_gridCheck);
+    styleSectionLayout->addWidget(m_hGridCheck);
+    styleSectionLayout->addSpacing(2);
+    styleSectionLayout->addWidget(m_vGridCheck);
 
     connect(m_legendCheck, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
-    connect(m_gridCheck, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
+    connect(m_hGridCheck, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
+    connect(m_vGridCheck, &QCheckBox::toggled, this, &ChartPropertiesPanel::onPropertyChanged);
 
     contentLayout->addWidget(m_sectionStyle);
     contentLayout->addSpacing(16);
@@ -626,7 +633,8 @@ void ChartPropertiesPanel::updateFromChart() {
     m_yAxisEdit->setText(cfg.yAxisTitle);
     m_themeCombo->setCurrentIndex(cfg.themeIndex);
     m_legendCheck->setChecked(cfg.showLegend);
-    m_gridCheck->setChecked(cfg.showGridLines);
+    if (m_hGridCheck) m_hGridCheck->setChecked(cfg.showHorizontalGridLines);
+    if (m_vGridCheck) m_vGridCheck->setChecked(cfg.showVerticalGridLines);
     m_dataRangeEdit->setText(cfg.dataRange);
 
     // Deep customization
@@ -741,7 +749,9 @@ void ChartPropertiesPanel::applyToChart() {
     bool themeChanged = (newTheme != cfg.themeIndex);
     cfg.themeIndex = newTheme;
     cfg.showLegend = m_legendCheck->isChecked();
-    cfg.showGridLines = m_gridCheck->isChecked();
+    if (m_hGridCheck) cfg.showHorizontalGridLines = m_hGridCheck->isChecked();
+    if (m_vGridCheck) cfg.showVerticalGridLines = m_vGridCheck->isChecked();
+    cfg.showGridLines = cfg.showHorizontalGridLines || cfg.showVerticalGridLines; // legacy
 
     // Deep customization
     if (m_legendPosCombo) cfg.legendPosition = static_cast<LegendPosition>(m_legendPosCombo->currentIndex());

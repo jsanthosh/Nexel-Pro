@@ -96,7 +96,9 @@ struct ChartConfig {
     QString yAxisTitle;
     QString dataRange;     // e.g. "A1:D10"
     bool showLegend = true;
-    bool showGridLines = true;
+    bool showGridLines = true;          // legacy (treated as horizontal)
+    bool showHorizontalGridLines = true;
+    bool showVerticalGridLines = false;  // off by default (Excel convention)
     int themeIndex = 0;    // 0=Document Theme, 1=Excel, 2=Material, 3=Solarized, 4=Dark, 5=Mono, 6=Pastel
     QVector<ChartSeries> series;
 

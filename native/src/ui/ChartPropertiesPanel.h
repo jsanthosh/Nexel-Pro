@@ -88,7 +88,9 @@ private:
     QLineEdit* m_yAxisEdit = nullptr;
     QComboBox* m_themeCombo = nullptr;
     QCheckBox* m_legendCheck = nullptr;
-    QCheckBox* m_gridCheck = nullptr;
+    QCheckBox* m_gridCheck = nullptr;  // deprecated — kept for compat with updateFromChart/applyToChart legacy code
+    QCheckBox* m_hGridCheck = nullptr; // horizontal gridlines
+    QCheckBox* m_vGridCheck = nullptr; // vertical gridlines
 
     // Plot area controls
     QPushButton* m_chartBgColorBtn = nullptr;

@@ -466,11 +466,11 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     j << "  },\n";
 
     // ── X Axis ──
-    // Pass user setting directly — Data2App lib defaults applied.
+    // X-axis gridlines = vertical gridlines
     j << "  \"xAxis\": [{\n";
     j << "    \"show\": true,\n";
     j << "    \"labels\": { \"show\": true, \"fontSize\": 11 },\n";
-    j << "    \"gridLine\": { \"show\": " << (config.showGridLines ? "true" : "false") << " },\n";
+    j << "    \"gridLine\": { \"show\": " << (config.showVerticalGridLines ? "true" : "false") << " },\n";
     j << "    \"ticks\": { \"show\": false },\n";
     if (!config.xAxisTitle.isEmpty()) {
         j << "    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" },\n";
@@ -498,8 +498,8 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     if (!config.yAxisTitle.isEmpty()) {
         j << "    \"title\": { \"text\": \"" << escapeJson(config.yAxisTitle.toStdString()) << "\" },\n";
     }
-    // Pass user setting directly — Data2App lib defaults applied.
-    j << "    \"gridLine\": { \"show\": " << (config.showGridLines ? "true" : "false") << ", \"width\": 1 },\n";
+    // Y-axis gridlines = horizontal gridlines
+    j << "    \"gridLine\": { \"show\": " << (config.showHorizontalGridLines ? "true" : "false") << ", \"width\": 1 },\n";
     j << "    \"labels\": { \"show\": true, \"fontSize\": 11 }\n";
     j << "  }],\n";
 
