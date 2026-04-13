@@ -222,6 +222,13 @@ void ChartWidget::loadDataFromRange(const QString& range) {
         series.xValues = xValues;
         series.color = colors[(c - startCol - 1) % colors.size()];
 
+        // Capture number format from first data cell of this column
+        auto firstCell = m_spreadsheet->getCellIfExists(startRow + 1, c);
+        if (firstCell) {
+            series.numberFormat = firstCell->getStyle().numberFormat;
+            series.currencyCode = firstCell->getStyle().currencyCode;
+        }
+
         for (int r = startRow + 1; r <= endRow; ++r) {
             auto val = m_spreadsheet->getCellValue(CellAddress(r, c));
             bool ok;

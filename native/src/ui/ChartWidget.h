@@ -84,6 +84,8 @@ struct ChartSeries {
     QVector<double> xValues;
     QVector<double> yValues;
     QColor color;
+    QString numberFormat = "General";  // from source cells (e.g., "Currency", "Percentage")
+    QString currencyCode;              // e.g., "USD", "INR"
 };
 
 // Chart configuration
