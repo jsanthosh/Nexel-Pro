@@ -465,27 +465,6 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     j << "    \"fontWeight\": \"" << (config.titleBold ? "bold" : "normal") << "\"\n";
     j << "  },\n";
 
-    // Build number format spec from first series' cell format (Data2App format string)
-    auto formatToData2AppSpec = [](const QString& fmt, const QString& currency) -> std::string {
-        QString f = fmt.toLower();
-        if (f.contains("currency") || f.contains("accounting")) {
-            std::string sym = "$";
-            if (currency == "EUR") sym = "€";
-            else if (currency == "GBP") sym = "£";
-            else if (currency == "INR") sym = "₹";
-            else if (currency == "JPY") sym = "¥";
-            return std::string("\"") + sym + "#,##0.00\"";
-        }
-        if (f.contains("percent")) return "\"0.00%\"";
-        if (f.contains("number") || f.contains("comma")) return "\"#,##0.00\"";
-        return "\"\"";  // General
-    };
-
-    std::string yFormat = "\"\"";
-    if (!config.series.isEmpty()) {
-        yFormat = formatToData2AppSpec(config.series[0].numberFormat, config.series[0].currencyCode);
-    }
-
     // ── X Axis ──
     j << "  \"xAxis\": [{\n";
     j << "    \"show\": true,\n";
@@ -513,38 +492,59 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     j << "  }],\n";
 
     // ── Y Axis ──
+    // Note: Data2App doesn't support "format" field on axis labels.
+    // Currency/number formatting on axis values is not supported by the lib.
     j << "  \"yAxis\": [{\n";
     if (!config.yAxisTitle.isEmpty()) {
         j << "    \"title\": { \"text\": \"" << escapeJson(config.yAxisTitle.toStdString()) << "\" },\n";
     }
     j << "    \"gridLine\": { \"show\": " << (config.showGridLines ? "true" : "false") << ", \"width\": 1 },\n";
-    j << "    \"labels\": { \"show\": true, \"fontSize\": 11, \"format\": " << yFormat << " }\n";
+    j << "    \"labels\": { \"show\": true, \"fontSize\": 11 }\n";
     j << "  }],\n";
 
     // ── Legend ──
     j << "  \"legend\": { \"show\": " << (config.showLegend ? "true" : "false") << " },\n";
 
     // ── Plot options ──
+    // Data2App schema: hAlign/vAlign/inside — no "position" field
     bool showLabels = (config.dataLabelPosition != DataLabelPosition::None);
-    std::string labelPos = "outside";
+    std::string hAlign = "center";
+    std::string vAlign = "top";
+    bool inside = false;
+    bool isBarChart = (config.type == ChartType::Bar);
     switch (config.dataLabelPosition) {
-        case DataLabelPosition::Center:     labelPos = "center"; break;
-        case DataLabelPosition::InsideEnd:  labelPos = "insideEnd"; break;
-        case DataLabelPosition::OutsideEnd: labelPos = "outsideEnd"; break;
-        case DataLabelPosition::Above:      labelPos = "above"; break;
-        case DataLabelPosition::Below:      labelPos = "below"; break;
-        case DataLabelPosition::Left:       labelPos = "left"; break;
-        case DataLabelPosition::Right:      labelPos = "right"; break;
-        default: labelPos = "outside"; break;
+        case DataLabelPosition::Center:
+            hAlign = "center"; vAlign = "middle"; inside = true; break;
+        case DataLabelPosition::InsideEnd:
+            if (isBarChart) { hAlign = "right"; vAlign = "middle"; inside = true; }
+            else { hAlign = "center"; vAlign = "top"; inside = true; }
+            break;
+        case DataLabelPosition::OutsideEnd:
+        case DataLabelPosition::Above:
+            if (isBarChart) { hAlign = "right"; vAlign = "middle"; inside = false; }
+            else { hAlign = "center"; vAlign = "top"; inside = false; }
+            break;
+        case DataLabelPosition::Below:
+            hAlign = "center"; vAlign = "bottom"; inside = false; break;
+        case DataLabelPosition::Left:
+            hAlign = "left"; vAlign = "middle"; inside = false; break;
+        case DataLabelPosition::Right:
+            hAlign = "right"; vAlign = "middle"; inside = false; break;
+        default: break;
     }
 
     j << "  \"plotOptions\": {\n";
     j << "    \"series\": {\n";
     j << "      \"animation\": { \"duration\": 500, \"delay\": 200, \"show\": " << (animate ? "true" : "false") << " },\n";
-    j << "      \"dataLabels\": { \"show\": " << (showLabels ? "true" : "false")
-      << ", \"position\": \"" << labelPos << "\""
-      << ", \"format\": " << yFormat
-      << ", \"fontSize\": 10 }\n";
+    j << "      \"dataLabels\": { "
+      << "\"show\": " << (showLabels ? "true" : "false")
+      << ", \"hAlign\": \"" << hAlign << "\""
+      << ", \"vAlign\": \"" << vAlign << "\""
+      << ", \"inside\": " << (inside ? "true" : "false")
+      << ", \"fontSize\": 11"
+      << ", \"fontColor\": \"#1d1d1d\""
+      << ", \"padding\": 5"
+      << " }\n";
     j << "    }\n";
     j << "  },\n";
 
