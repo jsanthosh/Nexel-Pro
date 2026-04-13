@@ -466,11 +466,18 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     j << "  },\n";
 
     // ── X Axis ──
+    // Excel default rules:
+    //   - Bar chart: X is the value axis → show gridlines
+    //   - Line/Scatter: optional vertical gridlines
+    //   - Column/Pie/Donut/Area: no vertical gridlines
+    bool showXGrid = config.showGridLines &&
+        (config.type == ChartType::Bar ||
+         config.type == ChartType::Line ||
+         config.type == ChartType::Scatter);
     j << "  \"xAxis\": [{\n";
     j << "    \"show\": true,\n";
     j << "    \"labels\": { \"show\": true, \"fontSize\": 11 },\n";
-    // Use Data2App defaults — pass showGridLines directly (lib decides per chart type)
-    j << "    \"gridLine\": { \"show\": " << (config.showGridLines ? "true" : "false") << " },\n";
+    j << "    \"gridLine\": { \"show\": " << (showXGrid ? "true" : "false") << " },\n";
     j << "    \"ticks\": { \"show\": false },\n";
     if (!config.xAxisTitle.isEmpty()) {
         j << "    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" },\n";
@@ -498,7 +505,13 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     if (!config.yAxisTitle.isEmpty()) {
         j << "    \"title\": { \"text\": \"" << escapeJson(config.yAxisTitle.toStdString()) << "\" },\n";
     }
-    j << "    \"gridLine\": { \"show\": " << (config.showGridLines ? "true" : "false") << ", \"width\": 1 },\n";
+    // Y-axis gridlines: shown for column/line/area/scatter (value axis)
+    // Hidden for bar (Y becomes category axis), pie/donut (no axes)
+    bool showYGrid = config.showGridLines &&
+        config.type != ChartType::Bar &&
+        config.type != ChartType::Pie &&
+        config.type != ChartType::Donut;
+    j << "    \"gridLine\": { \"show\": " << (showYGrid ? "true" : "false") << ", \"width\": 1 },\n";
     j << "    \"labels\": { \"show\": true, \"fontSize\": 11 }\n";
     j << "  }],\n";
 
