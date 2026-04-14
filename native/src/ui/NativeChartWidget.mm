@@ -430,127 +430,71 @@ void NativeChartWidget::updateNativeConfiguration()
 
 std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool animate)
 {
+    // MINIMAL JSON STRATEGY:
+    // Only send properties that the user has explicitly configured.
+    // Omit everything else so Data2App lib uses its own internal defaults.
+    // This lets us observe the lib's true defaults and sync our sidepanel
+    // to reflect what the lib actually renders.
+
     std::ostringstream j;
-
-    std::string bg = colorToHex(config.backgroundColor);
-    std::string titleCol = colorToHex(config.titleColor);
-
     j << "{\n";
 
-    // ── Chart area ──
-    std::string plotBg = colorToHex(config.plotBackgroundColor);
-    std::string plotBorderCol = colorToHex(config.plotBorderColor);
-    std::string chartBorderCol = colorToHex(config.chartBorderColor);
+    bool needsComma = false;
+    auto maybeComma = [&]() { if (needsComma) j << ",\n"; };
 
-    j << "  \"chart\": {\n";
-    j << "    \"chartArea\": {\n";
-    j << "      \"backgroundColor\": \"" << bg << "\",\n";
-    j << "      \"borderWidth\": " << config.chartBorderWidth << ",\n";
-    j << "      \"borderColor\": \"" << chartBorderCol << "\",\n";
-    j << "      \"spacing\": [30, 50, 30, 30]\n";
-    j << "    },\n";
-    j << "    \"plotArea\": {\n";
-    j << "      \"plotBackgroundColor\": \"" << plotBg << "\",\n";
-    j << "      \"plotBorderWidth\": " << config.plotBorderWidth << ",\n";
-    j << "      \"plotBorderColor\": \"" << plotBorderCol << "\"\n";
-    j << "    }\n";
-    j << "  },\n";
-
-    // ── Title ──
-    j << "  \"title\": {\n";
-    j << "    \"text\": \"" << escapeJson(config.title.toStdString()) << "\",\n";
-    j << "    \"fontSize\": 18,\n";
-    j << "    \"align\": \"left\",\n";
-    j << "    \"color\": \"" << titleCol << "\",\n";
-    j << "    \"fontWeight\": \"" << (config.titleBold ? "bold" : "normal") << "\"\n";
-    j << "  },\n";
-
-    // ── X Axis ──
-    // X-axis gridlines = vertical gridlines
-    j << "  \"xAxis\": [{\n";
-    j << "    \"show\": true,\n";
-    j << "    \"labels\": { \"show\": true, \"fontSize\": 11 },\n";
-    j << "    \"gridLine\": { \"show\": " << (config.showVerticalGridLines ? "true" : "false") << " },\n";
-    j << "    \"ticks\": { \"show\": false },\n";
-    if (!config.xAxisTitle.isEmpty()) {
-        j << "    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" },\n";
+    // ── Title (only if set by user) ──
+    if (!config.title.isEmpty()) {
+        maybeComma();
+        j << "  \"title\": { \"text\": \"" << escapeJson(config.title.toStdString()) << "\" }";
+        needsComma = true;
     }
-    j << "    \"data\": [";
-    if (!config.categoryLabels.isEmpty()) {
-        for (int i = 0; i < config.categoryLabels.size(); ++i) {
-            if (i > 0) j << ", ";
-            j << "\"" << escapeJson(config.categoryLabels[i].toStdString()) << "\"";
-        }
-    } else if (!config.series.isEmpty()) {
-        // Fallback: use numeric x values as labels
-        for (int i = 0; i < config.series[0].xValues.size(); ++i) {
-            if (i > 0) j << ", ";
-            j << "\"" << config.series[0].xValues[i] << "\"";
-        }
-    }
-    j << "]\n";
-    j << "  }],\n";
 
-    // ── Y Axis ──
-    // Note: Data2App doesn't support "format" field on axis labels.
-    // Currency/number formatting on axis values is not supported by the lib.
-    j << "  \"yAxis\": [{\n";
+    // ── X Axis: only categories + optional title ──
+    if (!config.categoryLabels.isEmpty() || !config.series.isEmpty() || !config.xAxisTitle.isEmpty()) {
+        maybeComma();
+        j << "  \"xAxis\": [{";
+        bool xFirst = true;
+        if (!config.xAxisTitle.isEmpty()) {
+            j << "\n    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" }";
+            xFirst = false;
+        }
+        j << (xFirst ? "" : ",") << "\n    \"data\": [";
+        if (!config.categoryLabels.isEmpty()) {
+            for (int i = 0; i < config.categoryLabels.size(); ++i) {
+                if (i > 0) j << ", ";
+                j << "\"" << escapeJson(config.categoryLabels[i].toStdString()) << "\"";
+            }
+        } else if (!config.series.isEmpty()) {
+            for (int i = 0; i < config.series[0].xValues.size(); ++i) {
+                if (i > 0) j << ", ";
+                j << "\"" << config.series[0].xValues[i] << "\"";
+            }
+        }
+        j << "]\n  }]";
+        needsComma = true;
+    }
+
+    // ── Y Axis: only if user set title ──
     if (!config.yAxisTitle.isEmpty()) {
-        j << "    \"title\": { \"text\": \"" << escapeJson(config.yAxisTitle.toStdString()) << "\" },\n";
-    }
-    // Y-axis gridlines = horizontal gridlines
-    j << "    \"gridLine\": { \"show\": " << (config.showHorizontalGridLines ? "true" : "false") << ", \"width\": 1 },\n";
-    j << "    \"labels\": { \"show\": true, \"fontSize\": 11 }\n";
-    j << "  }],\n";
-
-    // ── Legend ──
-    j << "  \"legend\": { \"show\": " << (config.showLegend ? "true" : "false") << " },\n";
-
-    // ── Plot options ──
-    // Data2App schema: hAlign/vAlign/inside — no "position" field
-    bool showLabels = (config.dataLabelPosition != DataLabelPosition::None);
-    std::string hAlign = "center";
-    std::string vAlign = "top";
-    bool inside = false;
-    bool isBarChart = (config.type == ChartType::Bar);
-    switch (config.dataLabelPosition) {
-        case DataLabelPosition::Center:
-            hAlign = "center"; vAlign = "middle"; inside = true; break;
-        case DataLabelPosition::InsideEnd:
-            if (isBarChart) { hAlign = "right"; vAlign = "middle"; inside = true; }
-            else { hAlign = "center"; vAlign = "top"; inside = true; }
-            break;
-        case DataLabelPosition::OutsideEnd:
-        case DataLabelPosition::Above:
-            if (isBarChart) { hAlign = "right"; vAlign = "middle"; inside = false; }
-            else { hAlign = "center"; vAlign = "top"; inside = false; }
-            break;
-        case DataLabelPosition::Below:
-            hAlign = "center"; vAlign = "bottom"; inside = false; break;
-        case DataLabelPosition::Left:
-            hAlign = "left"; vAlign = "middle"; inside = false; break;
-        case DataLabelPosition::Right:
-            hAlign = "right"; vAlign = "middle"; inside = false; break;
-        default: break;
+        maybeComma();
+        j << "  \"yAxis\": [{ \"title\": { \"text\": \""
+          << escapeJson(config.yAxisTitle.toStdString()) << "\" } }]";
+        needsComma = true;
     }
 
-    j << "  \"plotOptions\": {\n";
-    j << "    \"series\": {\n";
-    j << "      \"animation\": { \"duration\": 500, \"delay\": 200, \"show\": " << (animate ? "true" : "false") << " },\n";
-    j << "      \"dataLabels\": { "
-      << "\"show\": " << (showLabels ? "true" : "false")
-      << ", \"hAlign\": \"" << hAlign << "\""
-      << ", \"vAlign\": \"" << vAlign << "\""
-      << ", \"inside\": " << (inside ? "true" : "false")
-      << ", \"fontSize\": 11"
-      << ", \"fontColor\": \"#1d1d1d\""
-      << ", \"padding\": 5"
-      << " }\n";
-    j << "    }\n";
-    j << "  },\n";
+    // ── plotOptions: only for animation control ──
+    // (We need to suppress animation on subsequent pushes to avoid re-animating)
+    maybeComma();
+    j << "  \"plotOptions\": {\n"
+      << "    \"series\": {\n"
+      << "      \"animation\": { \"show\": " << (animate ? "true" : "false") << " }\n"
+      << "    }\n"
+      << "  }";
+    needsComma = true;
 
     // ── Series ──
     std::string typeStr = chartTypeToString(config.type);
+    maybeComma();
     j << "  \"seriesOptions\": [\n";
     bool firstSeries = true;
     for (int i = 0; i < config.series.size(); ++i) {
@@ -566,7 +510,6 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         j << "      \"name\": \"" << escapeJson(s.name.toStdString()) << "\",\n";
         j << "      \"xIndex\": 0,\n";
         j << "      \"yIndex\": 0,\n";
-        j << "      \"color\": \"" << colorToHex(s.color) << "\",\n";
         j << "      \"data\": [";
         for (int k = 0; k < s.yValues.size(); ++k) {
             if (k > 0) j << ", ";
