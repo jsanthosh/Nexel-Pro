@@ -449,41 +449,44 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         needsComma = true;
     }
 
-    // ── X Axis: only categories + optional title ──
-    if (!config.categoryLabels.isEmpty() || !config.series.isEmpty() || !config.xAxisTitle.isEmpty()) {
-        maybeComma();
-        j << "  \"xAxis\": [{";
-        bool xFirst = true;
-        if (!config.xAxisTitle.isEmpty()) {
-            j << "\n    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" }";
-            xFirst = false;
-        }
-        j << (xFirst ? "" : ",") << "\n    \"data\": [";
-        if (!config.categoryLabels.isEmpty()) {
-            for (int i = 0; i < config.categoryLabels.size(); ++i) {
-                if (i > 0) j << ", ";
-                j << "\"" << escapeJson(config.categoryLabels[i].toStdString()) << "\"";
-            }
-        } else if (!config.series.isEmpty()) {
-            for (int i = 0; i < config.series[0].xValues.size(); ++i) {
-                if (i > 0) j << ", ";
-                j << "\"" << config.series[0].xValues[i] << "\"";
-            }
-        }
-        j << "]\n  }]";
-        needsComma = true;
+    // ── X Axis ──
+    maybeComma();
+    j << "  \"xAxis\": [{\n";
+    j << "    \"gridLine\": { \"show\": " << (config.showVerticalGridLines ? "true" : "false") << " }";
+    if (!config.xAxisTitle.isEmpty()) {
+        j << ",\n    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" }";
     }
+    j << ",\n    \"data\": [";
+    if (!config.categoryLabels.isEmpty()) {
+        for (int i = 0; i < config.categoryLabels.size(); ++i) {
+            if (i > 0) j << ", ";
+            j << "\"" << escapeJson(config.categoryLabels[i].toStdString()) << "\"";
+        }
+    } else if (!config.series.isEmpty()) {
+        for (int i = 0; i < config.series[0].xValues.size(); ++i) {
+            if (i > 0) j << ", ";
+            j << "\"" << config.series[0].xValues[i] << "\"";
+        }
+    }
+    j << "]\n  }]";
+    needsComma = true;
 
-    // ── Y Axis: only if user set title ──
+    // ── Y Axis ──
+    maybeComma();
+    j << "  \"yAxis\": [{\n";
+    j << "    \"gridLine\": { \"show\": " << (config.showHorizontalGridLines ? "true" : "false") << " }";
     if (!config.yAxisTitle.isEmpty()) {
-        maybeComma();
-        j << "  \"yAxis\": [{ \"title\": { \"text\": \""
-          << escapeJson(config.yAxisTitle.toStdString()) << "\" } }]";
-        needsComma = true;
+        j << ",\n    \"title\": { \"text\": \"" << escapeJson(config.yAxisTitle.toStdString()) << "\" }";
     }
+    j << "\n  }]";
+    needsComma = true;
 
-    // ── plotOptions: only for animation control ──
-    // (We need to suppress animation on subsequent pushes to avoid re-animating)
+    // ── Legend ──
+    maybeComma();
+    j << "  \"legend\": { \"show\": " << (config.showLegend ? "true" : "false") << " }";
+    needsComma = true;
+
+    // ── plotOptions: animation control ──
     maybeComma();
     j << "  \"plotOptions\": {\n"
       << "    \"series\": {\n"
