@@ -577,46 +577,70 @@ void ChartWidget::drawAxes(QPainter& p, const QRect& plotArea) {
     // X axis
     p.drawLine(plotArea.left(), plotArea.bottom(), plotArea.right(), plotArea.bottom());
 
-    // Y axis ticks and labels
     double minVal, maxVal, step;
     computeAxisRange(minVal, maxVal, step);
 
     p.setFont(QFont("Arial", 8));
     p.setPen(QColor("#666"));
 
-    for (double v = minVal; v <= maxVal + step * 0.001; v += step) {
-        double frac = (v - minVal) / (maxVal - minVal);
-        int y = plotArea.bottom() - static_cast<int>(frac * plotArea.height());
-        if (y < plotArea.top() || y > plotArea.bottom()) continue;
+    // For Bar charts: values on X-axis, categories on Y-axis (swapped from column/line)
+    bool isBarChart = (m_config.type == ChartType::Bar);
 
-        p.drawLine(plotArea.left() - 4, y, plotArea.left(), y);
-
-        QString label;
-        if (m_config.percentStacked) {
-            label = QString::number(static_cast<int>(v * 100)) + "%";
-        } else if (std::abs(v) >= 1000000) label = QString::number(v / 1000000.0, 'f', 1) + "M";
-        else if (std::abs(v) >= 1000) label = QString::number(v / 1000.0, 'f', 1) + "K";
-        else label = QString::number(v, 'f', step < 1 ? 1 : 0);
-
-        p.drawText(QRect(plotArea.left() - AXIS_MARGIN, y - 8, AXIS_MARGIN - 6, 16),
-                   Qt::AlignRight | Qt::AlignVCenter, label);
-    }
-
-    // X axis category labels — centered under each bar group
-    if (!m_config.series.isEmpty() && !m_config.series[0].xValues.isEmpty()) {
-        int n = m_config.series[0].xValues.size();
-        int maxLabels = qMax(1, plotArea.width() / 50);
-        int labelStep = qMax(1, n / maxLabels);
-        double groupWidth = static_cast<double>(plotArea.width()) / n;
-
-        for (int i = 0; i < n; i += labelStep) {
-            int x = plotArea.left() + static_cast<int>(i * groupWidth + groupWidth / 2);
+    if (isBarChart) {
+        // X-axis: value ticks and labels (horizontal)
+        for (double v = minVal; v <= maxVal + step * 0.001; v += step) {
+            double frac = (v - minVal) / (maxVal - minVal);
+            int x = plotArea.left() + static_cast<int>(frac * plotArea.width());
+            if (x < plotArea.left() || x > plotArea.right()) continue;
             p.drawLine(x, plotArea.bottom(), x, plotArea.bottom() + 4);
-            QString label = (i < m_config.categoryLabels.size())
-                            ? m_config.categoryLabels[i]
-                            : QString::number(i + 1);
-            p.drawText(QRect(x - 35, plotArea.bottom() + 5, 70, 16),
-                       Qt::AlignCenter, label);
+            QString label;
+            if (m_config.percentStacked) label = QString::number(static_cast<int>(v * 100)) + "%";
+            else if (std::abs(v) >= 1000000) label = QString::number(v / 1000000.0, 'f', 1) + "M";
+            else if (std::abs(v) >= 1000) label = QString::number(v / 1000.0, 'f', 1) + "K";
+            else label = QString::number(v, 'f', step < 1 ? 1 : 0);
+            p.drawText(QRect(x - 35, plotArea.bottom() + 5, 70, 16), Qt::AlignCenter, label);
+        }
+        // Y-axis: category labels (one per bar, centered)
+        if (!m_config.series.isEmpty() && !m_config.series[0].xValues.isEmpty()) {
+            int n = m_config.series[0].xValues.size();
+            double groupHeight = static_cast<double>(plotArea.height()) / n;
+            for (int i = 0; i < n; ++i) {
+                int y = plotArea.top() + static_cast<int>(i * groupHeight + groupHeight / 2);
+                p.drawLine(plotArea.left() - 4, y, plotArea.left(), y);
+                QString label = (i < m_config.categoryLabels.size())
+                                ? m_config.categoryLabels[i] : QString::number(i + 1);
+                p.drawText(QRect(plotArea.left() - AXIS_MARGIN, y - 8, AXIS_MARGIN - 6, 16),
+                           Qt::AlignRight | Qt::AlignVCenter, label);
+            }
+        }
+    } else {
+        // Column/Line/etc: values on Y-axis, categories on X-axis (default)
+        for (double v = minVal; v <= maxVal + step * 0.001; v += step) {
+            double frac = (v - minVal) / (maxVal - minVal);
+            int y = plotArea.bottom() - static_cast<int>(frac * plotArea.height());
+            if (y < plotArea.top() || y > plotArea.bottom()) continue;
+            p.drawLine(plotArea.left() - 4, y, plotArea.left(), y);
+            QString label;
+            if (m_config.percentStacked) label = QString::number(static_cast<int>(v * 100)) + "%";
+            else if (std::abs(v) >= 1000000) label = QString::number(v / 1000000.0, 'f', 1) + "M";
+            else if (std::abs(v) >= 1000) label = QString::number(v / 1000.0, 'f', 1) + "K";
+            else label = QString::number(v, 'f', step < 1 ? 1 : 0);
+            p.drawText(QRect(plotArea.left() - AXIS_MARGIN, y - 8, AXIS_MARGIN - 6, 16),
+                       Qt::AlignRight | Qt::AlignVCenter, label);
+        }
+        if (!m_config.series.isEmpty() && !m_config.series[0].xValues.isEmpty()) {
+            int n = m_config.series[0].xValues.size();
+            int maxLabels = qMax(1, plotArea.width() / 50);
+            int labelStep = qMax(1, n / maxLabels);
+            double groupWidth = static_cast<double>(plotArea.width()) / n;
+            for (int i = 0; i < n; i += labelStep) {
+                int x = plotArea.left() + static_cast<int>(i * groupWidth + groupWidth / 2);
+                p.drawLine(x, plotArea.bottom(), x, plotArea.bottom() + 4);
+                QString label = (i < m_config.categoryLabels.size())
+                                ? m_config.categoryLabels[i] : QString::number(i + 1);
+                p.drawText(QRect(x - 35, plotArea.bottom() + 5, 70, 16),
+                           Qt::AlignCenter, label);
+            }
         }
     }
 
