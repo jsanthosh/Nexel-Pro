@@ -61,6 +61,11 @@ ChartWidget::ChartWidget(QWidget* parent)
 void ChartWidget::setConfig(const ChartConfig& config) {
     bool typeChanged = m_config.type != config.type;
     m_config = config;
+    // Excel convention: vertical gridlines default ON only for Scatter,
+    // OFF for all other chart types. Applied when the chart type changes.
+    if (typeChanged) {
+        m_config.showVerticalGridLines = (m_config.type == ChartType::Scatter);
+    }
     if (typeChanged && !m_config.series.isEmpty()) {
         startEntryAnimation();
     } else {

@@ -98,8 +98,8 @@ struct ChartConfig {
     // Defaults match Data2App's sample JSON (TestColumn.json / BarChart.json):
     bool showLegend = true;
     bool showGridLines = true;           // legacy
-    bool showHorizontalGridLines = true; // Data2App default: yAxis.gridLine.show = true
-    bool showVerticalGridLines = true;   // Data2App default: xAxis.gridLine.show = true
+    bool showHorizontalGridLines = true; // default on for all charts
+    bool showVerticalGridLines = false;  // default off (only on for Scatter — handled in ChartWidget setter)
     int themeIndex = 0;    // 0=Document Theme, 1=Excel, 2=Material, 3=Solarized, 4=Dark, 5=Mono, 6=Pastel
     QVector<ChartSeries> series;
 
