@@ -409,6 +409,8 @@ void NativeChartWidget::updateNativeConfiguration()
     connect(m_configPushTimer, &QTimer::timeout, this, [this, json, animate]() {
         if (!m_nativeChartView) return;
 
+        qDebug() << "[NativeChart] JSON sent to Data2App:\n" << QString::fromStdString(json);
+
         ChartView* cv = (ChartView*)m_nativeChartView;
         [cv setConfiguration:json];
 

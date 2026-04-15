@@ -1,4 +1,5 @@
 #include "ChartWidget.h"
+#include "ShapeWidget.h"
 #include "Theme.h"
 #include "MainWindow.h"
 #include "../core/Spreadsheet.h"
@@ -2219,12 +2220,18 @@ void ChartWidget::mouseMoveEvent(QMouseEvent* event) {
         }
         QPoint delta = newPos - pos();
         move(newPos);
-        // Group-aware drag: move siblings by same delta
+        // Group-aware drag: move siblings by same delta and re-anchor them
+        // so they stay together during subsequent scrolling.
         int gid = property("overlayGroupId").toInt();
         if (gid > 0 && parentWidget()) {
             for (QWidget* sibling : parentWidget()->findChildren<QWidget*>()) {
-                if (sibling != this && sibling->property("overlayGroupId").toInt() == gid)
+                if (sibling != this && sibling->property("overlayGroupId").toInt() == gid) {
                     sibling->move(sibling->pos() + delta);
+                    if (auto* sShape = qobject_cast<ShapeWidget*>(sibling))
+                        emit sShape->shapeMoved(sShape);
+                    else if (auto* sChart = qobject_cast<ChartWidget*>(sibling))
+                        emit sChart->chartMoved(sChart);
+                }
             }
         }
         emit chartMoved(this);
