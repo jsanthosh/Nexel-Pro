@@ -486,11 +486,43 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     j << "  \"legend\": { \"show\": " << (config.showLegend ? "true" : "false") << " }";
     needsComma = true;
 
-    // ── plotOptions: animation control ──
+    // ── plotOptions: animation + dataLabels ──
+    // Data2App dataLabels schema (from BarChart.json): hAlign, vAlign, inside
+    bool showLabels = (config.dataLabelPosition != DataLabelPosition::None);
+    std::string hAlign = "center", vAlign = "top";
+    bool inside = false;
+    bool isBarChart = (config.type == ChartType::Bar);
+    switch (config.dataLabelPosition) {
+        case DataLabelPosition::Center:
+            hAlign = "center"; vAlign = "middle"; inside = true; break;
+        case DataLabelPosition::InsideEnd:
+            if (isBarChart) { hAlign = "right"; vAlign = "middle"; inside = true; }
+            else            { hAlign = "center"; vAlign = "top"; inside = true; }
+            break;
+        case DataLabelPosition::OutsideEnd:
+        case DataLabelPosition::Above:
+            if (isBarChart) { hAlign = "right"; vAlign = "middle"; inside = false; }
+            else            { hAlign = "center"; vAlign = "top"; inside = false; }
+            break;
+        case DataLabelPosition::Below:
+            hAlign = "center"; vAlign = "bottom"; inside = false; break;
+        case DataLabelPosition::Left:
+            hAlign = "left"; vAlign = "middle"; inside = false; break;
+        case DataLabelPosition::Right:
+            hAlign = "right"; vAlign = "middle"; inside = false; break;
+        default: break;
+    }
+
     maybeComma();
     j << "  \"plotOptions\": {\n"
       << "    \"series\": {\n"
-      << "      \"animation\": { \"show\": " << (animate ? "true" : "false") << " }\n"
+      << "      \"animation\": { \"show\": " << (animate ? "true" : "false") << " },\n"
+      << "      \"dataLabels\": { "
+      << "\"show\": " << (showLabels ? "true" : "false")
+      << ", \"hAlign\": \"" << hAlign << "\""
+      << ", \"vAlign\": \"" << vAlign << "\""
+      << ", \"inside\": " << (inside ? "true" : "false")
+      << " }\n"
       << "    }\n"
       << "  }";
     needsComma = true;
