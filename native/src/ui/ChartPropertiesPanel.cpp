@@ -488,7 +488,9 @@ void ChartPropertiesPanel::createLayout() {
     dataLabelsSectionLayout->addWidget(createSectionHeader("DATA LABELS"));
     dataLabelsSectionLayout->addSpacing(8);
     m_dataLabelPosCombo = new QComboBox();
-    m_dataLabelPosCombo->addItems({"None", "Center", "Above", "Below", "Inside End", "Outside End"});
+    // MUST match DataLabelPosition enum order:
+    // None, Center, Above, Below, Left, Right, InsideEnd, OutsideEnd, BestFit
+    m_dataLabelPosCombo->addItems({"None", "Center", "Above", "Below", "Left", "Right", "Inside End", "Outside End"});
     m_dataLabelPosCombo->setFixedHeight(30);
     m_dataLabelPosCombo->setStyleSheet(m_themeCombo->styleSheet());
     dataLabelsSectionLayout->addWidget(m_dataLabelPosCombo);
