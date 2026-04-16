@@ -3936,7 +3936,9 @@ void MainWindow::onInsertImage() {
             for (auto* s : m_shapes)
                 if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
         }
-        // Group-aware: select all group members
+        // Always select the clicked image
+        img->setSelected(true);
+        // Group-aware: also select all group members
         OverlayGroup* grp = findGroupContaining(img);
         if (grp) {
             for (auto* w : grp->members) {
@@ -4634,6 +4636,7 @@ void MainWindow::insertImageFromChat(const QJsonObject& params) {
             for (auto* c : m_charts) if (c->property("sheetIndex").toInt() == si) c->setSelected(false);
             for (auto* s : m_shapes) if (s->property("sheetIndex").toInt() == si) s->setSelected(false);
         }
+        img->setSelected(true);
         OverlayGroup* grp = findGroupContaining(img);
         if (grp) {
             for (auto* w : grp->members) {
