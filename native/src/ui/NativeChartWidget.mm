@@ -520,29 +520,42 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         default: break;
     }
 
-    // For pie/donut, data labels default ON and show slice name + percentage.
     bool isPieChart = (config.type == ChartType::Pie || config.type == ChartType::Donut);
-    bool effShowLabels = showLabels || isPieChart;
 
     maybeComma();
     j << "  \"plotOptions\": {\n"
       << "    \"series\": {\n"
-      << "      \"animation\": { \"show\": " << (animate ? "true" : "false") << " },\n"
-      << "      \"dataLabels\": { "
-      << "\"show\": " << (effShowLabels ? "true" : "false");
+      << "      \"animation\": { \"show\": " << (animate ? "true" : "false") << " }";
 
     if (isPieChart) {
-        // Pie data labels: show slice name, with connector line from slice
-        j << ", \"labelKey\": \"name\""
-          << ", \"showConnector\": true";
+        // Pie/Donut: dataLabels is an ARRAY — one entry per data field to display.
+        // (SeriesProperties::setDataLabelProperties takes std::vector<DataLabelProperties>)
+        // Valid labelKey values: name, category, value, percentage
+        std::vector<std::string> keys;
+        if (config.dataLabelShowCategory) keys.push_back("category");
+        if (config.dataLabelShowValue)    keys.push_back("value");
+        if (config.dataLabelShowPercentage) keys.push_back("percentage");
+        // Default: show name if user hasn't enabled anything
+        if (keys.empty()) keys.push_back("name");
+
+        j << ",\n      \"dataLabels\": [";
+        for (size_t k = 0; k < keys.size(); ++k) {
+            if (k > 0) j << ", ";
+            j << "{ \"show\": true, \"labelKey\": \"" << keys[k] << "\""
+              << ", \"showConnector\": true"
+              << ", \"fontSize\": 11 }";
+        }
+        j << "]";
     } else {
-        j << ", \"hAlign\": \"" << hAlign << "\""
+        // Column/bar/line/area: single dataLabels object
+        j << ",\n      \"dataLabels\": { "
+          << "\"show\": " << (showLabels ? "true" : "false")
+          << ", \"hAlign\": \"" << hAlign << "\""
           << ", \"vAlign\": \"" << vAlign << "\""
-          << ", \"inside\": " << (inside ? "true" : "false");
+          << ", \"inside\": " << (inside ? "true" : "false")
+          << " }";
     }
-    j << " }\n"
-      << "    }\n"
-      << "  }";
+    j << "\n    }\n  }";
     needsComma = true;
 
     // ── Series ──
