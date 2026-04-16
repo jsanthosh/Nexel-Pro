@@ -520,16 +520,27 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         default: break;
     }
 
+    // For pie/donut, data labels default ON and show slice name + percentage.
+    bool isPieChart = (config.type == ChartType::Pie || config.type == ChartType::Donut);
+    bool effShowLabels = showLabels || isPieChart;
+
     maybeComma();
     j << "  \"plotOptions\": {\n"
       << "    \"series\": {\n"
       << "      \"animation\": { \"show\": " << (animate ? "true" : "false") << " },\n"
       << "      \"dataLabels\": { "
-      << "\"show\": " << (showLabels ? "true" : "false")
-      << ", \"hAlign\": \"" << hAlign << "\""
-      << ", \"vAlign\": \"" << vAlign << "\""
-      << ", \"inside\": " << (inside ? "true" : "false")
-      << " }\n"
+      << "\"show\": " << (effShowLabels ? "true" : "false");
+
+    if (isPieChart) {
+        // Pie data labels: show slice name, with connector line from slice
+        j << ", \"labelKey\": \"name\""
+          << ", \"showConnector\": true";
+    } else {
+        j << ", \"hAlign\": \"" << hAlign << "\""
+          << ", \"vAlign\": \"" << vAlign << "\""
+          << ", \"inside\": " << (inside ? "true" : "false");
+    }
+    j << " }\n"
       << "    }\n"
       << "  }";
     needsComma = true;
