@@ -451,37 +451,42 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         needsComma = true;
     }
 
-    // ── X Axis ──
-    maybeComma();
-    j << "  \"xAxis\": [{\n";
-    j << "    \"gridLine\": { \"show\": " << (config.showVerticalGridLines ? "true" : "false") << " }";
-    if (!config.xAxisTitle.isEmpty()) {
-        j << ",\n    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" }";
-    }
-    j << ",\n    \"data\": [";
-    if (!config.categoryLabels.isEmpty()) {
-        for (int i = 0; i < config.categoryLabels.size(); ++i) {
-            if (i > 0) j << ", ";
-            j << "\"" << escapeJson(config.categoryLabels[i].toStdString()) << "\"";
-        }
-    } else if (!config.series.isEmpty()) {
-        for (int i = 0; i < config.series[0].xValues.size(); ++i) {
-            if (i > 0) j << ", ";
-            j << "\"" << config.series[0].xValues[i] << "\"";
-        }
-    }
-    j << "]\n  }]";
-    needsComma = true;
+    // Radial (pie/donut) charts: skip x/y axes — they use categories inline.
+    bool isRadial = (config.type == ChartType::Pie || config.type == ChartType::Donut);
 
-    // ── Y Axis ──
-    maybeComma();
-    j << "  \"yAxis\": [{\n";
-    j << "    \"gridLine\": { \"show\": " << (config.showHorizontalGridLines ? "true" : "false") << " }";
-    if (!config.yAxisTitle.isEmpty()) {
-        j << ",\n    \"title\": { \"text\": \"" << escapeJson(config.yAxisTitle.toStdString()) << "\" }";
+    if (!isRadial) {
+        // ── X Axis ──
+        maybeComma();
+        j << "  \"xAxis\": [{\n";
+        j << "    \"gridLine\": { \"show\": " << (config.showVerticalGridLines ? "true" : "false") << " }";
+        if (!config.xAxisTitle.isEmpty()) {
+            j << ",\n    \"title\": { \"text\": \"" << escapeJson(config.xAxisTitle.toStdString()) << "\" }";
+        }
+        j << ",\n    \"data\": [";
+        if (!config.categoryLabels.isEmpty()) {
+            for (int i = 0; i < config.categoryLabels.size(); ++i) {
+                if (i > 0) j << ", ";
+                j << "\"" << escapeJson(config.categoryLabels[i].toStdString()) << "\"";
+            }
+        } else if (!config.series.isEmpty()) {
+            for (int i = 0; i < config.series[0].xValues.size(); ++i) {
+                if (i > 0) j << ", ";
+                j << "\"" << config.series[0].xValues[i] << "\"";
+            }
+        }
+        j << "]\n  }]";
+        needsComma = true;
+
+        // ── Y Axis ──
+        maybeComma();
+        j << "  \"yAxis\": [{\n";
+        j << "    \"gridLine\": { \"show\": " << (config.showHorizontalGridLines ? "true" : "false") << " }";
+        if (!config.yAxisTitle.isEmpty()) {
+            j << ",\n    \"title\": { \"text\": \"" << escapeJson(config.yAxisTitle.toStdString()) << "\" }";
+        }
+        j << "\n  }]";
+        needsComma = true;
     }
-    j << "\n  }]";
-    needsComma = true;
 
     // ── Legend ──
     maybeComma();
@@ -547,6 +552,12 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         j << "      \"name\": \"" << escapeJson(s.name.toStdString()) << "\",\n";
         j << "      \"xIndex\": 0,\n";
         j << "      \"yIndex\": 0,\n";
+        // Donut = radial with inner hole; Pie = radial with no hole (innerRadius: 0)
+        if (config.type == ChartType::Donut) {
+            j << "      \"innerRadius\": \"50%\",\n";
+        } else if (config.type == ChartType::Pie) {
+            j << "      \"innerRadius\": 0,\n";
+        }
         j << "      \"data\": [";
         for (int k = 0; k < s.yValues.size(); ++k) {
             if (k > 0) j << ", ";
