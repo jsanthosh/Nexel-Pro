@@ -565,15 +565,19 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
 
 std::string NativeChartWidget::chartTypeToString(ChartType type)
 {
+    // Data2App lib supported types (per libdata2chart.a):
+    //   area, column, line, radial, scatter
+    // Unsupported types (bar, pie, donut, histogram, combo, waterfall) are
+    // mapped to their closest supported equivalent.
     switch (type) {
         case ChartType::Line:      return "line";
-        case ChartType::Bar:       return "bar";
         case ChartType::Column:    return "column";
         case ChartType::Scatter:   return "scatter";
-        case ChartType::Pie:       return "pie";
         case ChartType::Area:      return "area";
-        case ChartType::Donut:     return "pie";       // Data2App uses pie for donut too
-        case ChartType::Histogram: return "column";     // Map histogram to column
+        case ChartType::Bar:       return "column";   // Data2App has no 'bar'; use column
+        case ChartType::Pie:       return "radial";   // Data2App uses 'radial' for pie-like charts
+        case ChartType::Donut:     return "radial";   // donut = radial with hole
+        case ChartType::Histogram: return "column";   // histogram → column
         default:                   return "column";
     }
 }
