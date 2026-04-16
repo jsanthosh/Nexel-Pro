@@ -451,11 +451,10 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         needsComma = true;
     }
 
-    // Skip x/y axes for pie/donut (they have no cartesian axes).
-    // Currently pie/donut fall back to column since 'radial' crashes Data2App lib.
-    bool isRadial = false;  // (config.type == ChartType::Pie || config.type == ChartType::Donut);
+    // Pie/Donut charts have no cartesian axes — skip x/y axis blocks.
+    bool isPie = (config.type == ChartType::Pie || config.type == ChartType::Donut);
 
-    if (!isRadial) {
+    if (!isPie) {
         // ── X Axis ──
         maybeComma();
         j << "  \"xAxis\": [{\n";
@@ -577,18 +576,16 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
 
 std::string NativeChartWidget::chartTypeToString(ChartType type)
 {
-    // Data2App lib supported types: area, column, line, radial, scatter.
-    // NOTE: 'radial' causes a crash in the lib (ChartPropertiesBuilder::setSeriesIndex
-    // EXC_BAD_ACCESS) when we send our JSON for pie/donut. Reported to lib owner.
-    // Fallback: map pie/donut to column until the lib issue is fixed.
+    // Data2App lib supported types: area, column, line, pie, scatter.
+    // Donut is pie with innerRadius set.
     switch (type) {
         case ChartType::Line:      return "line";
         case ChartType::Column:    return "column";
         case ChartType::Scatter:   return "scatter";
         case ChartType::Area:      return "area";
         case ChartType::Bar:       return "column";
-        case ChartType::Pie:       return "column";   // TODO: 'radial' crashes lib
-        case ChartType::Donut:     return "column";   // TODO: 'radial' crashes lib
+        case ChartType::Pie:       return "pie";
+        case ChartType::Donut:     return "pie";   // same 'pie' type, innerRadius makes donut
         case ChartType::Histogram: return "column";
         default:                   return "column";
     }
