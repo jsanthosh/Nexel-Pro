@@ -451,8 +451,9 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         needsComma = true;
     }
 
-    // Radial (pie/donut) charts: skip x/y axes — they use categories inline.
-    bool isRadial = (config.type == ChartType::Pie || config.type == ChartType::Donut);
+    // Skip x/y axes for pie/donut (they have no cartesian axes).
+    // Currently pie/donut fall back to column since 'radial' crashes Data2App lib.
+    bool isRadial = false;  // (config.type == ChartType::Pie || config.type == ChartType::Donut);
 
     if (!isRadial) {
         // ── X Axis ──
@@ -576,19 +577,19 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
 
 std::string NativeChartWidget::chartTypeToString(ChartType type)
 {
-    // Data2App lib supported types (per libdata2chart.a):
-    //   area, column, line, radial, scatter
-    // Unsupported types (bar, pie, donut, histogram, combo, waterfall) are
-    // mapped to their closest supported equivalent.
+    // Data2App lib supported types: area, column, line, radial, scatter.
+    // NOTE: 'radial' causes a crash in the lib (ChartPropertiesBuilder::setSeriesIndex
+    // EXC_BAD_ACCESS) when we send our JSON for pie/donut. Reported to lib owner.
+    // Fallback: map pie/donut to column until the lib issue is fixed.
     switch (type) {
         case ChartType::Line:      return "line";
         case ChartType::Column:    return "column";
         case ChartType::Scatter:   return "scatter";
         case ChartType::Area:      return "area";
-        case ChartType::Bar:       return "column";   // Data2App has no 'bar'; use column
-        case ChartType::Pie:       return "radial";   // Data2App uses 'radial' for pie-like charts
-        case ChartType::Donut:     return "radial";   // donut = radial with hole
-        case ChartType::Histogram: return "column";   // histogram → column
+        case ChartType::Bar:       return "column";
+        case ChartType::Pie:       return "column";   // TODO: 'radial' crashes lib
+        case ChartType::Donut:     return "column";   // TODO: 'radial' crashes lib
+        case ChartType::Histogram: return "column";
         default:                   return "column";
     }
 }
