@@ -552,11 +552,15 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         j << "      \"name\": \"" << escapeJson(s.name.toStdString()) << "\",\n";
         j << "      \"xIndex\": 0,\n";
         j << "      \"yIndex\": 0,\n";
-        // Donut = radial with inner hole; Pie = radial with no hole (innerRadius: 0)
+        // Pie/Donut: one color per slice, show each slice in the legend.
         if (config.type == ChartType::Donut) {
             j << "      \"innerRadius\": \"50%\",\n";
+            j << "      \"colorByPoint\": true,\n";
+            j << "      \"showInLegend\": true,\n";
         } else if (config.type == ChartType::Pie) {
             j << "      \"innerRadius\": 0,\n";
+            j << "      \"colorByPoint\": true,\n";
+            j << "      \"showInLegend\": true,\n";
         }
         j << "      \"data\": [";
         for (int k = 0; k < s.yValues.size(); ++k) {
