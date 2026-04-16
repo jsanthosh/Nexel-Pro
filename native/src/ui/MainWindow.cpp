@@ -4250,6 +4250,9 @@ void MainWindow::addOverlay(QWidget* w) {
     if (auto* shape = qobject_cast<ShapeWidget*>(w)) {
         connect(shape, &ShapeWidget::shapeMoved, this, [this, shape]() { anchorOverlayToCell(shape); });
     }
+    if (auto* image = qobject_cast<ImageWidget*>(w)) {
+        connect(image, &ImageWidget::imageMoved, this, [this, image]() { anchorOverlayToCell(image); });
+    }
 }
 
 void MainWindow::removeOverlay(QWidget* w) {

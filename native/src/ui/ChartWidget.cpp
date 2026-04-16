@@ -1,5 +1,6 @@
 #include "ChartWidget.h"
 #include "ShapeWidget.h"
+#include "ImageWidget.h"
 #include "Theme.h"
 #include "MainWindow.h"
 #include "../core/Spreadsheet.h"
@@ -2231,6 +2232,8 @@ void ChartWidget::mouseMoveEvent(QMouseEvent* event) {
                         emit sShape->shapeMoved(sShape);
                     else if (auto* sChart = qobject_cast<ChartWidget*>(sibling))
                         emit sChart->chartMoved(sChart);
+                    else if (auto* sImg = qobject_cast<ImageWidget*>(sibling))
+                        emit sImg->imageMoved(sImg);
                 }
             }
         }

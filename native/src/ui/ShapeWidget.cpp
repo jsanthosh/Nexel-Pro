@@ -1,5 +1,6 @@
 #include "ShapeWidget.h"
 #include "ChartWidget.h"
+#include "ImageWidget.h"
 #include "Theme.h"
 #include "MainWindow.h"
 #include <QPainter>
@@ -295,11 +296,12 @@ void ShapeWidget::mouseMoveEvent(QMouseEvent* event) {
             for (QWidget* sibling : parentWidget()->findChildren<QWidget*>()) {
                 if (sibling != this && sibling->property("overlayGroupId").toInt() == gid) {
                     sibling->move(sibling->pos() + delta);
-                    // Emit the sibling's move signal so MainWindow re-anchors it
                     if (auto* sShape = qobject_cast<ShapeWidget*>(sibling))
                         emit sShape->shapeMoved(sShape);
                     else if (auto* sChart = qobject_cast<ChartWidget*>(sibling))
                         emit sChart->chartMoved(sChart);
+                    else if (auto* sImg = qobject_cast<ImageWidget*>(sibling))
+                        emit sImg->imageMoved(sImg);
                 }
             }
         }

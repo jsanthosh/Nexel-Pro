@@ -1,4 +1,6 @@
 #include "ImageWidget.h"
+#include "ChartWidget.h"
+#include "ShapeWidget.h"
 #include "MainWindow.h"
 
 #include <QPainter>
@@ -280,8 +282,16 @@ void ImageWidget::mouseMoveEvent(QMouseEvent* event)
         int gid = property("overlayGroupId").toInt();
         if (gid > 0 && parentWidget()) {
             for (QWidget* sibling : parentWidget()->findChildren<QWidget*>()) {
-                if (sibling != this && sibling->property("overlayGroupId").toInt() == gid)
+                if (sibling != this && sibling->property("overlayGroupId").toInt() == gid) {
                     sibling->move(sibling->pos() + delta);
+                    // Re-anchor siblings so they stay together during scrolling
+                    if (auto* sImg = qobject_cast<ImageWidget*>(sibling))
+                        emit sImg->imageMoved(sImg);
+                    else if (auto* sShape = qobject_cast<ShapeWidget*>(sibling))
+                        emit sShape->shapeMoved(sShape);
+                    else if (auto* sChart = qobject_cast<ChartWidget*>(sibling))
+                        emit sChart->chartMoved(sChart);
+                }
             }
         }
         emit imageMoved(this);
