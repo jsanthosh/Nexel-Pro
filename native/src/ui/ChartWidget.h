@@ -245,6 +245,7 @@ private:
     void drawAreaChart(QPainter& p, const QRect& plotArea);
     void drawDonutChart(QPainter& p, const QRect& plotArea);
     void drawWaterfallChart(QPainter& p, const QRect& plotArea);
+    void drawHistogramChart(QPainter& p, const QRect& plotArea);
     void drawTrendlines(QPainter& p, const QRect& plotArea);
     void drawDataLabels(QPainter& p, const QRect& plotArea);
     void drawSecondaryYAxis(QPainter& p, const QRect& plotArea,

@@ -521,9 +521,7 @@ void ChartWidget::paintEvent(QPaintEvent*) {
             drawDonutChart(p, plotArea);
             break;
         case ChartType::Histogram:
-            drawAxes(p, plotArea);
-            if (m_config.showGridLines) drawGridLines(p, plotArea);
-            drawColumnChart(p, plotArea);
+            drawHistogramChart(p, plotArea);
             break;
         case ChartType::Combo:
             drawComboChart(p, plotArea);
@@ -1836,6 +1834,125 @@ void ChartWidget::drawDonutChart(QPainter& p, const QRect& plotArea) {
         p.drawPath(donutSlice);
 
         startAngle -= spanAngle;
+    }
+}
+
+// --- Histogram Chart ---
+
+void ChartWidget::drawHistogramChart(QPainter& p, const QRect& plotArea) {
+    if (m_config.series.isEmpty()) return;
+
+    // Collect ALL numeric values from ALL visible series into one flat array
+    std::vector<double> allValues;
+    for (int si = 0; si < m_config.series.size(); ++si) {
+        if (!isSeriesVisible(si)) continue;
+        for (double v : m_config.series[si].yValues) {
+            if (!std::isnan(v) && !std::isinf(v)) allValues.push_back(v);
+        }
+    }
+    if (allValues.empty()) return;
+
+    // Compute bins using Sturges' rule: numBins = ceil(log2(n) + 1)
+    int numBins = std::max(5, static_cast<int>(std::ceil(std::log2(allValues.size()) + 1)));
+    double dataMin = *std::min_element(allValues.begin(), allValues.end());
+    double dataMax = *std::max_element(allValues.begin(), allValues.end());
+    if (dataMax == dataMin) { dataMax = dataMin + 1; }
+    double binWidth = (dataMax - dataMin) / numBins;
+
+    // Count frequencies per bin
+    std::vector<int> freq(numBins, 0);
+    for (double v : allValues) {
+        int bin = static_cast<int>((v - dataMin) / binWidth);
+        if (bin >= numBins) bin = numBins - 1;
+        if (bin < 0) bin = 0;
+        freq[bin]++;
+    }
+
+    int maxFreq = *std::max_element(freq.begin(), freq.end());
+    if (maxFreq == 0) return;
+
+    // Draw axes
+    p.setPen(QPen(QColor("#888"), 1));
+    p.drawLine(plotArea.left(), plotArea.top(), plotArea.left(), plotArea.bottom());
+    p.drawLine(plotArea.left(), plotArea.bottom(), plotArea.right(), plotArea.bottom());
+
+    // Y-axis: frequency labels
+    p.setFont(QFont("Arial", 8));
+    p.setPen(QColor("#666"));
+    int yStep = std::max(1, maxFreq / 5);
+    for (int f = 0; f <= maxFreq; f += yStep) {
+        double frac = static_cast<double>(f) / maxFreq;
+        int y = plotArea.bottom() - static_cast<int>(frac * plotArea.height());
+        p.drawLine(plotArea.left() - 4, y, plotArea.left(), y);
+        p.drawText(QRect(plotArea.left() - 45, y - 8, 40, 16),
+                   Qt::AlignRight | Qt::AlignVCenter, QString::number(f));
+    }
+
+    // X-axis: bin edge labels
+    double barPixelWidth = static_cast<double>(plotArea.width()) / numBins;
+    for (int i = 0; i <= numBins; ++i) {
+        double edge = dataMin + i * binWidth;
+        int x = plotArea.left() + static_cast<int>(i * barPixelWidth);
+        p.drawLine(x, plotArea.bottom(), x, plotArea.bottom() + 4);
+        // Show label every few bins to avoid overlap
+        if (i % std::max(1, numBins / 6) == 0 || i == numBins) {
+            QString label = (std::abs(edge) >= 1000)
+                ? QString::number(edge / 1000.0, 'f', 1) + "K"
+                : QString::number(edge, 'f', edge == static_cast<int>(edge) ? 0 : 1);
+            p.drawText(QRect(x - 25, plotArea.bottom() + 5, 50, 16),
+                       Qt::AlignCenter, label);
+        }
+    }
+
+    // Axis titles
+    if (!m_config.yAxisTitle.isEmpty()) {
+        p.save();
+        p.setFont(QFont("Arial", 9));
+        p.translate(12, plotArea.center().y());
+        p.rotate(-90);
+        p.drawText(QRect(-plotArea.height() / 2, -10, plotArea.height(), 20),
+                   Qt::AlignCenter, m_config.yAxisTitle);
+        p.restore();
+    } else {
+        p.save();
+        p.setFont(QFont("Arial", 9));
+        p.translate(12, plotArea.center().y());
+        p.rotate(-90);
+        p.drawText(QRect(-plotArea.height() / 2, -10, plotArea.height(), 20),
+                   Qt::AlignCenter, "Frequency");
+        p.restore();
+    }
+    if (!m_config.xAxisTitle.isEmpty()) {
+        p.setFont(QFont("Arial", 9));
+        p.drawText(QRect(plotArea.left(), plotArea.bottom() + 18, plotArea.width(), 16),
+                   Qt::AlignCenter, m_config.xAxisTitle);
+    }
+
+    // Draw histogram bars — NO gap between bars (key difference from column chart)
+    QColor barColor = m_config.series[0].color;
+    QColor borderColor = barColor.darker(120);
+    p.setPen(QPen(borderColor, 1));
+
+    for (int i = 0; i < numBins; ++i) {
+        double frac = static_cast<double>(freq[i]) / maxFreq;
+        int barHeight = static_cast<int>(frac * plotArea.height() * m_animProgress);
+        int x = plotArea.left() + static_cast<int>(i * barPixelWidth);
+        int w = static_cast<int>((i + 1) * barPixelWidth) - static_cast<int>(i * barPixelWidth);
+        int y = plotArea.bottom() - barHeight;
+
+        QRect barRect(x, y, w, barHeight);
+        p.setBrush(barColor);
+        p.drawRect(barRect);  // drawRect not drawRoundedRect — bars touch with sharp edges
+    }
+
+    // Draw gridlines behind bars (optional)
+    if (m_config.showHorizontalGridLines) {
+        p.setPen(QPen(QColor(200, 200, 200, 100), 1, Qt::DashLine));
+        for (int f = yStep; f <= maxFreq; f += yStep) {
+            double frac = static_cast<double>(f) / maxFreq;
+            int y = plotArea.bottom() - static_cast<int>(frac * plotArea.height());
+            p.drawLine(plotArea.left(), y, plotArea.right(), y);
+        }
     }
 }
 

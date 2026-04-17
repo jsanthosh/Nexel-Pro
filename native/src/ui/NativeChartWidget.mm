@@ -528,24 +528,20 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
       << "      \"animation\": { \"show\": " << (animate ? "true" : "false") << " }";
 
     if (isPieChart) {
-        // Pie/Donut: dataLabels is an ARRAY — one entry per data field to display.
-        // (SeriesProperties::setDataLabelProperties takes std::vector<DataLabelProperties>)
-        // Valid labelKey values: name, category, value, percentage
-        std::vector<std::string> keys;
-        if (config.dataLabelShowCategory) keys.push_back("category");
-        if (config.dataLabelShowValue)    keys.push_back("value");
-        if (config.dataLabelShowPercentage) keys.push_back("percentage");
-        // Default: show name if user hasn't enabled anything
-        if (keys.empty()) keys.push_back("name");
+        // Pie/Donut: pick the labelKey based on user's checkbox priority.
+        // Data2App JSON parser likely supports single dataLabels object only
+        // (even though C++ API takes a vector).
+        std::string labelKey = "name";  // default: show slice name
+        if (config.dataLabelShowPercentage) labelKey = "percentage";
+        else if (config.dataLabelShowValue) labelKey = "value";
+        else if (config.dataLabelShowCategory) labelKey = "category";
 
-        j << ",\n      \"dataLabels\": [";
-        for (size_t k = 0; k < keys.size(); ++k) {
-            if (k > 0) j << ", ";
-            j << "{ \"show\": true, \"labelKey\": \"" << keys[k] << "\""
-              << ", \"showConnector\": true"
-              << ", \"fontSize\": 11 }";
-        }
-        j << "]";
+        j << ",\n      \"dataLabels\": { "
+          << "\"show\": true"
+          << ", \"labelKey\": \"" << labelKey << "\""
+          << ", \"showConnector\": true"
+          << ", \"fontSize\": 11"
+          << " }";
     } else {
         // Column/bar/line/area: single dataLabels object
         j << ",\n      \"dataLabels\": { "
