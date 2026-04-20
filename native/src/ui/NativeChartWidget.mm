@@ -453,20 +453,9 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
 
     bool isPie = (config.type == ChartType::Pie || config.type == ChartType::Donut);
 
-    // Pie/Donut: still need xAxis data for legend category names, but no gridlines/ticks
+    // Pie/Donut: no xAxis/yAxis. Category names go inside data objects.
     if (isPie) {
-        maybeComma();
-        j << "  \"xAxis\": [{\n";
-        j << "    \"show\": false,\n";
-        j << "    \"data\": [";
-        if (!config.categoryLabels.isEmpty()) {
-            for (int i = 0; i < config.categoryLabels.size(); ++i) {
-                if (i > 0) j << ", ";
-                j << "\"" << escapeJson(config.categoryLabels[i].toStdString()) << "\"";
-            }
-        }
-        j << "]\n  }]";
-        needsComma = true;
+        // Skip axes entirely for pie
     } else {
         // ── X Axis ──
         maybeComma();
@@ -541,20 +530,28 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
       << "      \"animation\": { \"show\": " << (animate ? "true" : "false") << " }";
 
     if (isPieChart) {
-        // Pie/Donut: pick the labelKey based on user's checkbox priority.
-        // Data2App JSON parser likely supports single dataLabels object only
-        // (even though C++ API takes a vector).
-        std::string labelKey = "name";  // default: show slice name
-        if (config.dataLabelShowPercentage) labelKey = "percentage";
-        else if (config.dataLabelShowValue) labelKey = "value";
-        else if (config.dataLabelShowCategory) labelKey = "category";
-
+        // Pie data labels: per Data2App sample JSON format
+        bool pieShowLabels = showLabels || config.dataLabelShowCategory
+            || config.dataLabelShowValue || config.dataLabelShowPercentage;
         j << ",\n      \"dataLabels\": { "
-          << "\"show\": true"
-          << ", \"labelKey\": \"" << labelKey << "\""
+          << "\"show\": " << (pieShowLabels ? "true" : "false")
           << ", \"showConnector\": true"
-          << ", \"fontSize\": 11"
+          << ", \"connectorWidth\": 1"
+          << ", \"fontSize\": 12"
+          << ", \"fontColor\": \"#1d1d1d\""
+          << ", \"vLabelDistance\": 15"
+          << ", \"hLabelDistance\": 10"
           << " }";
+        // Pie-specific plot options
+        j << "\n    },\n    \"pie\": {\n"
+          << "      \"startAngle\": 0,\n"
+          << "      \"endAngle\": 360,\n"
+          << "      \"borderWidth\": 0,\n"
+          << "      \"borderColor\": \"white\",\n"
+          << "      \"radius\": \"75%\",\n"
+          << "      \"center\": [\"50%\", \"50%\"]\n"
+          << "    }\n  }";
+        needsComma = true;
     } else {
         // Column/bar/line/area: single dataLabels object
         j << ",\n      \"dataLabels\": { "
@@ -562,10 +559,9 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
           << ", \"hAlign\": \"" << hAlign << "\""
           << ", \"vAlign\": \"" << vAlign << "\""
           << ", \"inside\": " << (inside ? "true" : "false")
-          << " }";
+          << " }\n    }\n  }";
+        needsComma = true;
     }
-    j << "\n    }\n  }";
-    needsComma = true;
 
     // ── Series ──
     std::string typeStr = chartTypeToString(config.type);
@@ -585,24 +581,34 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         j << "      \"name\": \"" << escapeJson(s.name.toStdString()) << "\",\n";
         j << "      \"xIndex\": 0,\n";
         j << "      \"yIndex\": 0,\n";
-        // Pie/Donut: one color per slice, show each slice in the legend.
-        if (config.type == ChartType::Donut) {
-            j << "      \"innerRadius\": \"50%\",\n";
-            j << "      \"colorByPoint\": true,\n";
+        if (isPie) {
+            // Pie/Donut series: showInLegend + data as [{y:val, name:"label"}, ...]
             j << "      \"showInLegend\": true,\n";
-        } else if (config.type == ChartType::Pie) {
-            j << "      \"innerRadius\": 0,\n";
-            j << "      \"colorByPoint\": true,\n";
-            j << "      \"showInLegend\": true,\n";
+            if (config.type == ChartType::Donut) {
+                j << "      \"innerRadius\": \"50%\",\n";
+            }
+            j << "      \"data\": [\n";
+            for (int k = 0; k < s.yValues.size(); ++k) {
+                if (k > 0) j << ",\n";
+                double val = s.yValues[k];
+                if (std::isnan(val) || std::isinf(val)) val = 0.0;
+                std::string name = (k < config.categoryLabels.size())
+                    ? escapeJson(config.categoryLabels[k].toStdString())
+                    : ("Slice " + std::to_string(k + 1));
+                j << "        { \"y\": " << val << ", \"name\": \"" << name << "\" }";
+            }
+            j << "\n      ]\n";
+        } else {
+            // Other charts: flat data array
+            j << "      \"data\": [";
+            for (int k = 0; k < s.yValues.size(); ++k) {
+                if (k > 0) j << ", ";
+                double val = s.yValues[k];
+                if (std::isnan(val) || std::isinf(val)) val = 0.0;
+                j << val;
+            }
+            j << "]\n";
         }
-        j << "      \"data\": [";
-        for (int k = 0; k < s.yValues.size(); ++k) {
-            if (k > 0) j << ", ";
-            double val = s.yValues[k];
-            if (std::isnan(val) || std::isinf(val)) val = 0.0;
-            j << val;
-        }
-        j << "]\n";
         j << "    }";
     }
     j << "\n  ]\n";
