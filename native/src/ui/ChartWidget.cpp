@@ -1614,8 +1614,9 @@ void ChartWidget::drawPieChart(QPainter& p, const QRect& plotArea) {
         p.setBrush(colors[i % colors.size()]);
         p.drawPie(pieRect, startAngle, -spanAngle);
 
-        // Label (only show when animation is mostly complete)
-        if (m_animProgress > 0.7) {
+        // Data labels (only show when animation is mostly complete)
+        bool showLabels = (m_config.dataLabelPosition != DataLabelPosition::None);
+        if (showLabels && m_animProgress > 0.7 && frac >= 0.03) {
             double labelAlpha = (m_animProgress - 0.7) / 0.3;
             double midAngle = (startAngle - spanAngle / 2.0) / 16.0;
             double rad = qDegreesToRadians(midAngle);
@@ -1623,14 +1624,21 @@ void ChartWidget::drawPieChart(QPainter& p, const QRect& plotArea) {
             int lx = pieRect.center().x() + static_cast<int>(labelR * std::cos(rad));
             int ly = pieRect.center().y() - static_cast<int>(labelR * std::sin(rad));
 
-            if (frac >= 0.05) {
-                QColor labelColor("#555");
-                labelColor.setAlphaF(labelAlpha);
-                p.setPen(labelColor);
-                p.setFont(QFont("Arial", 8));
-                p.drawText(QRect(lx - 20, ly - 8, 40, 16), Qt::AlignCenter,
-                           QString::number(frac * 100, 'f', 1) + "%");
-            }
+            QStringList parts;
+            if (m_config.dataLabelShowCategory && i < m_config.categoryLabels.size())
+                parts << m_config.categoryLabels[i];
+            if (m_config.dataLabelShowValue)
+                parts << QString::number(s.yValues[i], 'f', s.yValues[i] == static_cast<int>(s.yValues[i]) ? 0 : 1);
+            if (m_config.dataLabelShowPercentage)
+                parts << QString::number(frac * 100, 'f', 1) + "%";
+            if (parts.isEmpty())
+                parts << QString::number(frac * 100, 'f', 1) + "%";
+
+            QColor labelColor("#555");
+            labelColor.setAlphaF(labelAlpha);
+            p.setPen(labelColor);
+            p.setFont(QFont("Arial", 8));
+            p.drawText(QRect(lx - 40, ly - 8, 80, 16), Qt::AlignCenter, parts.join(" "));
         }
 
         startAngle -= spanAngle;
@@ -1813,6 +1821,8 @@ void ChartWidget::drawDonutChart(QPainter& p, const QRect& plotArea) {
     QRect innerRect(plotArea.center().x() - innerSize / 2, plotArea.center().y() - innerSize / 2,
                     innerSize, innerSize);
 
+    bool showLabels = (m_config.dataLabelPosition != DataLabelPosition::None);
+
     int startAngle = 90 * 16;
     for (int i = 0; i < s.yValues.size(); ++i) {
         if (!isSeriesVisible(i)) continue;
@@ -1832,6 +1842,32 @@ void ChartWidget::drawDonutChart(QPainter& p, const QRect& plotArea) {
         p.setPen(QPen(Qt::white, 2));
         p.setBrush(colors[i % colors.size()]);
         p.drawPath(donutSlice);
+
+        // Data labels
+        if (showLabels && m_animProgress > 0.7 && frac >= 0.03) {
+            double labelAlpha = (m_animProgress - 0.7) / 0.3;
+            double midAngle = (startAngle - spanAngle / 2.0) / 16.0;
+            double rad = qDegreesToRadians(midAngle);
+            int labelR = size / 2 + 15;
+            int lx = outerRect.center().x() + static_cast<int>(labelR * std::cos(rad));
+            int ly = outerRect.center().y() - static_cast<int>(labelR * std::sin(rad));
+
+            QStringList parts;
+            if (m_config.dataLabelShowCategory && i < m_config.categoryLabels.size())
+                parts << m_config.categoryLabels[i];
+            if (m_config.dataLabelShowValue)
+                parts << QString::number(s.yValues[i], 'f', s.yValues[i] == static_cast<int>(s.yValues[i]) ? 0 : 1);
+            if (m_config.dataLabelShowPercentage)
+                parts << QString::number(frac * 100, 'f', 1) + "%";
+            if (parts.isEmpty())
+                parts << QString::number(frac * 100, 'f', 1) + "%";
+
+            QColor labelColor("#555");
+            labelColor.setAlphaF(labelAlpha);
+            p.setPen(labelColor);
+            p.setFont(QFont("Arial", 8));
+            p.drawText(QRect(lx - 40, ly - 8, 80, 16), Qt::AlignCenter, parts.join(" "));
+        }
 
         startAngle -= spanAngle;
     }
