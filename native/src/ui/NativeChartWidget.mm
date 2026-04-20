@@ -451,10 +451,23 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
         needsComma = true;
     }
 
-    // Pie/Donut charts have no cartesian axes — skip x/y axis blocks.
     bool isPie = (config.type == ChartType::Pie || config.type == ChartType::Donut);
 
-    if (!isPie) {
+    // Pie/Donut: still need xAxis data for legend category names, but no gridlines/ticks
+    if (isPie) {
+        maybeComma();
+        j << "  \"xAxis\": [{\n";
+        j << "    \"show\": false,\n";
+        j << "    \"data\": [";
+        if (!config.categoryLabels.isEmpty()) {
+            for (int i = 0; i < config.categoryLabels.size(); ++i) {
+                if (i > 0) j << ", ";
+                j << "\"" << escapeJson(config.categoryLabels[i].toStdString()) << "\"";
+            }
+        }
+        j << "]\n  }]";
+        needsComma = true;
+    } else {
         // ── X Axis ──
         maybeComma();
         j << "  \"xAxis\": [{\n";
