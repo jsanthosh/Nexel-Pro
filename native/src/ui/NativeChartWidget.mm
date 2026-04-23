@@ -444,6 +444,26 @@ std::string NativeChartWidget::chartConfigToJson(const ChartConfig& config, bool
     bool needsComma = false;
     auto maybeComma = [&]() { if (needsComma) j << ",\n"; };
 
+    // ── Chart area + Plot area ──
+    std::string bg = colorToHex(config.backgroundColor);
+    std::string plotBg = colorToHex(config.plotBackgroundColor);
+    std::string plotBorderCol = colorToHex(config.plotBorderColor);
+    std::string chartBorderCol = colorToHex(config.chartBorderColor);
+
+    j << "  \"chart\": {\n";
+    j << "    \"chartArea\": {\n";
+    j << "      \"backgroundColor\": \"" << bg << "\",\n";
+    j << "      \"borderWidth\": " << config.chartBorderWidth << ",\n";
+    j << "      \"borderColor\": \"" << chartBorderCol << "\"\n";
+    j << "    },\n";
+    j << "    \"plotArea\": {\n";
+    j << "      \"plotBackgroundColor\": \"" << plotBg << "\",\n";
+    j << "      \"plotBorderWidth\": " << config.plotBorderWidth << ",\n";
+    j << "      \"plotBorderColor\": \"" << plotBorderCol << "\"\n";
+    j << "    }\n";
+    j << "  }";
+    needsComma = true;
+
     // ── Title (only if set by user) ──
     if (!config.title.isEmpty()) {
         maybeComma();
