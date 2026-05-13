@@ -41,6 +41,40 @@ endif()
 # Threading support
 find_package(Threads REQUIRED)
 
+# ============================================================================
+# minizip-ng — streaming ZIP I/O for XLSX. Fetched at configure time, pinned.
+# BSD-3 licensed. Pure C, statically linked. Only ZIP+deflate enabled.
+# Uses system zlib (already a Qt dependency) instead of bundled zlib-ng to
+# avoid an install-rule conflict in zlib-ng 2.x.
+# ============================================================================
+find_package(ZLIB REQUIRED)
+
+include(FetchContent)
+set(MZ_COMPAT       OFF CACHE BOOL "" FORCE)
+set(MZ_BZIP2        OFF CACHE BOOL "" FORCE)
+set(MZ_LZMA         OFF CACHE BOOL "" FORCE)
+set(MZ_ZSTD         OFF CACHE BOOL "" FORCE)
+set(MZ_OPENSSL      OFF CACHE BOOL "" FORCE)
+set(MZ_PKCRYPT      OFF CACHE BOOL "" FORCE)
+set(MZ_WZAES        OFF CACHE BOOL "" FORCE)
+set(MZ_SIGNING      OFF CACHE BOOL "" FORCE)
+set(MZ_LIBBSD       OFF CACHE BOOL "" FORCE)
+set(MZ_ICONV        OFF CACHE BOOL "" FORCE)
+set(MZ_LIBCOMP      OFF CACHE BOOL "" FORCE)
+set(MZ_FORCE_FETCH_LIBS OFF CACHE BOOL "" FORCE)
+set(MZ_FETCH_LIBS       OFF CACHE BOOL "" FORCE)
+set(MZ_ZLIB         ON  CACHE BOOL "" FORCE)
+set(MZ_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
+set(MZ_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(MZ_BUILD_FUZZ_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    minizip-ng
+    GIT_REPOSITORY https://github.com/zlib-ng/minizip-ng.git
+    GIT_TAG        4.0.7
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(minizip-ng)
+
 # Qt Configuration
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -109,6 +143,12 @@ set(CORE_SOURCES
     src/core/RecalcScheduler.h
     src/core/FilterEngine.cpp
     src/core/FilterEngine.h
+)
+
+# I/O Sources (streaming XLSX/ZIP)
+set(IO_SOURCES
+    src/io/ZipStreamReader.cpp
+    src/io/ZipStreamReader.h
 )
 
 # Database Sources
@@ -248,6 +288,7 @@ set(APP_SOURCES
 add_executable(NativeSpreadsheet
     ${APP_SOURCES}
     ${CORE_SOURCES}
+    ${IO_SOURCES}
     ${DATABASE_SOURCES}
     ${SERVICES_SOURCES}
     ${UI_SOURCES}
@@ -267,6 +308,7 @@ target_link_libraries(NativeSpreadsheet
     Qt6::Qml
     SQLite::SQLite3
     Threads::Threads
+    MINIZIP::minizip
 )
 
 # Include directories
@@ -275,6 +317,7 @@ target_include_directories(NativeSpreadsheet PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/database
     ${CMAKE_CURRENT_SOURCE_DIR}/src/services
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/io
 )
 
 # macOS specific settings
@@ -361,6 +404,24 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
             COMMENT "Stripping debug symbols from binary")
     endif()
 endif()
+
+# ============================================================================
+# ZipStream smoke test (small, focused — does not depend on Spreadsheet stack)
+# Build with: cmake --build build --target test_zipstream
+# ============================================================================
+add_executable(test_zipstream EXCLUDE_FROM_ALL
+    tests/test_zipstream.cpp
+    src/io/ZipStreamReader.cpp
+    src/io/ZipStreamReader.h
+)
+target_link_libraries(test_zipstream
+    Qt6::Core
+    MINIZIP::minizip
+    Threads::Threads
+)
+target_include_directories(test_zipstream PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/io
+)
 
 # ============================================================================
 # Benchmark target (optional — not built by default)
