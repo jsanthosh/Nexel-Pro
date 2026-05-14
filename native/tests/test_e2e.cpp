@@ -488,6 +488,30 @@ void testXlsxRoundTrip_Comprehensive() {
     QFile::remove(tempPath);
 }
 
+void testXlsxRoundTrip_Comments() {
+    SECTION("XLSX Round-Trip: Cell Comments");
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("A1"));
+    sheet->setCellValue({2, 1}, QVariant("C2"));
+    sheet->getCell(CellAddress(0, 0))->setComment("This is cell A1");
+    sheet->getCell(CellAddress(2, 1))->setComment("Multi-line\nsecond line");
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_comments.xlsx";
+    auto imported = roundTrip(sheet, tempPath);
+    check(imported != nullptr, "comments: round-trip import succeeded");
+    if (!imported) return;
+
+    auto c1 = imported->getCellIfExists(0, 0);
+    auto c2 = imported->getCellIfExists(2, 1);
+    check(c1 && c1->hasComment(), "comments: A1 comment preserved");
+    check(c2 && c2->hasComment(), "comments: B3 comment preserved");
+    if (c1) check(c1->getComment() == "This is cell A1", "comments: A1 text preserved");
+    if (c2) check(c2->getComment().contains("Multi-line"),
+                  "comments: multi-line text preserved");
+
+    QFile::remove(tempPath);
+}
+
 void testXlsxRoundTrip_PrintSettings() {
     SECTION("XLSX Round-Trip: Print Settings");
     auto sheet = std::make_shared<Spreadsheet>();
@@ -1671,6 +1695,7 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_NamedRanges();
     testXlsxRoundTrip_MultipleSheets();
     testXlsxRoundTrip_Comprehensive();
+    testXlsxRoundTrip_Comments();
     testXlsxRoundTrip_PrintSettings();
     testXlsxRoundTrip_OOXMLTables();
     testXlsxRoundTrip_CustomTheme();

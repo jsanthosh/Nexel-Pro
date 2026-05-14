@@ -21,6 +21,9 @@ static bool parseThemeXml(const QByteArray& themeData, DocumentTheme& outTheme);
 static QByteArray generateThemeXml(const DocumentTheme& theme);
 static bool parseTableXml(const QByteArray& tableData, SpreadsheetTable& out);
 static QByteArray generateTableXml(const SpreadsheetTable& table, int id);
+static bool parseCommentsXml(const QByteArray& commentsData, Spreadsheet* sheet);
+static QByteArray generateCommentsXml(const Spreadsheet* sheet);
+static bool sheetHasAnyComment(const Spreadsheet* sheet);
 
 // Resolve a color string (theme or absolute) to "#RRGGBB" for XLSX export
 static QString resolveColorForExport(const QString& colorStr) {
@@ -95,6 +98,29 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
         QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
         QByteArray sheetRelsData = zip.fileData(sheetRelsPath);
         auto sheetRels = parseRels(sheetRelsData);
+
+        // Scan rels for table-typed and comments-typed relationships.
+        if (!sheetRelsData.isEmpty()) {
+            QXmlStreamReader relsXml(sheetRelsData);
+            while (!relsXml.atEnd()) {
+                relsXml.readNext();
+                if (relsXml.isStartElement() && relsXml.name() == u"Relationship") {
+                    const QString type   = relsXml.attributes().value("Type").toString();
+                    const QString target = relsXml.attributes().value("Target").toString();
+                    if (target.isEmpty()) continue;
+                    if (type.endsWith("/relationships/table")) {
+                        const QString tablePath = resolveRelativePath(fullSheetPath, target);
+                        SpreadsheetTable tbl;
+                        if (parseTableXml(zip.fileData(tablePath), tbl)) {
+                            spreadsheet->addTable(tbl);
+                        }
+                    } else if (type.endsWith("/relationships/comments")) {
+                        const QString commentsPath = resolveRelativePath(fullSheetPath, target);
+                        parseCommentsXml(zip.fileData(commentsPath), spreadsheet.get());
+                    }
+                }
+            }
+        }
 
         // ---- Hyperlink import: parse <hyperlink> elements from sheet XML ----
         {
@@ -519,6 +545,119 @@ static QByteArray generateThemeXml(const DocumentTheme& theme) {
     xml.writeEndElement(); // fmtScheme
     xml.writeEndElement(); // themeElements
     xml.writeEndElement(); // theme
+    xml.writeEndDocument();
+    buf.close();
+    return data;
+}
+
+// Parse xl/comments*.xml and apply each <comment> to its cell. Legacy comment
+// format only — Excel 365 threaded comments (xl/threadedComments/*) are not
+// yet supported.
+static bool parseCommentsXml(const QByteArray& commentsData, Spreadsheet* sheet) {
+    if (commentsData.isEmpty() || !sheet) return false;
+
+    auto colLetterToIndex = [](const QString& letters) {
+        int r = 0;
+        for (int i = 0; i < letters.length(); ++i) {
+            r = r * 26 + (letters[i].unicode() - 'A' + 1);
+        }
+        return r - 1;
+    };
+
+    QXmlStreamReader xml(commentsData);
+    bool anyApplied = false;
+    QString currentRef;
+    QString currentText;
+    bool inComment = false;
+    bool inText = false;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            if (xml.name() == u"comment") {
+                inComment = true;
+                currentRef  = xml.attributes().value("ref").toString();
+                currentText.clear();
+            } else if (inComment && xml.name() == u"text") {
+                inText = true;
+            }
+        } else if (xml.isCharacters() && inText) {
+            currentText += xml.text().toString();
+        } else if (xml.isEndElement()) {
+            if (xml.name() == u"text") {
+                inText = false;
+            } else if (xml.name() == u"comment") {
+                if (!currentRef.isEmpty() && !currentText.isEmpty()) {
+                    // Parse "A1" into row/col
+                    QString letters;
+                    int numStart = -1;
+                    for (int i = 0; i < currentRef.length(); ++i) {
+                        if (currentRef[i].isLetter()) letters += currentRef[i];
+                        else { numStart = i; break; }
+                    }
+                    if (numStart > 0) {
+                        const int col = colLetterToIndex(letters);
+                        const int row = currentRef.mid(numStart).toInt() - 1;
+                        if (row >= 0 && col >= 0) {
+                            auto cell = sheet->getCell(CellAddress(row, col));
+                            cell->setComment(currentText.trimmed());
+                            anyApplied = true;
+                        }
+                    }
+                }
+                inComment = false;
+            }
+        }
+    }
+    return anyApplied;
+}
+
+// Scan a sheet for any cell carrying a comment.
+static bool sheetHasAnyComment(const Spreadsheet* sheet) {
+    if (!sheet) return false;
+    bool found = false;
+    const_cast<Spreadsheet*>(sheet)->forEachCell([&](int, int, const Cell& cell) {
+        if (cell.hasComment()) found = true;
+    });
+    return found;
+}
+
+// Emit xl/commentsN.xml for every commented cell on a sheet.
+static QByteArray generateCommentsXml(const Spreadsheet* sheet) {
+    auto colToLetter = [](int col) {
+        QString r; col++;
+        while (col > 0) { col--; r.prepend(QChar('A' + (col % 26))); col /= 26; }
+        return r;
+    };
+
+    QByteArray data;
+    QBuffer buf(&data);
+    buf.open(QIODevice::WriteOnly);
+    QXmlStreamWriter xml(&buf);
+    xml.setAutoFormatting(true);
+    xml.writeStartDocument();
+
+    xml.writeStartElement("comments");
+    xml.writeAttribute("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
+
+    xml.writeStartElement("authors");
+    xml.writeTextElement("author", "Nexel");
+    xml.writeEndElement(); // authors
+
+    xml.writeStartElement("commentList");
+    const_cast<Spreadsheet*>(sheet)->forEachCell([&](int row, int col, const Cell& cell) {
+        if (!cell.hasComment()) return;
+        xml.writeStartElement("comment");
+        xml.writeAttribute("ref", colToLetter(col) + QString::number(row + 1));
+        xml.writeAttribute("authorId", "0");
+        xml.writeStartElement("text");
+        xml.writeStartElement("r");
+        xml.writeTextElement("t", cell.getComment());
+        xml.writeEndElement(); // r
+        xml.writeEndElement(); // text
+        xml.writeEndElement(); // comment
+    });
+    xml.writeEndElement(); // commentList
+    xml.writeEndElement(); // comments
     xml.writeEndDocument();
     buf.close();
     return data;
@@ -1974,7 +2113,7 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
         const QByteArray sheetRelsData = zip.readEntry(sheetRelsPath);
         const auto sheetRels = parseRels(sheetRelsData);
 
-        // Table import: scan the rels for table-typed relationships and load each.
+        // Scan rels once for table-typed and comments-typed relationships.
         if (!sheetRelsData.isEmpty()) {
             QXmlStreamReader relsXml(sheetRelsData);
             while (!relsXml.atEnd()) {
@@ -1982,13 +2121,16 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
                 if (relsXml.isStartElement() && relsXml.name() == u"Relationship") {
                     const QString type   = relsXml.attributes().value("Type").toString();
                     const QString target = relsXml.attributes().value("Target").toString();
-                    if (type.endsWith("/relationships/table") && !target.isEmpty()) {
+                    if (target.isEmpty()) continue;
+                    if (type.endsWith("/relationships/table")) {
                         const QString tablePath = resolveRelativePath(fullSheetPath, target);
-                        const QByteArray tableData = zip.readEntry(tablePath);
                         SpreadsheetTable tbl;
-                        if (parseTableXml(tableData, tbl)) {
+                        if (parseTableXml(zip.readEntry(tablePath), tbl)) {
                             spreadsheet->addTable(tbl);
                         }
+                    } else if (type.endsWith("/relationships/comments")) {
+                        const QString commentsPath = resolveRelativePath(fullSheetPath, target);
+                        parseCommentsXml(zip.readEntry(commentsPath), spreadsheet.get());
                     }
                 }
             }
@@ -2204,11 +2346,15 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
     // workbook's DocumentTheme round-trips even when no custom theme was set.
     const bool hasTheme = true;
     int totalTableCount = 0;
-    for (const auto& sheet : sheets) totalTableCount += static_cast<int>(sheet->getTables().size());
+    int totalCommentsCount = 0;
+    for (const auto& sheet : sheets) {
+        totalTableCount += static_cast<int>(sheet->getTables().size());
+        if (sheetHasAnyComment(sheet.get())) ++totalCommentsCount;
+    }
     zip.writeEntry("[Content_Types].xml",
                    generateContentTypes(sheetCount, !sharedStrings.isEmpty(),
                                         totalChartCount, drawingSheetNums, hasCustomJson, hasTheme,
-                                        totalTableCount));
+                                        totalTableCount, totalCommentsCount));
     zip.writeEntry("_rels/.rels", generateRels());
     zip.writeEntry("xl/workbook.xml", generateWorkbook(sheets));
     zip.writeEntry("xl/_rels/workbook.xml.rels",
@@ -2227,6 +2373,9 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
     // afterwards when writing table files and sheet rels.
     std::vector<std::vector<std::pair<int, int>>> sheetTableInfo(sheetCount);
     int globalTableNum = 1;
+    // Per-sheet comments tracking. {globalCommentsNum, rIdWithinSheet} or {0,0}.
+    std::vector<std::pair<int, int>> sheetCommentsInfo(sheetCount, {0, 0});
+    int globalCommentsNum = 1;
 
     // Second pass: stream each sheet directly into the zip.
     int sheetIdx = 0;
@@ -2755,6 +2904,16 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             xml.writeEndElement(); // tableParts
         }
 
+        // Track a comments rId for this sheet (after hyperlinks + tables).
+        // The comments XML file is written after the sheet loop completes.
+        if (sheetHasAnyComment(sheet.get())) {
+            const int commentsRId = nextRId
+                                    + static_cast<int>(sheetHyperlinks.size())
+                                    + static_cast<int>(sheetTables.size());
+            sheetCommentsInfo[sheetIdx] = {globalCommentsNum, commentsRId};
+            globalCommentsNum++;
+        }
+
         xml.writeEndElement(); // worksheet
         xml.writeEndDocument();
         // sheetDev destructs at end of iteration, closing the zip entry.
@@ -2807,13 +2966,25 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         }
     }
 
-    // Unified sheet rels pass — handles drawing, hyperlinks, and tables.
+    // Write per-sheet comments XML files (legacy <comments> format).
+    int totalCommentsFiles = 0;
+    for (int si = 0; si < sheetCount; ++si) {
+        const auto& [commentsNum, _rId] = sheetCommentsInfo[si];
+        if (commentsNum == 0) continue;
+        zip.writeEntry(QString("xl/comments%1.xml").arg(commentsNum),
+                       generateCommentsXml(sheets[si].get()));
+        ++totalCommentsFiles;
+    }
+
+    // Unified sheet rels pass — handles drawing, hyperlinks, tables, comments.
     for (int si = 0; si < sheetCount; ++si) {
         const bool hasDrawing = chartsPerSheet.count(si) > 0;
         const bool hasHyperlinks = (si < static_cast<int>(allSheetHyperlinks.size()) &&
                                      !allSheetHyperlinks[si].empty());
         const bool hasTables = !sheetTableInfo[si].empty();
-        if (!hasDrawing && !hasHyperlinks && !hasTables) continue;
+        const auto& [commentsNum, commentsRId] = sheetCommentsInfo[si];
+        const bool hasComments = (commentsNum != 0);
+        if (!hasDrawing && !hasHyperlinks && !hasTables && !hasComments) continue;
 
         QString relsXml;
         relsXml += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
@@ -2837,6 +3008,11 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                                    "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" "
                                    "Target=\"../tables/table%2.xml\"/>\n").arg(rId).arg(tableNum);
             }
+        }
+        if (hasComments) {
+            relsXml += QString("<Relationship Id=\"rId%1\" "
+                               "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" "
+                               "Target=\"../comments%2.xml\"/>\n").arg(commentsRId).arg(commentsNum);
         }
         relsXml += "</Relationships>\n";
         zip.writeEntry(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(si + 1),
@@ -3025,7 +3201,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrings,
                                                int chartCount, const std::vector<int>& drawingSheetNums,
                                                bool hasCustomJson, bool hasTheme,
-                                               int tableCount) {
+                                               int tableCount, int commentsCount) {
     QByteArray data;
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
@@ -3104,6 +3280,13 @@ QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrin
         xml.writeStartElement("Override");
         xml.writeAttribute("PartName", QString("/xl/tables/table%1.xml").arg(t));
         xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml");
+        xml.writeEndElement();
+    }
+
+    for (int c = 1; c <= commentsCount; ++c) {
+        xml.writeStartElement("Override");
+        xml.writeAttribute("PartName", QString("/xl/comments%1.xml").arg(c));
+        xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml");
         xml.writeEndElement();
     }
 
