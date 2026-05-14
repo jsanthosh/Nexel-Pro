@@ -1,5 +1,6 @@
 #include "XlsxService.h"
 #include "../core/DocumentTheme.h"
+#include "../io/ZipStreamReader.h"
 #include <QFile>
 #include <QXmlStreamReader>
 #include <QXmlStreamWriter>
@@ -411,10 +412,9 @@ std::vector<XlsxService::SheetInfo> XlsxService::parseWorkbook(const QByteArray&
     return sheets;
 }
 
-QStringList XlsxService::parseSharedStrings(const QByteArray& xmlData) {
+// Shared parse loop for both the QByteArray and QIODevice entry points.
+static QStringList parseSharedStringsFromReader(QXmlStreamReader& xml) {
     QStringList strings;
-    QXmlStreamReader xml(xmlData);
-
     QString currentString;
     bool inSi = false;
     bool inT = false;
@@ -423,7 +423,6 @@ QStringList XlsxService::parseSharedStrings(const QByteArray& xmlData) {
         xml.readNext();
         if (xml.isStartElement()) {
             if (xml.name() == u"sst") {
-                // Pre-reserve from uniqueCount to avoid QStringList reallocations
                 int count = xml.attributes().value("uniqueCount").toInt();
                 if (count > 0) strings.reserve(count);
             } else if (xml.name() == u"si") {
@@ -433,7 +432,6 @@ QStringList XlsxService::parseSharedStrings(const QByteArray& xmlData) {
                 inT = true;
             }
         } else if (xml.isCharacters() && inT) {
-            // Only capture text inside <t> elements, not XML indentation whitespace
             currentString += xml.text().toString();
         } else if (xml.isEndElement()) {
             if (xml.name() == u"t") {
@@ -444,8 +442,17 @@ QStringList XlsxService::parseSharedStrings(const QByteArray& xmlData) {
             }
         }
     }
-
     return strings;
+}
+
+QStringList XlsxService::parseSharedStrings(const QByteArray& xmlData) {
+    QXmlStreamReader xml(xmlData);
+    return parseSharedStringsFromReader(xml);
+}
+
+QStringList XlsxService::parseSharedStrings(QIODevice* device) {
+    QXmlStreamReader xml(device);
+    return parseSharedStringsFromReader(xml);
 }
 
 std::vector<XlsxService::XlsxFont> XlsxService::parseFonts(const QByteArray& stylesXml) {
@@ -1125,13 +1132,15 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
 // ============================================================================
 // Streaming sheet parser with progress callback
 // ============================================================================
-void XlsxService::parseSheetStreaming(const QByteArray& xmlData, const QStringList& sharedStrings,
+void XlsxService::parseSheetStreaming(QIODevice* device, qint64 byteSizeHint,
+                                       const QStringList& sharedStrings,
                                        const std::vector<CellStyle>& styles, Spreadsheet* sheet,
-                                       ImportProgressCallback progress, int sheetIndex) {
-    QXmlStreamReader xml(xmlData);
+                                       ImportProgressCallback progress, int sheetIndex,
+                                       QString* outDrawingRId) {
+    QXmlStreamReader xml(device);
 
-    // Pre-reserve based on XML size heuristic
-    size_t estimatedCells = static_cast<size_t>(xmlData.size()) / 100;
+    // Pre-reserve based on uncompressed-size hint from the zip directory.
+    size_t estimatedCells = static_cast<size_t>(byteSizeHint > 0 ? byteSizeHint : 0) / 100;
     if (estimatedCells > 4096) {
         sheet->reserveCells(estimatedCells);
     }
@@ -1180,6 +1189,24 @@ void XlsxService::parseSheetStreaming(const QByteArray& xmlData, const QStringLi
             if (progress && (rowCount % PROGRESS_INTERVAL == 0)) {
                 progress(rowCount, sheetIndex);
             }
+            continue;
+        }
+
+        // Capture <drawing r:id="..."/> for chart resolution without a second read pass.
+        if (outDrawingRId && xml.isStartElement() && xml.name() == u"drawing") {
+            static const QString relNs =
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+            QString rId = xml.attributes().value(relNs, "id").toString();
+            if (rId.isEmpty()) rId = xml.attributes().value("r:id").toString();
+            if (rId.isEmpty()) {
+                for (const auto& attr : xml.attributes()) {
+                    if (attr.qualifiedName().toString().endsWith(":id")) {
+                        rId = attr.value().toString();
+                        break;
+                    }
+                }
+            }
+            *outDrawingRId = rId;
             continue;
         }
 
@@ -1410,38 +1437,44 @@ void XlsxService::parseSheetStreaming(const QByteArray& xmlData, const QStringLi
 
 // ============================================================================
 // Streaming import entry point
+//
+// Uses ZipStreamReader (minizip-ng wrapper) to read entries on demand. Large
+// XML parts (sharedStrings, sheets) are streamed through QXmlStreamReader on
+// the zip entry's QIODevice, so peak memory is bounded by parse-graph state
+// rather than file size. Small parts (workbook, styles, rels, drawings, charts,
+// custom JSON) are still read whole — they are tiny in practice.
 // ============================================================================
 XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
                                                        ImportProgressCallback progress) {
     XlsxImportResult result;
 
-    QZipReader zip(filePath);
-    if (!zip.isReadable()) return result;
+    ZipStreamReader zip(filePath);
+    if (!zip.isOpen()) return result;
 
-    // Read shared strings
+    // Streamed: shared strings can be many MB in real workbooks.
     QStringList sharedStrings;
-    QByteArray ssData = zip.fileData("xl/sharedStrings.xml");
-    if (!ssData.isEmpty()) {
-        sharedStrings = parseSharedStrings(ssData);
+    if (auto ssDev = zip.openEntry("xl/sharedStrings.xml")) {
+        sharedStrings = parseSharedStrings(ssDev.get());
     }
 
-    // Parse styles
+    // Styles, workbook, workbook rels — small, read whole.
     std::vector<CellStyle> styles;
-    QByteArray stylesData = zip.fileData("xl/styles.xml");
-    if (!stylesData.isEmpty()) {
-        auto fonts = parseFonts(stylesData);
-        auto fills = parseFills(stylesData);
-        auto borders = parseBorders(stylesData);
-        auto cellXfs = parseCellXfs(stylesData);
-        auto customNumFmts = parseNumFmts(stylesData);
-        for (const auto& xf : cellXfs) {
-            styles.push_back(buildCellStyle(xf, fonts, fills, borders, xf.numFmtId, customNumFmts));
+    {
+        QByteArray stylesData = zip.readEntry("xl/styles.xml");
+        if (!stylesData.isEmpty()) {
+            auto fonts = parseFonts(stylesData);
+            auto fills = parseFills(stylesData);
+            auto borders = parseBorders(stylesData);
+            auto cellXfs = parseCellXfs(stylesData);
+            auto customNumFmts = parseNumFmts(stylesData);
+            for (const auto& xf : cellXfs) {
+                styles.push_back(buildCellStyle(xf, fonts, fills, borders, xf.numFmtId, customNumFmts));
+            }
         }
     }
 
-    // Parse workbook
-    QByteArray workbookData = zip.fileData("xl/workbook.xml");
-    QByteArray relsData = zip.fileData("xl/_rels/workbook.xml.rels");
+    QByteArray workbookData = zip.readEntry("xl/workbook.xml");
+    QByteArray relsData     = zip.readEntry("xl/_rels/workbook.xml.rels");
     auto sheetInfos = parseWorkbook(workbookData, relsData);
 
     if (sheetInfos.empty()) {
@@ -1451,59 +1484,61 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
         sheetInfos.push_back(si);
     }
 
-    // Parse each sheet with streaming progress
     for (int sheetIdx = 0; sheetIdx < static_cast<int>(sheetInfos.size()); ++sheetIdx) {
         const auto& info = sheetInfos[sheetIdx];
-        QString path = "xl/" + info.filePath;
-        QByteArray sheetData = zip.fileData(path);
-        if (sheetData.isEmpty()) continue;
+        const QString fullSheetPath = "xl/" + info.filePath;
 
         auto spreadsheet = std::make_shared<Spreadsheet>();
         spreadsheet->setAutoRecalculate(false);
         spreadsheet->setSheetName(info.name);
 
-        // Use streaming parser with progress callback
-        parseSheetStreaming(sheetData, sharedStrings, styles, spreadsheet.get(), progress, sheetIdx);
+        QString drawingRId;
 
-        // Parse sheet rels for charts (same as non-streaming)
-        QString fullSheetPath = "xl/" + info.filePath;
-        int lastSlash = fullSheetPath.lastIndexOf('/');
-        QString sheetDirPath = fullSheetPath.left(lastSlash);
-        QString sheetFileName = fullSheetPath.mid(lastSlash + 1);
-        QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
-        QByteArray sheetRelsData = zip.fileData(sheetRelsPath);
-        auto sheetRels = parseRels(sheetRelsData);
+        // Stream the sheet body directly from the zip entry.
+        {
+            auto sheetDev = zip.openEntry(fullSheetPath);
+            if (!sheetDev) continue;
+            const qint64 sizeHint = sheetDev->size();
+            parseSheetStreaming(sheetDev.get(), sizeHint, sharedStrings, styles,
+                                spreadsheet.get(), progress, sheetIdx, &drawingRId);
+        } // sheetDev destructed here closes the active entry on the zip reader.
 
-        // Chart import
-        QByteArray sheetXmlForDrawing = sheetData;
-        QString drawingRId = findDrawingRId(sheetXmlForDrawing);
-        if (!drawingRId.isEmpty() && sheetRels.count(drawingRId)) {
-            QString drawingPath = resolveRelativePath(fullSheetPath, sheetRels[drawingRId]);
-            QByteArray drawingData = zip.fileData(drawingPath);
-            if (!drawingData.isEmpty()) {
-                auto chartRefs = parseDrawing(drawingData);
-                int dLastSlash = drawingPath.lastIndexOf('/');
-                QString drawingDir = drawingPath.left(dLastSlash);
-                QString drawingFile = drawingPath.mid(dLastSlash + 1);
-                QString drawingRelsPath = drawingDir + "/_rels/" + drawingFile + ".rels";
-                QByteArray drawingRelsData = zip.fileData(drawingRelsPath);
-                auto drawingRels = parseRels(drawingRelsData);
+        // Chart import — all small entries, safe to readEntry sequentially.
+        if (!drawingRId.isEmpty()) {
+            const int lastSlash = fullSheetPath.lastIndexOf('/');
+            const QString sheetDirPath = fullSheetPath.left(lastSlash);
+            const QString sheetFileName = fullSheetPath.mid(lastSlash + 1);
+            const QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
+            const QByteArray sheetRelsData = zip.readEntry(sheetRelsPath);
+            const auto sheetRels = parseRels(sheetRelsData);
 
-                for (const auto& cref : chartRefs) {
-                    if (drawingRels.count(cref.chartRId)) {
-                        QString chartPath = resolveRelativePath(drawingPath, drawingRels[cref.chartRId]);
-                        QByteArray chartData = zip.fileData(chartPath);
-                        if (!chartData.isEmpty()) {
-                            ImportedChart chart = parseChartXml(chartData);
-                            chart.sheetIndex = sheetIdx;
-                            chart.x = cref.fromCol * 70;
-                            chart.y = cref.fromRow * 25;
-                            chart.width = (cref.toCol - cref.fromCol) * 70;
-                            chart.height = (cref.toRow - cref.fromRow) * 25;
-                            if (chart.width < 200) chart.width = 420;
-                            if (chart.height < 100) chart.height = 320;
-                            result.charts.push_back(chart);
-                        }
+            if (sheetRels.count(drawingRId)) {
+                const QString drawingPath = resolveRelativePath(fullSheetPath, sheetRels.at(drawingRId));
+                const QByteArray drawingData = zip.readEntry(drawingPath);
+                if (!drawingData.isEmpty()) {
+                    const auto chartRefs = parseDrawing(drawingData);
+                    const int dLastSlash = drawingPath.lastIndexOf('/');
+                    const QString drawingDir = drawingPath.left(dLastSlash);
+                    const QString drawingFile = drawingPath.mid(dLastSlash + 1);
+                    const QString drawingRelsPath = drawingDir + "/_rels/" + drawingFile + ".rels";
+                    const QByteArray drawingRelsData = zip.readEntry(drawingRelsPath);
+                    const auto drawingRels = parseRels(drawingRelsData);
+
+                    for (const auto& cref : chartRefs) {
+                        auto it = drawingRels.find(cref.chartRId);
+                        if (it == drawingRels.end()) continue;
+                        const QString chartPath = resolveRelativePath(drawingPath, it->second);
+                        const QByteArray chartData = zip.readEntry(chartPath);
+                        if (chartData.isEmpty()) continue;
+                        ImportedChart chart = parseChartXml(chartData);
+                        chart.sheetIndex = sheetIdx;
+                        chart.x = cref.fromCol * 70;
+                        chart.y = cref.fromRow * 25;
+                        chart.width = (cref.toCol - cref.fromCol) * 70;
+                        chart.height = (cref.toRow - cref.fromRow) * 25;
+                        if (chart.width < 200) chart.width = 420;
+                        if (chart.height < 100) chart.height = 320;
+                        result.charts.push_back(chart);
                     }
                 }
             }
@@ -1512,8 +1547,8 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
         result.sheets.push_back(spreadsheet);
     }
 
-    // Check for Nexel-native custom JSON
-    QByteArray customJson = zip.fileData("xl/nexel/custom.json");
+    // Nexel-native custom JSON (round-trip extras).
+    const QByteArray customJson = zip.readEntry("xl/nexel/custom.json");
     if (!customJson.isEmpty()) {
         QJsonDocument doc = QJsonDocument::fromJson(customJson);
         if (doc.isObject()) {

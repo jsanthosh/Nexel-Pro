@@ -461,6 +461,7 @@ target_include_directories(benchmark_20m PRIVATE
 add_executable(stress_test EXCLUDE_FROM_ALL
     benchmarks/stress_test.cpp
     ${CORE_SOURCES}
+    ${IO_SOURCES}
     ${DATABASE_SOURCES}
     ${SERVICES_SOURCES}
 )
@@ -468,6 +469,7 @@ target_link_libraries(stress_test
     Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent
     SQLite::SQLite3
     Threads::Threads
+    MINIZIP::minizip
 )
 target_include_directories(stress_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -481,6 +483,7 @@ target_include_directories(stress_test PRIVATE
 add_executable(test_all EXCLUDE_FROM_ALL
     tests/test_all.cpp
     ${CORE_SOURCES}
+    ${IO_SOURCES}
     ${DATABASE_SOURCES}
     ${SERVICES_SOURCES}
 )
@@ -488,6 +491,7 @@ target_link_libraries(test_all
     Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent
     SQLite::SQLite3
     Threads::Threads
+    MINIZIP::minizip
 )
 target_include_directories(test_all PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -500,6 +504,7 @@ target_include_directories(test_all PRIVATE
 add_executable(test_e2e EXCLUDE_FROM_ALL
     tests/test_e2e.cpp
     ${CORE_SOURCES}
+    ${IO_SOURCES}
     ${DATABASE_SOURCES}
     ${SERVICES_SOURCES}
 )
@@ -507,6 +512,7 @@ target_link_libraries(test_e2e
     Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent
     SQLite::SQLite3
     Threads::Threads
+    MINIZIP::minizip
 )
 target_include_directories(test_e2e PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -519,6 +525,7 @@ target_include_directories(test_e2e PRIVATE
 add_executable(test_regression EXCLUDE_FROM_ALL
     tests/test_regression.cpp
     ${CORE_SOURCES}
+    ${IO_SOURCES}
     ${DATABASE_SOURCES}
     ${SERVICES_SOURCES}
 )
@@ -526,6 +533,7 @@ target_link_libraries(test_regression
     Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent Qt6::Network
     SQLite::SQLite3
     Threads::Threads
+    MINIZIP::minizip
 )
 target_include_directories(test_regression PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -539,6 +547,7 @@ find_package(Qt6 COMPONENTS Test QUIET)
 add_executable(test_ui EXCLUDE_FROM_ALL
     tests/test_ui.cpp
     ${CORE_SOURCES}
+    ${IO_SOURCES}
     ${DATABASE_SOURCES}
     ${SERVICES_SOURCES}
     ${UI_SOURCES}
@@ -547,6 +556,7 @@ target_link_libraries(test_ui
     Qt6::Core Qt6::CorePrivate Qt6::Gui Qt6::Widgets Qt6::Sql Qt6::Network Qt6::Concurrent Qt6::Qml Qt6::Test
     SQLite::SQLite3
     Threads::Threads
+    MINIZIP::minizip
 )
 target_include_directories(test_ui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -563,6 +573,7 @@ target_include_directories(test_ui PRIVATE
 add_executable(test_behavior EXCLUDE_FROM_ALL
     tests/test_behavior.cpp
     ${CORE_SOURCES}
+    ${IO_SOURCES}
     ${DATABASE_SOURCES}
     ${SERVICES_SOURCES}
     ${UI_SOURCES}
@@ -571,6 +582,7 @@ target_link_libraries(test_behavior
     Qt6::Core Qt6::CorePrivate Qt6::Gui Qt6::Widgets Qt6::Sql Qt6::Network Qt6::Concurrent Qt6::Qml Qt6::Test
     SQLite::SQLite3
     Threads::Threads
+    MINIZIP::minizip
 )
 target_include_directories(test_behavior PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

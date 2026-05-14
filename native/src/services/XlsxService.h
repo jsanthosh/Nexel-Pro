@@ -141,6 +141,9 @@ private:
     };
 
     static QStringList parseSharedStrings(const QByteArray& xmlData);
+    // Streaming overload: parses directly from a QIODevice without materializing
+    // the entire shared-strings XML in memory.
+    static QStringList parseSharedStrings(QIODevice* device);
     static std::vector<SheetInfo> parseWorkbook(const QByteArray& workbookXml, const QByteArray& relsXml);
     static std::vector<XlsxFont> parseFonts(const QByteArray& stylesXml);
     static std::vector<XlsxFill> parseFills(const QByteArray& stylesXml);
@@ -155,10 +158,17 @@ private:
                                      const std::map<int, QString>& customNumFmts);
     static void parseSheet(const QByteArray& xmlData, const QStringList& sharedStrings,
                            const std::vector<CellStyle>& styles, Spreadsheet* sheet);
-    // Streaming variant with progress callback (reports every N rows)
-    static void parseSheetStreaming(const QByteArray& xmlData, const QStringList& sharedStrings,
+    // Streaming variant with progress callback (reports every N rows).
+    // Reads directly from a QIODevice so callers can pass an entry stream from
+    // ZipStreamReader without materializing the full sheet XML in memory.
+    // byteSizeHint is the uncompressed sheet size (used only for pre-reservation).
+    // outDrawingRId (optional) captures the <drawing r:id="..."/> reference so the
+    // caller can resolve chart drawings without re-reading the sheet XML.
+    static void parseSheetStreaming(QIODevice* device, qint64 byteSizeHint,
+                                    const QStringList& sharedStrings,
                                     const std::vector<CellStyle>& styles, Spreadsheet* sheet,
-                                    ImportProgressCallback progress, int sheetIndex);
+                                    ImportProgressCallback progress, int sheetIndex,
+                                    QString* outDrawingRId = nullptr);
     static int columnLetterToIndex(const QString& letters);
     static QString mapNumFmtId(int id, const std::map<int, QString>& customNumFmts);
     static bool isDateFormatCode(const QString& formatCode);
