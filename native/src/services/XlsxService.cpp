@@ -1,6 +1,7 @@
 #include "XlsxService.h"
 #include "../core/DocumentTheme.h"
 #include "../io/ZipStreamReader.h"
+#include "../io/ZipStreamWriter.h"
 #include <QFile>
 #include <QXmlStreamReader>
 #include <QXmlStreamWriter>
@@ -1635,7 +1636,6 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
     // Collect shared strings from all sheets
     QStringList sharedStrings;
     std::map<QString, int> ssMap; // string -> index
-    std::vector<QByteArray> sheetXmls;
 
     // Per-sheet hyperlink data for rels generation
     struct HyperlinkExport { QString url; int rId; };
@@ -1663,13 +1663,56 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         }
     }
 
-    // Second pass: generate sheets
+    // Pre-compute counts needed for [Content_Types].xml — done before the sheet
+    // generation loop so we can write zip header parts up-front and stream each
+    // sheet directly into the archive (no per-sheet QByteArray accumulation).
+    const int sheetCount = static_cast<int>(sheets.size());
+    int totalChartCount = 0;
+    std::vector<int> drawingSheetNums; // 1-based sheet numbers with drawings
+    for (auto& [si, indices] : chartsPerSheet) {
+        if (si < sheetCount) {
+            totalChartCount += static_cast<int>(indices.size());
+            drawingSheetNums.push_back(si + 1);
+        }
+    }
+
+    bool hasCustomJson = !charts.empty();
+    if (!hasCustomJson) {
+        for (const auto& sheet : sheets) {
+            if (!sheet->getValidationRules().empty() || !sheet->getTables().empty()) {
+                hasCustomJson = true;
+                break;
+            }
+            bool hasCheckbox = false;
+            sheet->forEachCell([&](int, int, const Cell& cell) {
+                if (cell.getStyle().numberFormat == "Checkbox") hasCheckbox = true;
+            });
+            if (hasCheckbox) { hasCustomJson = true; break; }
+        }
+    }
+
+    ZipStreamWriter zip(filePath);
+    if (!zip.isOpen()) return false;
+
+    // Header parts: small, written whole-buffer.
+    zip.writeEntry("[Content_Types].xml",
+                   generateContentTypes(sheetCount, !sharedStrings.isEmpty(),
+                                        totalChartCount, drawingSheetNums, hasCustomJson));
+    zip.writeEntry("_rels/.rels", generateRels());
+    zip.writeEntry("xl/workbook.xml", generateWorkbook(sheets));
+    zip.writeEntry("xl/_rels/workbook.xml.rels",
+                   generateWorkbookRels(sheetCount, !sharedStrings.isEmpty()));
+    zip.writeEntry("xl/styles.xml", generateStyles(sheets, styleIndexMap));
+    if (!sharedStrings.isEmpty()) {
+        zip.writeEntry("xl/sharedStrings.xml", generateSharedStrings(sharedStrings));
+    }
+
+    // Second pass: stream each sheet directly into the zip.
     int sheetIdx = 0;
     for (const auto& sheet : sheets) {
-        QByteArray sheetXml;
-        QBuffer buf(&sheetXml);
-        buf.open(QIODevice::WriteOnly);
-        QXmlStreamWriter xml(&buf);
+        auto sheetDev = zip.openEntry(QString("xl/worksheets/sheet%1.xml").arg(sheetIdx + 1));
+        if (!sheetDev) return false;
+        QXmlStreamWriter xml(sheetDev.get());
         xml.setAutoFormatting(true);
 
         xml.writeStartDocument();
@@ -2083,8 +2126,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 
         xml.writeEndElement(); // worksheet
         xml.writeEndDocument();
-        buf.close();
-        sheetXmls.push_back(sheetXml);
+        // sheetDev destructs at end of iteration, closing the zip entry.
 
         // Store hyperlink rels data for this sheet
         std::vector<HyperlinkExport> hlExports;
@@ -2096,54 +2138,6 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         sheetIdx++;
     }
 
-    // Build the ZIP
-    int sheetCount = static_cast<int>(sheets.size());
-
-    // Compute chart/drawing info for content types
-    int totalChartCount = 0;
-    std::vector<int> drawingSheetNums; // 1-based sheet numbers with drawings
-    for (auto& [si, indices] : chartsPerSheet) {
-        if (si < sheetCount) {
-            totalChartCount += static_cast<int>(indices.size());
-            drawingSheetNums.push_back(si + 1);
-        }
-    }
-
-    // Determine if we'll have custom JSON parts (for content type registration)
-    bool hasCustomJson = !charts.empty(); // nexel-charts.json
-    if (!hasCustomJson) {
-        for (const auto& sheet : sheets) {
-            if (!sheet->getValidationRules().empty() || !sheet->getTables().empty()) {
-                hasCustomJson = true;
-                break;
-            }
-            bool hasCheckbox = false;
-            sheet->forEachCell([&](int, int, const Cell& cell) {
-                if (cell.getStyle().numberFormat == "Checkbox") hasCheckbox = true;
-            });
-            if (hasCheckbox) { hasCustomJson = true; break; }
-        }
-    }
-
-    QZipWriter zip(filePath);
-    if (zip.status() != QZipWriter::NoError) return false;
-
-    zip.addFile("[Content_Types].xml",
-                generateContentTypes(sheetCount, !sharedStrings.isEmpty(),
-                                     totalChartCount, drawingSheetNums, hasCustomJson));
-    zip.addFile("_rels/.rels", generateRels());
-    zip.addFile("xl/workbook.xml", generateWorkbook(sheets));
-    zip.addFile("xl/_rels/workbook.xml.rels", generateWorkbookRels(sheetCount, !sharedStrings.isEmpty()));
-    zip.addFile("xl/styles.xml", generateStyles(sheets, styleIndexMap));
-
-    if (!sharedStrings.isEmpty()) {
-        zip.addFile("xl/sharedStrings.xml", generateSharedStrings(sharedStrings));
-    }
-
-    for (int i = 0; i < sheetCount; ++i) {
-        zip.addFile(QString("xl/worksheets/sheet%1.xml").arg(i + 1), sheetXmls[i]);
-    }
-
     // Generate OOXML chart parts (so Excel can display them)
     int globalChartNum = 1;
     for (auto& [si, indices] : chartsPerSheet) {
@@ -2153,7 +2147,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 
         // Generate chart XML files
         for (int ci : indices) {
-            zip.addFile(QString("xl/charts/chart%1.xml").arg(globalChartNum),
+            zip.writeEntry(QString("xl/charts/chart%1.xml").arg(globalChartNum),
                         generateChartXml(charts[ci], sheetName));
             globalChartNum++;
         }
@@ -2161,11 +2155,11 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         int chartCountForSheet = static_cast<int>(indices.size());
 
         // Drawing XML
-        zip.addFile(QString("xl/drawings/drawing%1.xml").arg(si + 1),
+        zip.writeEntry(QString("xl/drawings/drawing%1.xml").arg(si + 1),
                     generateDrawingXml(charts, indices));
 
         // Drawing relationships (maps rIdN -> chartN.xml)
-        zip.addFile(QString("xl/drawings/_rels/drawing%1.xml.rels").arg(si + 1),
+        zip.writeEntry(QString("xl/drawings/_rels/drawing%1.xml.rels").arg(si + 1),
                     generateDrawingRels(chartCountForSheet, startNum));
 
         // Sheet relationships (maps rId1 -> drawingN.xml, plus hyperlink rels)
@@ -2185,7 +2179,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                 }
             }
             relsXml += "</Relationships>\n";
-            zip.addFile(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(si + 1), relsXml.toUtf8());
+            zip.writeEntry(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(si + 1), relsXml.toUtf8());
         }
     }
 
@@ -2203,7 +2197,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                            .arg(hl.rId).arg(hl.url.toHtmlEscaped());
             }
             relsXml += "</Relationships>\n";
-            zip.addFile(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(i + 1), relsXml.toUtf8());
+            zip.writeEntry(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(i + 1), relsXml.toUtf8());
         }
     }
 
@@ -2228,7 +2222,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             chartsArray.append(obj);
         }
         QJsonDocument doc(chartsArray);
-        zip.addFile("docMetadata/nexel-charts.json", doc.toJson(QJsonDocument::Compact));
+        zip.writeEntry("docMetadata/nexel-charts.json", doc.toJson(QJsonDocument::Compact));
     }
 
     // Save Nexel-native metadata (picklist/checkbox definitions)
@@ -2378,11 +2372,11 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         if (!sheetsArray.isEmpty()) {
             metadata["sheets"] = sheetsArray;
             QJsonDocument metaDoc(metadata);
-            zip.addFile("docMetadata/nexel-metadata.json", metaDoc.toJson(QJsonDocument::Compact));
+            zip.writeEntry("docMetadata/nexel-metadata.json", metaDoc.toJson(QJsonDocument::Compact));
         }
     }
 
-    zip.close();
+    // ZipStreamWriter destructor finalizes the archive when zip goes out of scope.
     return true;
 }
 

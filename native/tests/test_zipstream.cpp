@@ -5,6 +5,7 @@
 // the content round-trips byte-for-byte.
 
 #include "ZipStreamReader.h"
+#include "ZipStreamWriter.h"
 
 #include "mz.h"
 #include "mz_strm.h"
@@ -15,6 +16,7 @@
 #include <QFile>
 #include <QTemporaryFile>
 #include <QXmlStreamReader>
+#include <QXmlStreamWriter>
 #include <QDebug>
 #include <cstring>
 
@@ -143,6 +145,70 @@ int main(int argc, char** argv) {
             }
             check(totalRead == largeXml.size(), "chunked read totals uncompressed size");
         }
+    }
+
+    // ---- ZipStreamWriter ----
+    QTemporaryFile wtmp("nexel_zipwriter_XXXXXX.zip");
+    wtmp.setAutoRemove(true);
+    if (!wtmp.open()) {
+        qCritical() << "writer tmpfile open failed";
+        return 1;
+    }
+    const QString writerZipPath = wtmp.fileName();
+    wtmp.close();
+
+    QByteArray streamedXml;
+    {
+        ZipStreamWriter w(writerZipPath);
+        check(w.isOpen(), "writer opened");
+
+        check(w.writeEntry("xl/workbook.xml", smallXml), "writeEntry small file");
+
+        {
+            auto dev = w.openEntry("xl/worksheets/sheet1.xml");
+            check(dev != nullptr, "writer openEntry returned device");
+            check(dev && dev->isOpen(), "write device is open");
+
+            QXmlStreamWriter xml(dev.get());
+            xml.writeStartDocument();
+            xml.writeStartElement("rows");
+            for (int i = 0; i < 20000; ++i) {
+                xml.writeStartElement("r");
+                xml.writeAttribute("i", QString::number(i));
+                xml.writeCharacters("value");
+                xml.writeEndElement();
+            }
+            xml.writeEndElement();
+            xml.writeEndDocument();
+        } // device destruct closes the entry
+
+        check(w.writeEntry("xl/sharedStrings.xml", QByteArray("<sst/>")),
+              "writeEntry after openEntry round (third entry)");
+    } // writer destruct closes the zip
+
+    // Read it back with ZipStreamReader and verify everything round-tripped.
+    {
+        ZipStreamReader r(writerZipPath);
+        check(r.isOpen(), "reopen writer output");
+
+        const QStringList ents = r.entries();
+        check(ents.size() == 3, "writer produced 3 entries");
+        check(ents.contains("xl/workbook.xml"), "writer entry: workbook.xml");
+        check(ents.contains("xl/worksheets/sheet1.xml"), "writer entry: sheet1.xml");
+        check(ents.contains("xl/sharedStrings.xml"), "writer entry: sharedStrings.xml");
+
+        check(r.readEntry("xl/workbook.xml") == smallXml, "writer round-trips small entry");
+
+        auto dev = r.openEntry("xl/worksheets/sheet1.xml");
+        check(dev != nullptr, "reopen streamed entry");
+        QXmlStreamReader xml(dev.get());
+        int rowCount = 0;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isStartElement() && xml.name() == QStringLiteral("r")) ++rowCount;
+        }
+        check(!xml.hasError(), "streamed entry parses cleanly");
+        check(rowCount == 20000, "streamed entry contains all 20000 rows");
     }
 
     if (g_failures) {

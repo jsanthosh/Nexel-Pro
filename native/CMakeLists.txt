@@ -149,6 +149,8 @@ set(CORE_SOURCES
 set(IO_SOURCES
     src/io/ZipStreamReader.cpp
     src/io/ZipStreamReader.h
+    src/io/ZipStreamWriter.cpp
+    src/io/ZipStreamWriter.h
 )
 
 # Database Sources
@@ -413,6 +415,8 @@ add_executable(test_zipstream EXCLUDE_FROM_ALL
     tests/test_zipstream.cpp
     src/io/ZipStreamReader.cpp
     src/io/ZipStreamReader.h
+    src/io/ZipStreamWriter.cpp
+    src/io/ZipStreamWriter.h
 )
 target_link_libraries(test_zipstream
     Qt6::Core
