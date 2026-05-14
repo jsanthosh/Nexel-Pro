@@ -77,7 +77,8 @@ private:
     static QByteArray generateContentTypes(int sheetCount, bool hasSharedStrings,
                                              int chartCount, const std::vector<int>& drawingSheetNums,
                                              bool hasCustomJson = false,
-                                             bool hasTheme = false);
+                                             bool hasTheme = false,
+                                             int tableCount = 0);
     static QByteArray generateRels();
     static QByteArray generateWorkbook(const std::vector<std::shared_ptr<Spreadsheet>>& sheets);
     static QByteArray generateWorkbookRels(int sheetCount, bool hasSharedStrings,

@@ -93,6 +93,33 @@ public:
     void sortRange(const CellRange& range, int sortColumn, bool ascending);
     void sortRangeMulti(const CellRange& range, const std::vector<std::pair<int, bool>>& sortKeys);
 
+    // Page/print settings (round-tripped through XLSX; UI in M3).
+    struct PrintSettings {
+        // Margins in inches (Excel defaults).
+        double leftMargin   = 0.7;
+        double rightMargin  = 0.7;
+        double topMargin    = 0.75;
+        double bottomMargin = 0.75;
+        double headerMargin = 0.3;
+        double footerMargin = 0.3;
+
+        // Orientation: 0 = default (Excel decides), 1 = portrait, 2 = landscape.
+        int  orientation   = 0;
+        int  paperSize     = 1;     // 1 = Letter, 9 = A4, etc. (OOXML codes).
+        int  scale         = 100;   // Print scaling %.
+        int  fitToWidth    = 0;     // 0 = no fit
+        int  fitToHeight   = 0;
+
+        bool printGridlines = false;
+        bool printHeadings  = false;
+
+        QString oddHeader;
+        QString oddFooter;
+    };
+    PrintSettings&       getPrintSettings()       { return m_printSettings; }
+    const PrintSettings& getPrintSettings() const { return m_printSettings; }
+    void setPrintSettings(const PrintSettings& s) { m_printSettings = s; }
+
     // Sheet protection
     void setProtected(bool protect, const QString& password = QString());
     bool isProtected() const;
@@ -351,6 +378,7 @@ private:
     int m_frozenColumns = 0;
     std::set<int> m_hiddenRows;
     std::set<int> m_hiddenColumns;
+    PrintSettings m_printSettings;
     DocumentTheme m_documentTheme = defaultDocumentTheme();
     CellStyle m_defaultCellStyle;
     bool m_hasDefaultStyle = false;

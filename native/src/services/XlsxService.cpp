@@ -19,6 +19,8 @@
 static std::vector<NamedRange> parseDefinedNames(const QByteArray& workbookXml);
 static bool parseThemeXml(const QByteArray& themeData, DocumentTheme& outTheme);
 static QByteArray generateThemeXml(const DocumentTheme& theme);
+static bool parseTableXml(const QByteArray& tableData, SpreadsheetTable& out);
+static QByteArray generateTableXml(const SpreadsheetTable& table, int id);
 
 // Resolve a color string (theme or absolute) to "#RRGGBB" for XLSX export
 static QString resolveColorForExport(const QString& colorStr) {
@@ -233,25 +235,40 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
                     }
                 }
 
-                // Restore table styles
+                // Restore table styles. The OOXML <table> parts already
+                // added the structural records; the JSON sidecar carries the
+                // theme colors that don't fit in OOXML's tableStyleInfo. So
+                // we update existing tables by name rather than re-adding.
                 if (sheetObj.contains("tables")) {
+                    auto& existing = sheet->getTablesRef();
                     for (const auto& tblVal : sheetObj["tables"].toArray()) {
                         QJsonObject tblObj = tblVal.toObject();
-                        SpreadsheetTable tbl;
-                        tbl.name = tblObj["name"].toString();
-                        tbl.range = CellRange(tblObj["range"].toString());
-                        tbl.hasHeaderRow = tblObj["hasHeaderRow"].toBool(true);
-                        tbl.bandedRows = tblObj["bandedRows"].toBool(true);
-                        for (const auto& cn : tblObj["columnNames"].toArray())
-                            tbl.columnNames.append(cn.toString());
+                        const QString name = tblObj["name"].toString();
                         QJsonObject themeObj = tblObj["theme"].toObject();
-                        tbl.theme.name = themeObj["name"].toString();
-                        tbl.theme.headerBg = QColor(themeObj["headerBg"].toString());
-                        tbl.theme.headerFg = QColor(themeObj["headerFg"].toString());
-                        tbl.theme.bandedRow1 = QColor(themeObj["bandedRow1"].toString());
-                        tbl.theme.bandedRow2 = QColor(themeObj["bandedRow2"].toString());
-                        tbl.theme.borderColor = QColor(themeObj["borderColor"].toString());
-                        sheet->addTable(tbl);
+                        auto applyTheme = [&](SpreadsheetTable& t) {
+                            t.theme.name        = themeObj["name"].toString();
+                            t.theme.headerBg    = QColor(themeObj["headerBg"].toString());
+                            t.theme.headerFg    = QColor(themeObj["headerFg"].toString());
+                            t.theme.bandedRow1  = QColor(themeObj["bandedRow1"].toString());
+                            t.theme.bandedRow2  = QColor(themeObj["bandedRow2"].toString());
+                            t.theme.borderColor = QColor(themeObj["borderColor"].toString());
+                        };
+
+                        bool merged = false;
+                        for (auto& t : existing) {
+                            if (t.name == name) { applyTheme(t); merged = true; break; }
+                        }
+                        if (!merged) {
+                            SpreadsheetTable tbl;
+                            tbl.name = name;
+                            tbl.range = CellRange(tblObj["range"].toString());
+                            tbl.hasHeaderRow = tblObj["hasHeaderRow"].toBool(true);
+                            tbl.bandedRows   = tblObj["bandedRows"].toBool(true);
+                            for (const auto& cn : tblObj["columnNames"].toArray())
+                                tbl.columnNames.append(cn.toString());
+                            applyTheme(tbl);
+                            sheet->addTable(tbl);
+                        }
                     }
                 }
 
@@ -502,6 +519,96 @@ static QByteArray generateThemeXml(const DocumentTheme& theme) {
     xml.writeEndElement(); // fmtScheme
     xml.writeEndElement(); // themeElements
     xml.writeEndElement(); // theme
+    xml.writeEndDocument();
+    buf.close();
+    return data;
+}
+
+// Parse xl/tables/table*.xml into a SpreadsheetTable. We round-trip structure
+// (range, name, columns, header) — colours come from the Nexel JSON sidecar.
+static bool parseTableXml(const QByteArray& tableData, SpreadsheetTable& out) {
+    if (tableData.isEmpty()) return false;
+    QXmlStreamReader xml(tableData);
+    bool found = false;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement() && xml.name() == u"table") {
+            const QString ref         = xml.attributes().value("ref").toString();
+            const QString displayName = xml.attributes().value("displayName").toString();
+            const QString name        = xml.attributes().value("name").toString();
+            const int headerRowCount  = xml.attributes().value("headerRowCount").toInt();
+            QString rangeText = ref;
+            rangeText.remove('$');
+            out.range = CellRange(rangeText);
+            out.name  = !displayName.isEmpty() ? displayName : name;
+            out.hasHeaderRow = (headerRowCount != 0);
+            found = true;
+        } else if (xml.isStartElement() && xml.name() == u"tableColumn") {
+            out.columnNames.append(xml.attributes().value("name").toString());
+        } else if (xml.isStartElement() && xml.name() == u"tableStyleInfo") {
+            const QStringView rowStripes = xml.attributes().value("showRowStripes");
+            out.bandedRows = (rowStripes == u"1" || rowStripes == u"true");
+        }
+    }
+    return found;
+}
+
+static QByteArray generateTableXml(const SpreadsheetTable& table, int id) {
+    auto colToLetter = [](int col) {
+        QString r; col++;
+        while (col > 0) { col--; r.prepend(QChar('A' + (col % 26))); col /= 26; }
+        return r;
+    };
+
+    QByteArray data;
+    QBuffer buf(&data);
+    buf.open(QIODevice::WriteOnly);
+    QXmlStreamWriter xml(&buf);
+    xml.setAutoFormatting(true);
+    xml.writeStartDocument();
+
+    const QString ref = colToLetter(table.range.getStart().col) +
+                        QString::number(table.range.getStart().row + 1) + ":" +
+                        colToLetter(table.range.getEnd().col) +
+                        QString::number(table.range.getEnd().row + 1);
+    const int colCount = table.range.getEnd().col - table.range.getStart().col + 1;
+    const QString displayName = table.name.isEmpty() ? QString("Table%1").arg(id) : table.name;
+
+    xml.writeStartElement("table");
+    xml.writeAttribute("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
+    xml.writeAttribute("id", QString::number(id));
+    xml.writeAttribute("name", displayName);
+    xml.writeAttribute("displayName", displayName);
+    xml.writeAttribute("ref", ref);
+    xml.writeAttribute("headerRowCount", table.hasHeaderRow ? "1" : "0");
+    xml.writeAttribute("totalsRowCount", "0");
+
+    xml.writeStartElement("autoFilter");
+    xml.writeAttribute("ref", ref);
+    xml.writeEndElement();
+
+    xml.writeStartElement("tableColumns");
+    xml.writeAttribute("count", QString::number(colCount));
+    for (int c = 0; c < colCount; ++c) {
+        xml.writeStartElement("tableColumn");
+        xml.writeAttribute("id", QString::number(c + 1));
+        const QString colName = (c < table.columnNames.size() && !table.columnNames[c].isEmpty())
+                                ? table.columnNames[c]
+                                : QString("Column%1").arg(c + 1);
+        xml.writeAttribute("name", colName);
+        xml.writeEndElement();
+    }
+    xml.writeEndElement(); // tableColumns
+
+    xml.writeStartElement("tableStyleInfo");
+    xml.writeAttribute("name", "TableStyleMedium2");
+    xml.writeAttribute("showFirstColumn", "0");
+    xml.writeAttribute("showLastColumn", "0");
+    xml.writeAttribute("showRowStripes", table.bandedRows ? "1" : "0");
+    xml.writeAttribute("showColumnStripes", "0");
+    xml.writeEndElement();
+
+    xml.writeEndElement(); // table
     xml.writeEndDocument();
     buf.close();
     return data;
@@ -1224,6 +1331,52 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
             continue;
         }
 
+        // Print settings: pageMargins / pageSetup / printOptions / headerFooter.
+        if (xml.isStartElement() && xml.name() == u"pageMargins") {
+            auto& ps = sheet->getPrintSettings();
+            ps.leftMargin   = xml.attributes().value("left").toDouble();
+            ps.rightMargin  = xml.attributes().value("right").toDouble();
+            ps.topMargin    = xml.attributes().value("top").toDouble();
+            ps.bottomMargin = xml.attributes().value("bottom").toDouble();
+            ps.headerMargin = xml.attributes().value("header").toDouble();
+            ps.footerMargin = xml.attributes().value("footer").toDouble();
+            continue;
+        }
+        if (xml.isStartElement() && xml.name() == u"pageSetup") {
+            auto& ps = sheet->getPrintSettings();
+            const QString orient = xml.attributes().value("orientation").toString();
+            if (orient == "portrait")       ps.orientation = 1;
+            else if (orient == "landscape") ps.orientation = 2;
+            const int paper = xml.attributes().value("paperSize").toInt();
+            if (paper > 0) ps.paperSize = paper;
+            const int scale = xml.attributes().value("scale").toInt();
+            if (scale > 0) ps.scale = scale;
+            ps.fitToWidth  = xml.attributes().value("fitToWidth").toInt();
+            ps.fitToHeight = xml.attributes().value("fitToHeight").toInt();
+            continue;
+        }
+        if (xml.isStartElement() && xml.name() == u"printOptions") {
+            auto& ps = sheet->getPrintSettings();
+            ps.printGridlines = (xml.attributes().value("gridLines") == u"1" ||
+                                  xml.attributes().value("gridLines") == u"true");
+            ps.printHeadings  = (xml.attributes().value("headings")  == u"1" ||
+                                  xml.attributes().value("headings")  == u"true");
+            continue;
+        }
+        if (xml.isStartElement() && xml.name() == u"headerFooter") {
+            auto& ps = sheet->getPrintSettings();
+            while (!xml.atEnd()) {
+                xml.readNext();
+                if (xml.isEndElement() && xml.name() == u"headerFooter") break;
+                if (xml.isStartElement() && xml.name() == u"oddHeader") {
+                    ps.oddHeader = xml.readElementText();
+                } else if (xml.isStartElement() && xml.name() == u"oddFooter") {
+                    ps.oddFooter = xml.readElementText();
+                }
+            }
+            continue;
+        }
+
         if (xml.isStartElement() && xml.name() == u"c") {
             QStringView ref = xml.attributes().value("r");
             QString type = xml.attributes().value("t").toString();  // Must own string — QStringView invalidated by readNext()
@@ -1438,6 +1591,52 @@ void XlsxService::parseSheetStreaming(QIODevice* device, qint64 byteSizeHint,
             rowCount++;
             if (progress && (rowCount % PROGRESS_INTERVAL == 0)) {
                 progress(rowCount, sheetIndex);
+            }
+            continue;
+        }
+
+        // Print settings: pageMargins / pageSetup / printOptions / headerFooter.
+        if (xml.isStartElement() && xml.name() == u"pageMargins") {
+            auto& ps = sheet->getPrintSettings();
+            ps.leftMargin   = xml.attributes().value("left").toDouble();
+            ps.rightMargin  = xml.attributes().value("right").toDouble();
+            ps.topMargin    = xml.attributes().value("top").toDouble();
+            ps.bottomMargin = xml.attributes().value("bottom").toDouble();
+            ps.headerMargin = xml.attributes().value("header").toDouble();
+            ps.footerMargin = xml.attributes().value("footer").toDouble();
+            continue;
+        }
+        if (xml.isStartElement() && xml.name() == u"pageSetup") {
+            auto& ps = sheet->getPrintSettings();
+            const QString orient = xml.attributes().value("orientation").toString();
+            if (orient == "portrait")       ps.orientation = 1;
+            else if (orient == "landscape") ps.orientation = 2;
+            const int paper = xml.attributes().value("paperSize").toInt();
+            if (paper > 0) ps.paperSize = paper;
+            const int scale = xml.attributes().value("scale").toInt();
+            if (scale > 0) ps.scale = scale;
+            ps.fitToWidth  = xml.attributes().value("fitToWidth").toInt();
+            ps.fitToHeight = xml.attributes().value("fitToHeight").toInt();
+            continue;
+        }
+        if (xml.isStartElement() && xml.name() == u"printOptions") {
+            auto& ps = sheet->getPrintSettings();
+            ps.printGridlines = (xml.attributes().value("gridLines") == u"1" ||
+                                  xml.attributes().value("gridLines") == u"true");
+            ps.printHeadings  = (xml.attributes().value("headings")  == u"1" ||
+                                  xml.attributes().value("headings")  == u"true");
+            continue;
+        }
+        if (xml.isStartElement() && xml.name() == u"headerFooter") {
+            auto& ps = sheet->getPrintSettings();
+            while (!xml.atEnd()) {
+                xml.readNext();
+                if (xml.isEndElement() && xml.name() == u"headerFooter") break;
+                if (xml.isStartElement() && xml.name() == u"oddHeader") {
+                    ps.oddHeader = xml.readElementText();
+                } else if (xml.isStartElement() && xml.name() == u"oddFooter") {
+                    ps.oddFooter = xml.readElementText();
+                }
             }
             continue;
         }
@@ -1767,14 +1966,36 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
                                 spreadsheet.get(), progress, sheetIdx, &drawingRId);
         } // sheetDev destructed here closes the active entry on the zip reader.
 
+        // Read sheet rels once — both chart and table imports use it.
+        const int lastSlash = fullSheetPath.lastIndexOf('/');
+        const QString sheetDirPath = fullSheetPath.left(lastSlash);
+        const QString sheetFileName = fullSheetPath.mid(lastSlash + 1);
+        const QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
+        const QByteArray sheetRelsData = zip.readEntry(sheetRelsPath);
+        const auto sheetRels = parseRels(sheetRelsData);
+
+        // Table import: scan the rels for table-typed relationships and load each.
+        if (!sheetRelsData.isEmpty()) {
+            QXmlStreamReader relsXml(sheetRelsData);
+            while (!relsXml.atEnd()) {
+                relsXml.readNext();
+                if (relsXml.isStartElement() && relsXml.name() == u"Relationship") {
+                    const QString type   = relsXml.attributes().value("Type").toString();
+                    const QString target = relsXml.attributes().value("Target").toString();
+                    if (type.endsWith("/relationships/table") && !target.isEmpty()) {
+                        const QString tablePath = resolveRelativePath(fullSheetPath, target);
+                        const QByteArray tableData = zip.readEntry(tablePath);
+                        SpreadsheetTable tbl;
+                        if (parseTableXml(tableData, tbl)) {
+                            spreadsheet->addTable(tbl);
+                        }
+                    }
+                }
+            }
+        }
+
         // Chart import — all small entries, safe to readEntry sequentially.
         if (!drawingRId.isEmpty()) {
-            const int lastSlash = fullSheetPath.lastIndexOf('/');
-            const QString sheetDirPath = fullSheetPath.left(lastSlash);
-            const QString sheetFileName = fullSheetPath.mid(lastSlash + 1);
-            const QString sheetRelsPath = sheetDirPath + "/_rels/" + sheetFileName + ".rels";
-            const QByteArray sheetRelsData = zip.readEntry(sheetRelsPath);
-            const auto sheetRels = parseRels(sheetRelsData);
 
             if (sheetRels.count(drawingRId)) {
                 const QString drawingPath = resolveRelativePath(fullSheetPath, sheetRels.at(drawingRId));
@@ -1982,9 +2203,12 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
     // Header parts: small, written whole-buffer. Always emit a theme so the
     // workbook's DocumentTheme round-trips even when no custom theme was set.
     const bool hasTheme = true;
+    int totalTableCount = 0;
+    for (const auto& sheet : sheets) totalTableCount += static_cast<int>(sheet->getTables().size());
     zip.writeEntry("[Content_Types].xml",
                    generateContentTypes(sheetCount, !sharedStrings.isEmpty(),
-                                        totalChartCount, drawingSheetNums, hasCustomJson, hasTheme));
+                                        totalChartCount, drawingSheetNums, hasCustomJson, hasTheme,
+                                        totalTableCount));
     zip.writeEntry("_rels/.rels", generateRels());
     zip.writeEntry("xl/workbook.xml", generateWorkbook(sheets));
     zip.writeEntry("xl/_rels/workbook.xml.rels",
@@ -1997,6 +2221,12 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         zip.writeEntry("xl/theme/theme1.xml",
                        generateThemeXml(sheets.front()->getDocumentTheme()));
     }
+
+    // Per-sheet table tracking. Each entry: {globalTableNum, rIdWithinSheet}.
+    // Sized to sheetCount; filled during the sheet write loop and consumed
+    // afterwards when writing table files and sheet rels.
+    std::vector<std::vector<std::pair<int, int>>> sheetTableInfo(sheetCount);
+    int globalTableNum = 1;
 
     // Second pass: stream each sheet directly into the zip.
     int sheetIdx = 0;
@@ -2463,11 +2693,66 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             xml.writeEndElement(); // hyperlinks
         }
 
+        // Print settings — printOptions / pageMargins / pageSetup / headerFooter.
+        // Always emitted so that the sheet's PrintSettings round-trip.
+        {
+            const auto& ps = sheet->getPrintSettings();
+            if (ps.printGridlines || ps.printHeadings) {
+                xml.writeStartElement("printOptions");
+                if (ps.printGridlines) xml.writeAttribute("gridLines", "1");
+                if (ps.printHeadings)  xml.writeAttribute("headings",  "1");
+                xml.writeEndElement();
+            }
+            xml.writeStartElement("pageMargins");
+            xml.writeAttribute("left",   QString::number(ps.leftMargin,   'f', 3));
+            xml.writeAttribute("right",  QString::number(ps.rightMargin,  'f', 3));
+            xml.writeAttribute("top",    QString::number(ps.topMargin,    'f', 3));
+            xml.writeAttribute("bottom", QString::number(ps.bottomMargin, 'f', 3));
+            xml.writeAttribute("header", QString::number(ps.headerMargin, 'f', 3));
+            xml.writeAttribute("footer", QString::number(ps.footerMargin, 'f', 3));
+            xml.writeEndElement();
+
+            if (ps.orientation != 0 || ps.paperSize != 1 || ps.scale != 100 ||
+                ps.fitToWidth != 0 || ps.fitToHeight != 0) {
+                xml.writeStartElement("pageSetup");
+                xml.writeAttribute("paperSize", QString::number(ps.paperSize));
+                if (ps.orientation == 1)      xml.writeAttribute("orientation", "portrait");
+                else if (ps.orientation == 2) xml.writeAttribute("orientation", "landscape");
+                if (ps.scale != 100)       xml.writeAttribute("scale",       QString::number(ps.scale));
+                if (ps.fitToWidth  != 0)   xml.writeAttribute("fitToWidth",  QString::number(ps.fitToWidth));
+                if (ps.fitToHeight != 0)   xml.writeAttribute("fitToHeight", QString::number(ps.fitToHeight));
+                xml.writeEndElement();
+            }
+            if (!ps.oddHeader.isEmpty() || !ps.oddFooter.isEmpty()) {
+                xml.writeStartElement("headerFooter");
+                if (!ps.oddHeader.isEmpty()) xml.writeTextElement("oddHeader", ps.oddHeader);
+                if (!ps.oddFooter.isEmpty()) xml.writeTextElement("oddFooter", ps.oddFooter);
+                xml.writeEndElement();
+            }
+        }
+
         // Drawing reference (for sheets with charts)
         if (chartsPerSheet.count(sheetIdx)) {
             xml.writeStartElement("drawing");
             xml.writeAttribute("r:id", "rId1");
             xml.writeEndElement();
+        }
+
+        // <tableParts> for OOXML tables. Tables get rIds after hyperlinks.
+        const auto& sheetTables = sheet->getTables();
+        if (!sheetTables.empty()) {
+            const int tableStartRId = nextRId + static_cast<int>(sheetHyperlinks.size());
+            xml.writeStartElement("tableParts");
+            xml.writeAttribute("count", QString::number(sheetTables.size()));
+            for (size_t ti = 0; ti < sheetTables.size(); ++ti) {
+                const int rId = tableStartRId + static_cast<int>(ti);
+                xml.writeStartElement("tablePart");
+                xml.writeAttribute("r:id", QString("rId%1").arg(rId));
+                xml.writeEndElement();
+                sheetTableInfo[sheetIdx].emplace_back(globalTableNum, rId);
+                globalTableNum++;
+            }
+            xml.writeEndElement(); // tableParts
         }
 
         xml.writeEndElement(); // worksheet
@@ -2508,43 +2793,54 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         zip.writeEntry(QString("xl/drawings/_rels/drawing%1.xml.rels").arg(si + 1),
                     generateDrawingRels(chartCountForSheet, startNum));
 
-        // Sheet relationships (maps rId1 -> drawingN.xml, plus hyperlink rels)
-        {
-            QString relsXml;
-            relsXml += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
-            relsXml += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n";
-            relsXml += QString("<Relationship Id=\"rId1\" "
-                               "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" "
-                               "Target=\"../drawings/drawing%1.xml\"/>\n").arg(si + 1);
-            if (si < static_cast<int>(allSheetHyperlinks.size())) {
-                for (const auto& hl : allSheetHyperlinks[si]) {
-                    relsXml += QString("<Relationship Id=\"rId%1\" "
-                                       "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" "
-                                       "Target=\"%2\" TargetMode=\"External\"/>\n")
-                               .arg(hl.rId).arg(hl.url.toHtmlEscaped());
-                }
-            }
-            relsXml += "</Relationships>\n";
-            zip.writeEntry(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(si + 1), relsXml.toUtf8());
+    }
+
+    // Write per-sheet table XML files. Table numbering is global; the rId
+    // used inside the sheet was recorded in sheetTableInfo.
+    for (int si = 0; si < sheetCount; ++si) {
+        const auto& tables = sheets[si]->getTables();
+        for (size_t ti = 0; ti < tables.size(); ++ti) {
+            if (ti >= sheetTableInfo[si].size()) break;
+            const int tableNum = sheetTableInfo[si][ti].first;
+            zip.writeEntry(QString("xl/tables/table%1.xml").arg(tableNum),
+                           generateTableXml(tables[ti], tableNum));
         }
     }
 
-    // Generate sheet rels for sheets with hyperlinks but no charts
-    for (int i = 0; i < sheetCount; ++i) {
-        if (chartsPerSheet.count(i)) continue; // already handled above
-        if (i < static_cast<int>(allSheetHyperlinks.size()) && !allSheetHyperlinks[i].empty()) {
-            QString relsXml;
-            relsXml += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
-            relsXml += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n";
-            for (const auto& hl : allSheetHyperlinks[i]) {
+    // Unified sheet rels pass — handles drawing, hyperlinks, and tables.
+    for (int si = 0; si < sheetCount; ++si) {
+        const bool hasDrawing = chartsPerSheet.count(si) > 0;
+        const bool hasHyperlinks = (si < static_cast<int>(allSheetHyperlinks.size()) &&
+                                     !allSheetHyperlinks[si].empty());
+        const bool hasTables = !sheetTableInfo[si].empty();
+        if (!hasDrawing && !hasHyperlinks && !hasTables) continue;
+
+        QString relsXml;
+        relsXml += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+        relsXml += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n";
+        if (hasDrawing) {
+            relsXml += QString("<Relationship Id=\"rId1\" "
+                               "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" "
+                               "Target=\"../drawings/drawing%1.xml\"/>\n").arg(si + 1);
+        }
+        if (hasHyperlinks) {
+            for (const auto& hl : allSheetHyperlinks[si]) {
                 relsXml += QString("<Relationship Id=\"rId%1\" "
                                    "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" "
                                    "Target=\"%2\" TargetMode=\"External\"/>\n")
                            .arg(hl.rId).arg(hl.url.toHtmlEscaped());
             }
-            relsXml += "</Relationships>\n";
-            zip.writeEntry(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(i + 1), relsXml.toUtf8());
         }
+        if (hasTables) {
+            for (const auto& [tableNum, rId] : sheetTableInfo[si]) {
+                relsXml += QString("<Relationship Id=\"rId%1\" "
+                                   "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" "
+                                   "Target=\"../tables/table%2.xml\"/>\n").arg(rId).arg(tableNum);
+            }
+        }
+        relsXml += "</Relationships>\n";
+        zip.writeEntry(QString("xl/worksheets/_rels/sheet%1.xml.rels").arg(si + 1),
+                       relsXml.toUtf8());
     }
 
     // Save Nexel chart configs as custom JSON part (for Nexel round-trip)
@@ -2728,7 +3024,8 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 
 QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrings,
                                                int chartCount, const std::vector<int>& drawingSheetNums,
-                                               bool hasCustomJson, bool hasTheme) {
+                                               bool hasCustomJson, bool hasTheme,
+                                               int tableCount) {
     QByteArray data;
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
@@ -2800,6 +3097,13 @@ QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrin
         xml.writeStartElement("Override");
         xml.writeAttribute("PartName", "/xl/theme/theme1.xml");
         xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.theme+xml");
+        xml.writeEndElement();
+    }
+
+    for (int t = 1; t <= tableCount; ++t) {
+        xml.writeStartElement("Override");
+        xml.writeAttribute("PartName", QString("/xl/tables/table%1.xml").arg(t));
+        xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml");
         xml.writeEndElement();
     }
 

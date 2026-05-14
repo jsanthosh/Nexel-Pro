@@ -488,6 +488,100 @@ void testXlsxRoundTrip_Comprehensive() {
     QFile::remove(tempPath);
 }
 
+void testXlsxRoundTrip_PrintSettings() {
+    SECTION("XLSX Round-Trip: Print Settings");
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("printed"));
+
+    auto& ps = sheet->getPrintSettings();
+    ps.leftMargin = 0.5;
+    ps.rightMargin = 0.5;
+    ps.topMargin = 1.0;
+    ps.bottomMargin = 1.0;
+    ps.headerMargin = 0.4;
+    ps.footerMargin = 0.4;
+    ps.orientation = 2;       // landscape
+    ps.paperSize = 9;          // A4
+    ps.scale = 75;
+    ps.fitToWidth = 1;
+    ps.fitToHeight = 1;
+    ps.printGridlines = true;
+    ps.printHeadings = true;
+    ps.oddHeader = "&CMonthly Report";
+    ps.oddFooter = "&LPage &P of &N";
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_print.xlsx";
+    auto imported = roundTrip(sheet, tempPath);
+    check(imported != nullptr, "print: round-trip import succeeded");
+    if (!imported) return;
+
+    const auto& got = imported->getPrintSettings();
+    checkApprox(got.leftMargin,   0.5, "print: left margin preserved");
+    checkApprox(got.rightMargin,  0.5, "print: right margin preserved");
+    checkApprox(got.topMargin,    1.0, "print: top margin preserved");
+    checkApprox(got.bottomMargin, 1.0, "print: bottom margin preserved");
+    checkApprox(got.headerMargin, 0.4, "print: header margin preserved");
+    checkApprox(got.footerMargin, 0.4, "print: footer margin preserved");
+    check(got.orientation == 2,   "print: landscape orientation preserved");
+    check(got.paperSize   == 9,   "print: A4 paper size preserved");
+    check(got.scale       == 75,  "print: scale preserved");
+    check(got.fitToWidth  == 1,   "print: fitToWidth preserved");
+    check(got.fitToHeight == 1,   "print: fitToHeight preserved");
+    check(got.printGridlines,     "print: gridlines flag preserved");
+    check(got.printHeadings,      "print: headings flag preserved");
+    check(got.oddHeader == "&CMonthly Report", "print: header text preserved");
+    check(got.oddFooter == "&LPage &P of &N",  "print: footer text preserved");
+
+    QFile::remove(tempPath);
+}
+
+void testXlsxRoundTrip_OOXMLTables() {
+    SECTION("XLSX Round-Trip: OOXML Tables");
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("Name"));
+    sheet->setCellValue({0, 1}, QVariant("Age"));
+    sheet->setCellValue({0, 2}, QVariant("City"));
+    sheet->setCellValue({1, 0}, QVariant("Alice"));
+    sheet->setCellValue({1, 1}, QVariant(30.0));
+    sheet->setCellValue({1, 2}, QVariant("NYC"));
+
+    SpreadsheetTable tbl;
+    tbl.name = "People";
+    tbl.range = CellRange(CellAddress(0, 0), CellAddress(1, 2));
+    tbl.hasHeaderRow = true;
+    tbl.bandedRows = true;
+    tbl.columnNames = QStringList{"Name", "Age", "City"};
+    tbl.theme.name = "Ocean Blue";
+    tbl.theme.headerBg = QColor("#4472C4");
+    sheet->addTable(tbl);
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_table.xlsx";
+    auto imported = roundTrip(sheet, tempPath);
+    check(imported != nullptr, "table: round-trip import succeeded");
+    if (!imported) return;
+
+    const auto& tables = imported->getTables();
+    check(tables.size() == 1, "table: exactly one table (no duplicate from OOXML+JSON)");
+    if (tables.size() == 1) {
+        const auto& got = tables[0];
+        check(got.name == "People", "table: name preserved");
+        check(got.range.getStart().row == 0 && got.range.getStart().col == 0,
+              "table: range start preserved");
+        check(got.range.getEnd().row == 1 && got.range.getEnd().col == 2,
+              "table: range end preserved");
+        check(got.hasHeaderRow, "table: header row flag preserved");
+        check(got.columnNames.size() == 3, "table: column count preserved");
+        check(got.columnNames.value(0) == "Name", "table: column 0 name preserved");
+        check(got.columnNames.value(1) == "Age",  "table: column 1 name preserved");
+        check(got.columnNames.value(2) == "City", "table: column 2 name preserved");
+        // Theme via Nexel JSON sidecar
+        check(got.theme.headerBg.name().toUpper() == "#4472C4",
+              "table: theme color preserved via JSON sidecar");
+    }
+
+    QFile::remove(tempPath);
+}
+
 void testXlsxRoundTrip_CustomTheme() {
     SECTION("XLSX Round-Trip: Custom Document Theme");
     auto sheet = std::make_shared<Spreadsheet>();
@@ -1577,6 +1671,8 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_NamedRanges();
     testXlsxRoundTrip_MultipleSheets();
     testXlsxRoundTrip_Comprehensive();
+    testXlsxRoundTrip_PrintSettings();
+    testXlsxRoundTrip_OOXMLTables();
     testXlsxRoundTrip_CustomTheme();
     testXlsxRoundTrip_ConditionalFormatFormula();
     testXlsxRoundTrip_SheetProtection();
