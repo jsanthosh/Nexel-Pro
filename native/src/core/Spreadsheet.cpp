@@ -1151,6 +1151,16 @@ void Spreadsheet::setColumnWidth(int col, int width) { m_columnWidths[col] = wid
 int Spreadsheet::getRowHeight(int row) const { auto it = m_rowHeights.find(row); return it != m_rowHeights.end() ? it->second : 0; }
 int Spreadsheet::getColumnWidth(int col) const { auto it = m_columnWidths.find(col); return it != m_columnWidths.end() ? it->second : 0; }
 
+void Spreadsheet::setRowHidden(int row, bool hidden) {
+    if (hidden) m_hiddenRows.insert(row);
+    else        m_hiddenRows.erase(row);
+}
+
+void Spreadsheet::setColumnHidden(int col, bool hidden) {
+    if (hidden) m_hiddenColumns.insert(col);
+    else        m_hiddenColumns.erase(col);
+}
+
 void Spreadsheet::setPivotConfig(std::unique_ptr<PivotConfig> config) {
     m_pivotConfig = std::move(config);
 }

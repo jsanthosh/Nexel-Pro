@@ -871,40 +871,72 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
     while (!xml.atEnd()) {
         xml.readNext();
 
-        // Parse sheet view: <sheetView showGridLines="0" .../>
+        // Parse sheet view (+ <pane> child for frozen-pane state).
         if (xml.isStartElement() && xml.name() == u"sheetView") {
             QStringView showGrid = xml.attributes().value("showGridLines");
             if (showGrid == u"0") {
                 sheet->setShowGridlines(false);
             }
-            continue;
-        }
-
-        // Parse column widths: <col min="1" max="3" width="15.5" customWidth="1"/>
-        if (xml.isStartElement() && xml.name() == u"col") {
-            int minCol = xml.attributes().value("min").toInt() - 1;
-            int maxCol = xml.attributes().value("max").toInt() - 1;
-            double width = xml.attributes().value("width").toDouble();
-            if (width > 0) {
-                int pixelWidth = qMax(30, static_cast<int>(width * 7.5));
-                int colLimit = qMin(maxCol, 16383); // XLSX max: XFD = 16384 cols
-                for (int c = minCol; c <= colLimit; ++c) {
-                    sheet->setColumnWidth(c, pixelWidth);
+            while (!xml.atEnd()) {
+                xml.readNext();
+                if (xml.isEndElement() && xml.name() == u"sheetView") break;
+                if (xml.isStartElement() && xml.name() == u"pane") {
+                    const int xSplit = xml.attributes().value("xSplit").toInt();
+                    const int ySplit = xml.attributes().value("ySplit").toInt();
+                    if (xSplit > 0 || ySplit > 0) {
+                        sheet->setFrozenPanes(ySplit, xSplit);
+                    }
                 }
             }
             continue;
         }
 
-        // Parse row heights: <row r="1" ht="25.5" customHeight="1">
+        // <sheetProtection sheet="1" password="ABCD" .../>
+        if (xml.isStartElement() && xml.name() == u"sheetProtection") {
+            const QStringView sheetAttr = xml.attributes().value("sheet");
+            const bool prot = (sheetAttr == u"1" || sheetAttr == u"true");
+            if (prot) {
+                sheet->setProtected(true);
+                const QString pwHash = xml.attributes().value("password").toString();
+                if (!pwHash.isEmpty()) sheet->setProtectionPasswordHash(pwHash);
+            }
+            continue;
+        }
+
+        // Parse column widths and hidden flag: <col min="1" max="3" width="15.5" hidden="1"/>
+        if (xml.isStartElement() && xml.name() == u"col") {
+            const int minCol = xml.attributes().value("min").toInt() - 1;
+            const int maxCol = xml.attributes().value("max").toInt() - 1;
+            const double width = xml.attributes().value("width").toDouble();
+            const bool hidden = (xml.attributes().value("hidden") == u"1");
+            const int colLimit = qMin(maxCol, 16383);
+            if (width > 0) {
+                const int pixelWidth = qMax(30, static_cast<int>(width * 7.5));
+                for (int c = minCol; c <= colLimit; ++c) {
+                    sheet->setColumnWidth(c, pixelWidth);
+                }
+            }
+            if (hidden) {
+                for (int c = minCol; c <= colLimit; ++c) {
+                    sheet->setColumnHidden(c, true);
+                }
+            }
+            continue;
+        }
+
+        // Parse row heights and hidden flag: <row r="1" ht="25.5" hidden="1">
         if (xml.isStartElement() && xml.name() == u"row") {
-            QString htStr = xml.attributes().value("ht").toString();
-            if (!htStr.isEmpty()) {
-                int rowIdx = xml.attributes().value("r").toInt() - 1;
-                double ht = htStr.toDouble();
-                if (ht > 0 && rowIdx >= 0) {
-                    int pixelHeight = qMax(14, static_cast<int>(ht * 1.333));
+            const QString htStr = xml.attributes().value("ht").toString();
+            const int rowIdx = xml.attributes().value("r").toInt() - 1;
+            if (!htStr.isEmpty() && rowIdx >= 0) {
+                const double ht = htStr.toDouble();
+                if (ht > 0) {
+                    const int pixelHeight = qMax(14, static_cast<int>(ht * 1.333));
                     sheet->setRowHeight(rowIdx, pixelHeight);
                 }
+            }
+            if (rowIdx >= 0 && xml.attributes().value("hidden") == u"1") {
+                sheet->setRowHidden(rowIdx, true);
             }
             continue; // row's child <c> elements will be hit next
         }
@@ -1152,38 +1184,70 @@ void XlsxService::parseSheetStreaming(QIODevice* device, qint64 byteSizeHint,
     while (!xml.atEnd()) {
         xml.readNext();
 
-        // Parse sheet view
+        // Parse sheet view and any child <pane> for frozen-pane state.
         if (xml.isStartElement() && xml.name() == u"sheetView") {
             QStringView showGrid = xml.attributes().value("showGridLines");
             if (showGrid == u"0") sheet->setShowGridlines(false);
-            continue;
-        }
-
-        // Parse column widths
-        if (xml.isStartElement() && xml.name() == u"col") {
-            int minCol = xml.attributes().value("min").toInt() - 1;
-            int maxCol = xml.attributes().value("max").toInt() - 1;
-            double width = xml.attributes().value("width").toDouble();
-            if (width > 0) {
-                int pixelWidth = qMax(30, static_cast<int>(width * 7.5));
-                int colLimit = qMin(maxCol, 16383);
-                for (int c = minCol; c <= colLimit; ++c) {
-                    sheet->setColumnWidth(c, pixelWidth);
+            while (!xml.atEnd()) {
+                xml.readNext();
+                if (xml.isEndElement() && xml.name() == u"sheetView") break;
+                if (xml.isStartElement() && xml.name() == u"pane") {
+                    const int xSplit = xml.attributes().value("xSplit").toInt();
+                    const int ySplit = xml.attributes().value("ySplit").toInt();
+                    if (xSplit > 0 || ySplit > 0) {
+                        sheet->setFrozenPanes(ySplit, xSplit);
+                    }
                 }
             }
             continue;
         }
 
-        // Parse row heights
+        // <sheetProtection sheet="1" password="ABCD" .../>
+        if (xml.isStartElement() && xml.name() == u"sheetProtection") {
+            const QStringView sheetAttr = xml.attributes().value("sheet");
+            const bool prot = (sheetAttr == u"1" || sheetAttr == u"true");
+            if (prot) {
+                sheet->setProtected(true);
+                const QString pwHash = xml.attributes().value("password").toString();
+                if (!pwHash.isEmpty()) sheet->setProtectionPasswordHash(pwHash);
+            }
+            continue;
+        }
+
+        // Parse column widths and hidden flag.
+        if (xml.isStartElement() && xml.name() == u"col") {
+            const int minCol = xml.attributes().value("min").toInt() - 1;
+            const int maxCol = xml.attributes().value("max").toInt() - 1;
+            const double width = xml.attributes().value("width").toDouble();
+            const bool hidden = (xml.attributes().value("hidden") == u"1");
+            const int colLimit = qMin(maxCol, 16383);
+            if (width > 0) {
+                const int pixelWidth = qMax(30, static_cast<int>(width * 7.5));
+                for (int c = minCol; c <= colLimit; ++c) {
+                    sheet->setColumnWidth(c, pixelWidth);
+                }
+            }
+            if (hidden) {
+                for (int c = minCol; c <= colLimit; ++c) {
+                    sheet->setColumnHidden(c, true);
+                }
+            }
+            continue;
+        }
+
+        // Parse row heights and hidden flag.
         if (xml.isStartElement() && xml.name() == u"row") {
-            QString htStr = xml.attributes().value("ht").toString();
-            if (!htStr.isEmpty()) {
-                int rowIdx = xml.attributes().value("r").toInt() - 1;
-                double ht = htStr.toDouble();
-                if (ht > 0 && rowIdx >= 0) {
-                    int pixelHeight = qMax(14, static_cast<int>(ht * 1.333));
+            const QString htStr = xml.attributes().value("ht").toString();
+            const int rowIdx = xml.attributes().value("r").toInt() - 1;
+            if (!htStr.isEmpty() && rowIdx >= 0) {
+                const double ht = htStr.toDouble();
+                if (ht > 0) {
+                    const int pixelHeight = qMax(14, static_cast<int>(ht * 1.333));
                     sheet->setRowHeight(rowIdx, pixelHeight);
                 }
+            }
+            if (rowIdx >= 0 && xml.attributes().value("hidden") == u"1") {
+                sheet->setRowHidden(rowIdx, true);
             }
             // Track row count for progress
             rowCount++;
@@ -1740,6 +1804,20 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         if (!sheet->showGridlines()) {
             xml.writeAttribute("showGridLines", "0");
         }
+        {
+            const int fRows = sheet->frozenRows();
+            const int fCols = sheet->frozenColumns();
+            if (fRows > 0 || fCols > 0) {
+                xml.writeStartElement("pane");
+                if (fCols > 0) xml.writeAttribute("xSplit", QString::number(fCols));
+                if (fRows > 0) xml.writeAttribute("ySplit", QString::number(fRows));
+                xml.writeAttribute("topLeftCell",
+                                    columnIndexToLetter(fCols) + QString::number(fRows + 1));
+                xml.writeAttribute("activePane", "bottomRight");
+                xml.writeAttribute("state", "frozen");
+                xml.writeEndElement(); // pane
+            }
+        }
         xml.writeEndElement(); // sheetView
         xml.writeEndElement(); // sheetViews
 
@@ -1749,16 +1827,28 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         xml.writeAttribute("defaultColWidth", "10.71");
         xml.writeEndElement();
 
-        // Column widths
-        const auto& colWidths = sheet->getColumnWidths();
-        if (!colWidths.empty()) {
+        // Column widths and hidden columns. We emit a <col> entry for any
+        // column that has either a custom width or is marked hidden.
+        const auto& colWidths    = sheet->getColumnWidths();
+        const auto& hiddenCols   = sheet->getHiddenColumns();
+        if (!colWidths.empty() || !hiddenCols.empty()) {
+            std::set<int> colsToEmit;
+            for (const auto& [col, _] : colWidths) colsToEmit.insert(col);
+            for (int col : hiddenCols)             colsToEmit.insert(col);
+
             xml.writeStartElement("cols");
-            for (const auto& [col, widthPx] : colWidths) {
+            for (int col : colsToEmit) {
                 xml.writeStartElement("col");
                 xml.writeAttribute("min", QString::number(col + 1));
                 xml.writeAttribute("max", QString::number(col + 1));
-                xml.writeAttribute("width", QString::number(widthPx / 7.5, 'f', 2));
-                xml.writeAttribute("customWidth", "1");
+                auto wIt = colWidths.find(col);
+                if (wIt != colWidths.end()) {
+                    xml.writeAttribute("width", QString::number(wIt->second / 7.5, 'f', 2));
+                    xml.writeAttribute("customWidth", "1");
+                }
+                if (hiddenCols.count(col)) {
+                    xml.writeAttribute("hidden", "1");
+                }
                 xml.writeEndElement();
             }
             xml.writeEndElement(); // cols
@@ -1773,10 +1863,14 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         // Collect rows that need custom heights
         const auto& rowHeights = sheet->getRowHeights();
 
-        // Determine which rows to write (those with data OR custom height)
+        // Determine which rows to write (those with data, custom height, or hidden).
         int maxRowForHeights = maxRow;
         if (!rowHeights.empty()) {
-            maxRowForHeights = std::max(maxRow, rowHeights.rbegin()->first);
+            maxRowForHeights = std::max(maxRowForHeights, rowHeights.rbegin()->first);
+        }
+        const auto& hiddenRowsSet = sheet->getHiddenRows();
+        if (!hiddenRowsSet.empty()) {
+            maxRowForHeights = std::max(maxRowForHeights, *hiddenRowsSet.rbegin());
         }
 
         for (int r = 0; r <= maxRowForHeights; ++r) {
@@ -1794,7 +1888,8 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             }
 
             bool hasCustomHeight = rowHeights.count(r) > 0;
-            if (!hasData && !hasCustomHeight) continue;
+            bool isHidden = sheet->isRowHidden(r);
+            if (!hasData && !hasCustomHeight && !isHidden) continue;
 
             xml.writeStartElement("row");
             xml.writeAttribute("r", QString::number(r + 1));
@@ -1803,6 +1898,9 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                 double htPoints = rowHeights.at(r) / 1.333;
                 xml.writeAttribute("ht", QString::number(htPoints, 'f', 2));
                 xml.writeAttribute("customHeight", "1");
+            }
+            if (isHidden) {
+                xml.writeAttribute("hidden", "1");
             }
 
             for (int c = 0; c <= maxCol; ++c) {
@@ -1876,6 +1974,18 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         }
 
         xml.writeEndElement(); // sheetData
+
+        // Sheet protection (must come between </sheetData> and <mergeCells>
+        // per the OOXML worksheet element order).
+        if (sheet->isProtected()) {
+            xml.writeStartElement("sheetProtection");
+            xml.writeAttribute("sheet", "1");
+            const QString& pwHash = sheet->getProtectionPasswordHash();
+            if (!pwHash.isEmpty()) {
+                xml.writeAttribute("password", pwHash);
+            }
+            xml.writeEndElement();
+        }
 
         // Merge cells
         const auto& mergedRegions = sheet->getMergedRegions();

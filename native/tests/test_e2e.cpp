@@ -469,6 +469,111 @@ void testXlsxRoundTrip_Comprehensive() {
     QFile::remove(tempPath);
 }
 
+void testXlsxRoundTrip_SheetProtection() {
+    SECTION("XLSX Round-Trip: Sheet Protection");
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("locked"));
+    sheet->setProtected(true, "hunter2");
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_protection.xlsx";
+    auto imported = roundTrip(sheet, tempPath);
+    check(imported != nullptr, "protection round-trip import succeeded");
+    if (!imported) return;
+
+    check(imported->isProtected(), "protection: isProtected preserved");
+    check(!imported->getProtectionPasswordHash().isEmpty(),
+          "protection: password hash preserved");
+    check(imported->checkProtectionPassword("hunter2"),
+          "protection: original password verifies after round-trip");
+    check(!imported->checkProtectionPassword("wrong"),
+          "protection: wrong password rejected after round-trip");
+
+    QFile::remove(tempPath);
+}
+
+void testXlsxRoundTrip_FrozenPanes() {
+    SECTION("XLSX Round-Trip: Frozen Panes");
+
+    // Both axes frozen
+    {
+        auto sheet = std::make_shared<Spreadsheet>();
+        sheet->setCellValue({0, 0}, QVariant("hdr"));
+        sheet->setFrozenPanes(2, 3); // 2 rows + 3 cols frozen
+
+        QString tempPath = QDir::tempPath() + "/nexel_e2e_freeze_both.xlsx";
+        auto imported = roundTrip(sheet, tempPath);
+        check(imported != nullptr, "freeze (both): round-trip import succeeded");
+        if (imported) {
+            check(imported->frozenRows() == 2, "freeze (both): rows preserved");
+            check(imported->frozenColumns() == 3, "freeze (both): columns preserved");
+        }
+        QFile::remove(tempPath);
+    }
+
+    // Rows only
+    {
+        auto sheet = std::make_shared<Spreadsheet>();
+        sheet->setCellValue({0, 0}, QVariant("row-only"));
+        sheet->setFrozenPanes(1, 0);
+
+        QString tempPath = QDir::tempPath() + "/nexel_e2e_freeze_rows.xlsx";
+        auto imported = roundTrip(sheet, tempPath);
+        check(imported != nullptr, "freeze (rows): round-trip import succeeded");
+        if (imported) {
+            check(imported->frozenRows() == 1, "freeze (rows): rows preserved");
+            check(imported->frozenColumns() == 0, "freeze (rows): no columns");
+        }
+        QFile::remove(tempPath);
+    }
+
+    // No freeze should round-trip as (0, 0)
+    {
+        auto sheet = std::make_shared<Spreadsheet>();
+        sheet->setCellValue({0, 0}, QVariant("no-freeze"));
+
+        QString tempPath = QDir::tempPath() + "/nexel_e2e_freeze_none.xlsx";
+        auto imported = roundTrip(sheet, tempPath);
+        check(imported != nullptr, "freeze (none): round-trip import succeeded");
+        if (imported) {
+            check(imported->frozenRows() == 0, "freeze (none): rows zero");
+            check(imported->frozenColumns() == 0, "freeze (none): columns zero");
+        }
+        QFile::remove(tempPath);
+    }
+}
+
+void testXlsxRoundTrip_HiddenRowsCols() {
+    SECTION("XLSX Round-Trip: Hidden Rows and Columns");
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("A1"));
+    sheet->setCellValue({5, 5}, QVariant("F6"));
+
+    // Hide a few rows (some inside, some past last data)
+    sheet->setRowHidden(1, true);
+    sheet->setRowHidden(3, true);
+    sheet->setRowHidden(20, true);
+    // Hide a few columns
+    sheet->setColumnHidden(2, true);
+    sheet->setColumnHidden(7, true);
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_hidden.xlsx";
+    auto imported = roundTrip(sheet, tempPath);
+    check(imported != nullptr, "hidden: round-trip import succeeded");
+    if (!imported) return;
+
+    check(imported->isRowHidden(1),  "hidden: row 1 still hidden");
+    check(imported->isRowHidden(3),  "hidden: row 3 still hidden");
+    check(imported->isRowHidden(20), "hidden: row 20 still hidden (beyond data)");
+    check(!imported->isRowHidden(0), "hidden: row 0 not hidden");
+    check(!imported->isRowHidden(2), "hidden: row 2 not hidden");
+
+    check(imported->isColumnHidden(2), "hidden: col 2 still hidden");
+    check(imported->isColumnHidden(7), "hidden: col 7 still hidden");
+    check(!imported->isColumnHidden(0), "hidden: col 0 not hidden");
+
+    QFile::remove(tempPath);
+}
+
 // ============================================================================
 // SECTION 2: XLSX EDGE CASES
 // ============================================================================
@@ -1391,6 +1496,9 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_NamedRanges();
     testXlsxRoundTrip_MultipleSheets();
     testXlsxRoundTrip_Comprehensive();
+    testXlsxRoundTrip_SheetProtection();
+    testXlsxRoundTrip_FrozenPanes();
+    testXlsxRoundTrip_HiddenRowsCols();
 
     // ---- XLSX Edge Cases ----
     testXlsxEdge_EmptySheet();

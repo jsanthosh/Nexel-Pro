@@ -98,6 +98,22 @@ public:
     bool isProtected() const;
     bool checkProtectionPassword(const QString& password) const;
     const QString& getProtectionPasswordHash() const { return m_protectionPasswordHash; }
+    void setProtectionPasswordHash(const QString& hash) { m_protectionPasswordHash = hash; }
+
+    // Frozen panes (number of leading rows/cols that don't scroll).
+    // 0 means no freeze on that axis. Rendering is wired up in M2 — storage
+    // here is sufficient for XLSX round-trip.
+    void setFrozenPanes(int rows, int columns) { m_frozenRows = rows; m_frozenColumns = columns; }
+    int frozenRows()    const { return m_frozenRows; }
+    int frozenColumns() const { return m_frozenColumns; }
+
+    // Hidden rows / columns. Membership in the set means hidden.
+    void setRowHidden(int row, bool hidden);
+    void setColumnHidden(int col, bool hidden);
+    bool isRowHidden(int row) const    { return m_hiddenRows.count(row)    > 0; }
+    bool isColumnHidden(int col) const { return m_hiddenColumns.count(col) > 0; }
+    const std::set<int>& getHiddenRows()    const { return m_hiddenRows; }
+    const std::set<int>& getHiddenColumns() const { return m_hiddenColumns; }
 
     // Parallel search: find all cells matching query string across the entire sheet
     // Returns vector of matching cell addresses. Uses multi-threaded column scan.
@@ -331,6 +347,10 @@ private:
     bool m_showGridlines = true;
     bool m_isProtected = false;
     QString m_protectionPasswordHash;
+    int m_frozenRows = 0;
+    int m_frozenColumns = 0;
+    std::set<int> m_hiddenRows;
+    std::set<int> m_hiddenColumns;
     DocumentTheme m_documentTheme = defaultDocumentTheme();
     CellStyle m_defaultCellStyle;
     bool m_hasDefaultStyle = false;
