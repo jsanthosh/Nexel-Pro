@@ -16,6 +16,10 @@
 #include <algorithm>
 #include <cmath>
 
+static std::vector<NamedRange> parseDefinedNames(const QByteArray& workbookXml);
+static bool parseThemeXml(const QByteArray& themeData, DocumentTheme& outTheme);
+static QByteArray generateThemeXml(const DocumentTheme& theme);
+
 // Resolve a color string (theme or absolute) to "#RRGGBB" for XLSX export
 static QString resolveColorForExport(const QString& colorStr) {
     if (DocumentTheme::isThemeColor(colorStr)) {
@@ -58,6 +62,7 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
     QByteArray workbookData = zip.fileData("xl/workbook.xml");
     QByteArray relsData = zip.fileData("xl/_rels/workbook.xml.rels");
     auto sheetInfos = parseWorkbook(workbookData, relsData);
+    const auto definedNames = parseDefinedNames(workbookData);
 
     if (sheetInfos.empty()) {
         // Fallback: try sheet1.xml directly
@@ -358,7 +363,174 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
         }
     }
 
+    // Attach workbook-level named ranges to every imported sheet.
+    if (!definedNames.empty()) {
+        for (auto& sheet : result.sheets) {
+            for (const auto& nr : definedNames) {
+                sheet->addNamedRange(nr.name, nr.range, nr.sheetIndex);
+            }
+        }
+    }
+
+    // Custom document theme.
+    {
+        QByteArray themeData = zip.fileData("xl/theme/theme1.xml");
+        if (!themeData.isEmpty()) {
+            DocumentTheme parsed = defaultDocumentTheme();
+            if (parseThemeXml(themeData, parsed)) {
+                for (auto& sheet : result.sheets) sheet->setDocumentTheme(parsed);
+            }
+        }
+    }
+
     zip.close();
+    return result;
+}
+
+// Parse xl/theme/theme1.xml into a DocumentTheme. Maps the 10 OOXML color
+// slots (dk1/lt1/dk2/lt2/accent1..6) into DocumentTheme::colors. Returns true
+// if at least one color was set.
+static bool parseThemeXml(const QByteArray& themeData, DocumentTheme& outTheme) {
+    if (themeData.isEmpty()) return false;
+
+    // Map OOXML slot names → ThemeColorIndex
+    auto slotIndex = [](QStringView name) -> int {
+        if (name == u"dk1")     return 0;
+        if (name == u"lt1")     return 1;
+        if (name == u"dk2")     return 2;
+        if (name == u"lt2")     return 3;
+        if (name == u"accent1") return 4;
+        if (name == u"accent2") return 5;
+        if (name == u"accent3") return 6;
+        if (name == u"accent4") return 7;
+        if (name == u"accent5") return 8;
+        if (name == u"accent6") return 9;
+        return -1;
+    };
+
+    int hits = 0;
+    QXmlStreamReader xml(themeData);
+    int activeIdx = -1;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            const int idx = slotIndex(xml.name());
+            if (idx >= 0) {
+                activeIdx = idx;
+            } else if (activeIdx >= 0 && xml.name() == u"srgbClr") {
+                const QString val = xml.attributes().value("val").toString();
+                if (val.length() == 6) {
+                    outTheme.colors[activeIdx] = QColor("#" + val);
+                    ++hits;
+                }
+            } else if (activeIdx >= 0 && xml.name() == u"sysClr") {
+                const QString lastClr = xml.attributes().value("lastClr").toString();
+                if (lastClr.length() == 6) {
+                    outTheme.colors[activeIdx] = QColor("#" + lastClr);
+                    ++hits;
+                }
+            }
+        } else if (xml.isEndElement()) {
+            if (slotIndex(xml.name()) == activeIdx) activeIdx = -1;
+        }
+    }
+    return hits > 0;
+}
+
+// Write a minimal DrawingML theme XML reflecting the 10 base colors. Hlink /
+// folHlink are emitted with sane defaults — DocumentTheme doesn't carry them.
+static QByteArray generateThemeXml(const DocumentTheme& theme) {
+    QByteArray data;
+    QBuffer buf(&data);
+    buf.open(QIODevice::WriteOnly);
+    QXmlStreamWriter xml(&buf);
+    xml.setAutoFormatting(true);
+    xml.writeStartDocument();
+
+    static const QString a = "http://schemas.openxmlformats.org/drawingml/2006/main";
+
+    auto writeColorSlot = [&](const char* tag, const QColor& c) {
+        xml.writeStartElement(a, tag);
+        xml.writeStartElement(a, "srgbClr");
+        xml.writeAttribute("val", QString(c.name().mid(1)).toUpper());
+        xml.writeEndElement();
+        xml.writeEndElement();
+    };
+
+    xml.writeStartElement(a, "theme");
+    xml.writeAttribute("name", theme.displayName.isEmpty() ? "Office" : theme.displayName);
+    xml.writeStartElement(a, "themeElements");
+    xml.writeStartElement(a, "clrScheme");
+    xml.writeAttribute("name", theme.id.isEmpty() ? "Office" : theme.id);
+
+    writeColorSlot("dk1",     theme.colors[0]);
+    writeColorSlot("lt1",     theme.colors[1]);
+    writeColorSlot("dk2",     theme.colors[2]);
+    writeColorSlot("lt2",     theme.colors[3]);
+    writeColorSlot("accent1", theme.colors[4]);
+    writeColorSlot("accent2", theme.colors[5]);
+    writeColorSlot("accent3", theme.colors[6]);
+    writeColorSlot("accent4", theme.colors[7]);
+    writeColorSlot("accent5", theme.colors[8]);
+    writeColorSlot("accent6", theme.colors[9]);
+    // Hyperlink slots — Excel requires these to be present.
+    writeColorSlot("hlink",    QColor("#0563C1"));
+    writeColorSlot("folHlink", QColor("#954F72"));
+
+    xml.writeEndElement(); // clrScheme
+    // Minimal fontScheme / fmtScheme stubs — Excel requires them but tolerates
+    // empty content.
+    xml.writeStartElement(a, "fontScheme");
+    xml.writeAttribute("name", "Office");
+    xml.writeStartElement(a, "majorFont");
+    xml.writeStartElement(a, "latin"); xml.writeAttribute("typeface", "Calibri Light"); xml.writeEndElement();
+    xml.writeStartElement(a, "ea"); xml.writeAttribute("typeface", ""); xml.writeEndElement();
+    xml.writeStartElement(a, "cs"); xml.writeAttribute("typeface", ""); xml.writeEndElement();
+    xml.writeEndElement(); // majorFont
+    xml.writeStartElement(a, "minorFont");
+    xml.writeStartElement(a, "latin"); xml.writeAttribute("typeface", "Calibri"); xml.writeEndElement();
+    xml.writeStartElement(a, "ea"); xml.writeAttribute("typeface", ""); xml.writeEndElement();
+    xml.writeStartElement(a, "cs"); xml.writeAttribute("typeface", ""); xml.writeEndElement();
+    xml.writeEndElement(); // minorFont
+    xml.writeEndElement(); // fontScheme
+    xml.writeStartElement(a, "fmtScheme");
+    xml.writeAttribute("name", "Office");
+    xml.writeStartElement(a, "fillStyleLst"); xml.writeEndElement();
+    xml.writeStartElement(a, "lnStyleLst"); xml.writeEndElement();
+    xml.writeStartElement(a, "effectStyleLst"); xml.writeEndElement();
+    xml.writeStartElement(a, "bgFillStyleLst"); xml.writeEndElement();
+    xml.writeEndElement(); // fmtScheme
+    xml.writeEndElement(); // themeElements
+    xml.writeEndElement(); // theme
+    xml.writeEndDocument();
+    buf.close();
+    return data;
+}
+
+// Parse <workbook><definedNames><definedName name="X" localSheetId="0">Sheet1!$A$1:$B$10</definedName>
+// into NamedRange records. Sheet-scoped names use localSheetId; global ones omit it.
+static std::vector<NamedRange> parseDefinedNames(const QByteArray& workbookXml) {
+    std::vector<NamedRange> result;
+    if (workbookXml.isEmpty()) return result;
+
+    QXmlStreamReader xml(workbookXml);
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement() && xml.name() == u"definedName") {
+            NamedRange nr;
+            nr.name = xml.attributes().value("name").toString();
+            const QString localSheetId = xml.attributes().value("localSheetId").toString();
+            nr.isGlobal = localSheetId.isEmpty();
+            nr.sheetIndex = nr.isGlobal ? -1 : localSheetId.toInt();
+
+            QString refText = xml.readElementText().trimmed();
+            const int bang = refText.lastIndexOf('!');
+            QString rangeText = bang >= 0 ? refText.mid(bang + 1) : refText;
+            rangeText.remove('$'); // OOXML uses absolute refs like $A$1:$B$10
+            nr.range = CellRange(rangeText);
+            if (!nr.name.isEmpty()) result.push_back(nr);
+        }
+    }
     return result;
 }
 
@@ -1032,6 +1204,19 @@ void XlsxService::parseSheet(const QByteArray& xmlData, const QStringList& share
                     }
                     rule->setIconSetConfig(cfg);
                     sheet->getConditionalFormatting().addRule(rule);
+                } else if (ruleType == "expression") {
+                    // Formula-based rule. We round-trip the formula text and
+                    // the rule's range; full <dxf> style fidelity is deferred
+                    // to M5 (would require parsing styles.xml's <dxfs>).
+                    auto rule = std::make_shared<ConditionalFormat>(cfRange, ConditionType::Formula);
+                    while (!xml.atEnd()) {
+                        xml.readNext();
+                        if (xml.isEndElement() && xml.name() == u"cfRule") break;
+                        if (xml.isStartElement() && xml.name() == u"formula") {
+                            rule->setFormula(xml.readElementText());
+                        }
+                    }
+                    sheet->getConditionalFormatting().addRule(rule);
                 } else {
                     xml.skipCurrentElement();
                 }
@@ -1366,6 +1551,19 @@ void XlsxService::parseSheetStreaming(QIODevice* device, qint64 byteSizeHint,
                     }
                     rule->setIconSetConfig(cfg);
                     sheet->getConditionalFormatting().addRule(rule);
+                } else if (ruleType == "expression") {
+                    // Formula-based rule. We round-trip the formula text and
+                    // the rule's range; full <dxf> style fidelity is deferred
+                    // to M5 (would require parsing styles.xml's <dxfs>).
+                    auto rule = std::make_shared<ConditionalFormat>(cfRange, ConditionType::Formula);
+                    while (!xml.atEnd()) {
+                        xml.readNext();
+                        if (xml.isEndElement() && xml.name() == u"cfRule") break;
+                        if (xml.isStartElement() && xml.name() == u"formula") {
+                            rule->setFormula(xml.readElementText());
+                        }
+                    }
+                    sheet->getConditionalFormatting().addRule(rule);
                 } else {
                     xml.skipCurrentElement();
                 }
@@ -1541,6 +1739,7 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
     QByteArray workbookData = zip.readEntry("xl/workbook.xml");
     QByteArray relsData     = zip.readEntry("xl/_rels/workbook.xml.rels");
     auto sheetInfos = parseWorkbook(workbookData, relsData);
+    const auto definedNames = parseDefinedNames(workbookData);
 
     if (sheetInfos.empty()) {
         SheetInfo si;
@@ -1610,6 +1809,28 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
         }
 
         result.sheets.push_back(spreadsheet);
+    }
+
+    // Attach workbook-level named ranges to every imported sheet so that
+    // formula resolution finds them regardless of which sheet is active.
+    if (!definedNames.empty()) {
+        for (auto& sheet : result.sheets) {
+            for (const auto& nr : definedNames) {
+                sheet->addNamedRange(nr.name, nr.range, nr.sheetIndex);
+            }
+        }
+    }
+
+    // Custom document theme (xl/theme/theme1.xml). If present, override the
+    // default Office theme on every imported sheet.
+    {
+        const QByteArray themeData = zip.readEntry("xl/theme/theme1.xml");
+        if (!themeData.isEmpty()) {
+            DocumentTheme parsed = defaultDocumentTheme();
+            if (parseThemeXml(themeData, parsed)) {
+                for (auto& sheet : result.sheets) sheet->setDocumentTheme(parsed);
+            }
+        }
     }
 
     // Nexel-native custom JSON (round-trip extras).
@@ -1758,17 +1979,23 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
     ZipStreamWriter zip(filePath);
     if (!zip.isOpen()) return false;
 
-    // Header parts: small, written whole-buffer.
+    // Header parts: small, written whole-buffer. Always emit a theme so the
+    // workbook's DocumentTheme round-trips even when no custom theme was set.
+    const bool hasTheme = true;
     zip.writeEntry("[Content_Types].xml",
                    generateContentTypes(sheetCount, !sharedStrings.isEmpty(),
-                                        totalChartCount, drawingSheetNums, hasCustomJson));
+                                        totalChartCount, drawingSheetNums, hasCustomJson, hasTheme));
     zip.writeEntry("_rels/.rels", generateRels());
     zip.writeEntry("xl/workbook.xml", generateWorkbook(sheets));
     zip.writeEntry("xl/_rels/workbook.xml.rels",
-                   generateWorkbookRels(sheetCount, !sharedStrings.isEmpty()));
+                   generateWorkbookRels(sheetCount, !sharedStrings.isEmpty(), hasTheme));
     zip.writeEntry("xl/styles.xml", generateStyles(sheets, styleIndexMap));
     if (!sharedStrings.isEmpty()) {
         zip.writeEntry("xl/sharedStrings.xml", generateSharedStrings(sharedStrings));
+    }
+    if (hasTheme) {
+        zip.writeEntry("xl/theme/theme1.xml",
+                       generateThemeXml(sheets.front()->getDocumentTheme()));
     }
 
     // Second pass: stream each sheet directly into the zip.
@@ -2008,7 +2235,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         const auto& allCfRules = sheet->getConditionalFormatting().getAllRules();
         if (!allCfRules.empty()) {
             for (const auto& cfRule : allCfRules) {
-                if (!cfRule->isVisualType()) continue;
+                if (!cfRule->isVisualType() && cfRule->getType() != ConditionType::Formula) continue;
 
                 QString sqref = columnIndexToLetter(cfRule->getRange().getStart().col) +
                                 QString::number(cfRule->getRange().getStart().row + 1) + ":" +
@@ -2084,6 +2311,15 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                     xml.writeStartElement("cfvo"); xml.writeAttribute("type", "percent"); xml.writeAttribute("val", QString::number(isCfg.threshold1)); xml.writeEndElement();
                     xml.writeStartElement("cfvo"); xml.writeAttribute("type", "percent"); xml.writeAttribute("val", QString::number(isCfg.threshold2)); xml.writeEndElement();
                     xml.writeEndElement(); // iconSet
+                    xml.writeEndElement(); // cfRule
+                }
+                else if (cfRule->getType() == ConditionType::Formula) {
+                    // Round-trip formula-based rule. <dxf> styling is not yet
+                    // wired through styles.xml; M5 will add full dxf fidelity.
+                    xml.writeStartElement("cfRule");
+                    xml.writeAttribute("type", "expression");
+                    xml.writeAttribute("priority", "1");
+                    xml.writeTextElement("formula", cfRule->getFormula());
                     xml.writeEndElement(); // cfRule
                 }
 
@@ -2492,7 +2728,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 
 QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrings,
                                                int chartCount, const std::vector<int>& drawingSheetNums,
-                                               bool hasCustomJson) {
+                                               bool hasCustomJson, bool hasTheme) {
     QByteArray data;
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
@@ -2560,6 +2796,13 @@ QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrin
         xml.writeEndElement();
     }
 
+    if (hasTheme) {
+        xml.writeStartElement("Override");
+        xml.writeAttribute("PartName", "/xl/theme/theme1.xml");
+        xml.writeAttribute("ContentType", "application/vnd.openxmlformats-officedocument.theme+xml");
+        xml.writeEndElement();
+    }
+
     xml.writeEndElement(); // Types
     xml.writeEndDocument();
     buf.close();
@@ -2609,13 +2852,37 @@ QByteArray XlsxService::generateWorkbook(const std::vector<std::shared_ptr<Sprea
     }
     xml.writeEndElement(); // sheets
 
+    // Workbook-level named ranges. We attach the same set to every sheet on
+    // import; sheet 0 is canonical for export. Sheet-scoped names keep their
+    // localSheetId so Excel preserves the scope.
+    if (!sheets.empty()) {
+        const auto& names = sheets[0]->getNamedRanges();
+        if (!names.empty()) {
+            xml.writeStartElement("definedNames");
+            for (const auto& [_, nr] : names) {
+                xml.writeStartElement("definedName");
+                xml.writeAttribute("name", nr.name);
+                if (!nr.isGlobal && nr.sheetIndex >= 0 &&
+                    nr.sheetIndex < static_cast<int>(sheets.size())) {
+                    xml.writeAttribute("localSheetId", QString::number(nr.sheetIndex));
+                }
+                const int targetSheet = (nr.sheetIndex >= 0 &&
+                                          nr.sheetIndex < static_cast<int>(sheets.size()))
+                                          ? nr.sheetIndex : 0;
+                xml.writeCharacters(sheets[targetSheet]->getSheetName() + "!" + nr.range.toString());
+                xml.writeEndElement();
+            }
+            xml.writeEndElement(); // definedNames
+        }
+    }
+
     xml.writeEndElement(); // workbook
     xml.writeEndDocument();
     buf.close();
     return data;
 }
 
-QByteArray XlsxService::generateWorkbookRels(int sheetCount, bool hasSharedStrings) {
+QByteArray XlsxService::generateWorkbookRels(int sheetCount, bool hasSharedStrings, bool hasTheme) {
     QByteArray data;
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
@@ -2644,6 +2911,15 @@ QByteArray XlsxService::generateWorkbookRels(int sheetCount, bool hasSharedStrin
         xml.writeAttribute("Id", QString("rId%1").arg(sheetCount + 2));
         xml.writeAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings");
         xml.writeAttribute("Target", "sharedStrings.xml");
+        xml.writeEndElement();
+    }
+
+    if (hasTheme) {
+        const int themeRId = sheetCount + (hasSharedStrings ? 3 : 2);
+        xml.writeStartElement("Relationship");
+        xml.writeAttribute("Id", QString("rId%1").arg(themeRId));
+        xml.writeAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme");
+        xml.writeAttribute("Target", "theme/theme1.xml");
         xml.writeEndElement();
     }
 

@@ -333,17 +333,36 @@ void testXlsxRoundTrip_NamedRanges() {
     sheet->setCellValue({0, 0}, QVariant(100.0));
     sheet->setCellValue({0, 1}, QVariant(200.0));
     sheet->setCellValue({0, 2}, QVariant(300.0));
+    sheet->setCellValue({1, 0}, QVariant(10.0));
+    sheet->setCellValue({1, 1}, QVariant(20.0));
+
     sheet->addNamedRange("SalesData", CellRange(CellAddress(0, 0), CellAddress(0, 2)));
+    sheet->addNamedRange("Inputs",    CellRange(CellAddress(1, 0), CellAddress(1, 1)));
 
     QString tempPath = QDir::tempPath() + "/nexel_e2e_namedranges.xlsx";
     auto imported = roundTrip(sheet, tempPath);
     check(imported != nullptr, "named ranges round-trip import succeeded");
     if (!imported) return;
 
-    const auto* nr = imported->getNamedRange("SalesData");
-    // NOTE: Named range XLSX export not yet implemented — skip this check
-    // check(nr != nullptr, "named range 'SalesData' imported");
-    (void)nr;
+    const auto* sales = imported->getNamedRange("SalesData");
+    check(sales != nullptr, "named range 'SalesData' survived round-trip");
+    if (sales) {
+        check(sales->range.getStart().row == 0 &&
+              sales->range.getStart().col == 0 &&
+              sales->range.getEnd().row   == 0 &&
+              sales->range.getEnd().col   == 2,
+              "named range 'SalesData' coordinates preserved");
+    }
+
+    const auto* inputs = imported->getNamedRange("Inputs");
+    check(inputs != nullptr, "named range 'Inputs' survived round-trip");
+    if (inputs) {
+        check(inputs->range.getStart().row == 1 &&
+              inputs->range.getStart().col == 0 &&
+              inputs->range.getEnd().row   == 1 &&
+              inputs->range.getEnd().col   == 1,
+              "named range 'Inputs' coordinates preserved");
+    }
 
     QFile::remove(tempPath);
 }
@@ -465,6 +484,68 @@ void testXlsxRoundTrip_Comprehensive() {
 
     // Verify dimensions (non-default)
     check(imported->getColumnWidth(0) > 80, "comprehensive: column width preserved");
+
+    QFile::remove(tempPath);
+}
+
+void testXlsxRoundTrip_CustomTheme() {
+    SECTION("XLSX Round-Trip: Custom Document Theme");
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("themed"));
+
+    DocumentTheme custom = defaultDocumentTheme();
+    custom.id = "BrandRed";
+    custom.displayName = "Brand Red";
+    custom.colors[0] = QColor("#101010"); // Dark1
+    custom.colors[1] = QColor("#FAFAFA"); // Light1
+    custom.colors[4] = QColor("#C81E1E"); // Accent1
+    custom.colors[5] = QColor("#E07A30"); // Accent2
+    sheet->setDocumentTheme(custom);
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_theme.xlsx";
+    auto imported = roundTrip(sheet, tempPath);
+    check(imported != nullptr, "theme: round-trip import succeeded");
+    if (!imported) return;
+
+    const auto& th = imported->getDocumentTheme();
+    check(th.colors[0].name().toUpper() == "#101010", "theme: Dark1 preserved");
+    check(th.colors[1].name().toUpper() == "#FAFAFA", "theme: Light1 preserved");
+    check(th.colors[4].name().toUpper() == "#C81E1E", "theme: Accent1 preserved");
+    check(th.colors[5].name().toUpper() == "#E07A30", "theme: Accent2 preserved");
+
+    QFile::remove(tempPath);
+}
+
+void testXlsxRoundTrip_ConditionalFormatFormula() {
+    SECTION("XLSX Round-Trip: Conditional Formatting (Formula Rule)");
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant(50.0));
+    sheet->setCellValue({1, 0}, QVariant(150.0));
+    sheet->setCellValue({2, 0}, QVariant(250.0));
+
+    auto rule = std::make_shared<ConditionalFormat>(
+        CellRange(CellAddress(0, 0), CellAddress(2, 0)),
+        ConditionType::Formula);
+    rule->setFormula("$A1>100");
+    sheet->getConditionalFormatting().addRule(rule);
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_cf_formula.xlsx";
+    auto imported = roundTrip(sheet, tempPath);
+    check(imported != nullptr, "CF formula: round-trip import succeeded");
+    if (!imported) return;
+
+    const auto& rules = imported->getConditionalFormatting().getAllRules();
+    bool foundFormulaRule = false;
+    for (const auto& r : rules) {
+        if (r->getType() == ConditionType::Formula) {
+            foundFormulaRule = true;
+            check(r->getFormula() == "$A1>100", "CF formula: formula text preserved");
+            check(r->getRange().getStart().row == 0 && r->getRange().getEnd().row == 2,
+                  "CF formula: range preserved");
+            break;
+        }
+    }
+    check(foundFormulaRule, "CF formula: rule type preserved as Formula");
 
     QFile::remove(tempPath);
 }
@@ -1496,6 +1577,8 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_NamedRanges();
     testXlsxRoundTrip_MultipleSheets();
     testXlsxRoundTrip_Comprehensive();
+    testXlsxRoundTrip_CustomTheme();
+    testXlsxRoundTrip_ConditionalFormatFormula();
     testXlsxRoundTrip_SheetProtection();
     testXlsxRoundTrip_FrozenPanes();
     testXlsxRoundTrip_HiddenRowsCols();

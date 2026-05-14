@@ -76,10 +76,12 @@ private:
     static QString columnIndexToLetter(int col);
     static QByteArray generateContentTypes(int sheetCount, bool hasSharedStrings,
                                              int chartCount, const std::vector<int>& drawingSheetNums,
-                                             bool hasCustomJson = false);
+                                             bool hasCustomJson = false,
+                                             bool hasTheme = false);
     static QByteArray generateRels();
     static QByteArray generateWorkbook(const std::vector<std::shared_ptr<Spreadsheet>>& sheets);
-    static QByteArray generateWorkbookRels(int sheetCount, bool hasSharedStrings);
+    static QByteArray generateWorkbookRels(int sheetCount, bool hasSharedStrings,
+                                            bool hasTheme = false);
     static QByteArray generateStyles(const std::vector<std::shared_ptr<Spreadsheet>>& sheets,
                                       std::map<QString, int>& styleIndexMap);
     static QByteArray generateSheet(Spreadsheet* sheet, const std::map<QString, int>& styleIndexMap,
