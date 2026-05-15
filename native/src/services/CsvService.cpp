@@ -198,6 +198,50 @@ bool CsvFileHandle::open(const QString& filePath) {
         }
     }
 
+    // Windows-1252 / Latin-1 fallback. If we still have no BOM-driven decode
+    // and the bytes don't form valid UTF-8, transcode each non-ASCII byte
+    // using Latin-1 mapping (which covers 0xA0..0xFF cleanly and is the
+    // dominant subset of Windows-1252 found in CSV files exported by older
+    // tools). 0x80..0x9F characters get treated as their Latin-1 control
+    // codepoints — uncommon in real data; rare enough to ignore for now.
+    if (transcoded.isEmpty()) {
+        auto isValidUtf8 = [&](const char* buf, qint64 sz) {
+            for (qint64 i = startOffset; i < sz; ++i) {
+                const unsigned char b = static_cast<unsigned char>(buf[i]);
+                if (b < 0x80) continue;
+                int trailing = 0;
+                if ((b & 0xE0) == 0xC0)      trailing = 1;
+                else if ((b & 0xF0) == 0xE0) trailing = 2;
+                else if ((b & 0xF8) == 0xF0) trailing = 3;
+                else return false;
+                if (i + trailing >= sz) return false;
+                for (int t = 1; t <= trailing; ++t) {
+                    if ((static_cast<unsigned char>(buf[i + t]) & 0xC0) != 0x80) return false;
+                }
+                i += trailing;
+            }
+            return true;
+        };
+
+        if (!isValidUtf8(data, dataSize)) {
+            QByteArray converted;
+            converted.reserve(dataSize * 2);
+            for (qint64 i = startOffset; i < dataSize; ++i) {
+                const unsigned char b = static_cast<unsigned char>(data[i]);
+                if (b < 0x80) {
+                    converted.append(static_cast<char>(b));
+                } else {
+                    converted.append(static_cast<char>(0xC0 | (b >> 6)));
+                    converted.append(static_cast<char>(0x80 | (b & 0x3F)));
+                }
+            }
+            transcoded = std::move(converted);
+            data = transcoded.constData();
+            dataSize = transcoded.size();
+            startOffset = 0;
+        }
+    }
+
     delimiter = detectDelimiter(data + startOffset, dataSize - startOffset);
 
     // Count columns from first line
@@ -324,8 +368,14 @@ bool CsvService::exportToFile(const Spreadsheet& spreadsheet, const QString& fil
             auto cell = spreadsheet.getCellIfExists(r, c);
             if (cell && cell->getType() != CellType::Empty) {
                 QVariant value = cell->getValue();
+                // Preserve formulas so CSV → Nexel round-trips them as
+                // formulas (Excel also treats a leading "=" in a CSV cell as
+                // a formula). The previous behaviour collapsed them to their
+                // computed value, losing dependency information.
                 if (cell->getType() == CellType::Formula) {
-                    value = cell->getComputedValue();
+                    QString f = cell->getFormula();
+                    if (!f.startsWith('=')) f.prepend('=');
+                    value = f;
                 }
                 const auto& style = cell->getStyle();
                 if (style.numberFormat == "Picklist") {

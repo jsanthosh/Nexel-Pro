@@ -24,6 +24,8 @@ static QByteArray generateTableXml(const SpreadsheetTable& table, int id);
 static bool parseCommentsXml(const QByteArray& commentsData, Spreadsheet* sheet);
 static QByteArray generateCommentsXml(const Spreadsheet* sheet);
 static bool sheetHasAnyComment(const Spreadsheet* sheet);
+static void applyNexelMetadataJson(const QByteArray& nexelMetaData,
+                                    const std::vector<std::shared_ptr<Spreadsheet>>& sheetsVec);
 
 // Resolve a color string (theme or absolute) to "#RRGGBB" for XLSX export
 static QString resolveColorForExport(const QString& colorStr) {
@@ -217,163 +219,13 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
         }
     }
 
-    // Load Nexel-native metadata (picklist/checkbox definitions)
-    QByteArray nexelMetaData = zip.fileData("docMetadata/nexel-metadata.json");
-    if (nexelMetaData.isEmpty()) nexelMetaData = zip.fileData("xl/nexel-metadata.json"); // legacy
-    if (!nexelMetaData.isEmpty()) {
-        QJsonDocument metaDoc = QJsonDocument::fromJson(nexelMetaData);
-        if (metaDoc.isObject()) {
-            QJsonArray sheetsArray = metaDoc.object()["sheets"].toArray();
-            for (const auto& sheetVal : sheetsArray) {
-                QJsonObject sheetObj = sheetVal.toObject();
-                int si = sheetObj["index"].toInt();
-                if (si < 0 || si >= static_cast<int>(result.sheets.size())) continue;
-                auto* sheet = result.sheets[si].get();
-
-                // Restore picklist validation rules
-                if (sheetObj.contains("picklists")) {
-                    for (const auto& plVal : sheetObj["picklists"].toArray()) {
-                        QJsonObject plObj = plVal.toObject();
-                        Spreadsheet::DataValidationRule rule;
-                        rule.range = CellRange(plObj["range"].toString());
-                        rule.type = Spreadsheet::DataValidationRule::List;
-                        rule.showErrorAlert = false;
-                        for (const auto& item : plObj["options"].toArray()) {
-                            rule.listItems.append(item.toString());
-                        }
-                        if (plObj.contains("sourceRange")) {
-                            rule.listSourceRange = plObj["sourceRange"].toString();
-                            rule.listSortMode = plObj["sortMode"].toInt(0);
-                            rule.listIgnoreBlanks = plObj["ignoreBlanks"].toBool(true);
-                        }
-                        if (plObj.contains("optionColors")) {
-                            for (const auto& c : plObj["optionColors"].toArray())
-                                rule.listItemColors.append(c.toString());
-                        }
-                        sheet->addValidationRule(rule);
-                        // Set Picklist numberFormat on cells in range
-                        for (const auto& addr : rule.range.getCells()) {
-                            auto cell = sheet->getCell(addr);
-                            CellStyle style = cell->getStyle();
-                            style.numberFormat = "Picklist";
-                            cell->setStyle(style);
-                        }
-                    }
-                }
-
-                // Restore table styles. The OOXML <table> parts already
-                // added the structural records; the JSON sidecar carries the
-                // theme colors that don't fit in OOXML's tableStyleInfo. So
-                // we update existing tables by name rather than re-adding.
-                if (sheetObj.contains("tables")) {
-                    auto& existing = sheet->getTablesRef();
-                    for (const auto& tblVal : sheetObj["tables"].toArray()) {
-                        QJsonObject tblObj = tblVal.toObject();
-                        const QString name = tblObj["name"].toString();
-                        QJsonObject themeObj = tblObj["theme"].toObject();
-                        auto applyTheme = [&](SpreadsheetTable& t) {
-                            t.theme.name        = themeObj["name"].toString();
-                            t.theme.headerBg    = QColor(themeObj["headerBg"].toString());
-                            t.theme.headerFg    = QColor(themeObj["headerFg"].toString());
-                            t.theme.bandedRow1  = QColor(themeObj["bandedRow1"].toString());
-                            t.theme.bandedRow2  = QColor(themeObj["bandedRow2"].toString());
-                            t.theme.borderColor = QColor(themeObj["borderColor"].toString());
-                        };
-
-                        bool merged = false;
-                        for (auto& t : existing) {
-                            if (t.name == name) { applyTheme(t); merged = true; break; }
-                        }
-                        if (!merged) {
-                            SpreadsheetTable tbl;
-                            tbl.name = name;
-                            tbl.range = CellRange(tblObj["range"].toString());
-                            tbl.hasHeaderRow = tblObj["hasHeaderRow"].toBool(true);
-                            tbl.bandedRows   = tblObj["bandedRows"].toBool(true);
-                            for (const auto& cn : tblObj["columnNames"].toArray())
-                                tbl.columnNames.append(cn.toString());
-                            applyTheme(tbl);
-                            sheet->addTable(tbl);
-                        }
-                    }
-                }
-
-                // Restore checkboxes
-                if (sheetObj.contains("checkboxes")) {
-                    for (const auto& cbVal : sheetObj["checkboxes"].toArray()) {
-                        QJsonObject cbObj = cbVal.toObject();
-                        CellAddress addr = CellAddress::fromString(cbObj["cell"].toString());
-                        auto cell = sheet->getCell(addr);
-                        CellStyle style = cell->getStyle();
-                        style.numberFormat = "Checkbox";
-                        cell->setStyle(style);
-                        cell->setValue(QVariant(cbObj["checked"].toBool()));
-                    }
-                }
-
-                // Restore conditional formatting rules
-                if (sheetObj.contains("conditionalFormats")) {
-                    for (const auto& cfVal : sheetObj["conditionalFormats"].toArray()) {
-                        QJsonObject cfObj = cfVal.toObject();
-                        CellRange range(cfObj["range"].toString());
-                        auto condType = static_cast<ConditionType>(cfObj["type"].toInt());
-                        auto rule = std::make_shared<ConditionalFormat>(range, condType);
-                        if (cfObj.contains("value1"))
-                            rule->setValue1(cfObj["value1"].toVariant());
-                        if (cfObj.contains("value2"))
-                            rule->setValue2(cfObj["value2"].toVariant());
-                        if (cfObj.contains("formula"))
-                            rule->setFormula(cfObj["formula"].toString());
-                        QJsonObject styleObj = cfObj["style"].toObject();
-                        CellStyle st;
-                        st.bold = styleObj["bold"].toBool();
-                        st.italic = styleObj["italic"].toBool();
-                        st.underline = styleObj["underline"].toBool();
-                        if (styleObj.contains("fontColor"))
-                            st.foregroundColor = styleObj["fontColor"].toString();
-                        if (styleObj.contains("bgColor"))
-                            st.backgroundColor = styleObj["bgColor"].toString();
-                        rule->setStyle(st);
-
-                        // Visual formatting configs
-                        if (cfObj.contains("dataBar")) {
-                            QJsonObject db = cfObj["dataBar"].toObject();
-                            DataBarConfig cfg;
-                            cfg.barColor = QColor(db["color"].toString());
-                            cfg.minValue = db["minValue"].toDouble(0);
-                            cfg.maxValue = db["maxValue"].toDouble(100);
-                            cfg.autoRange = db["autoRange"].toBool(true);
-                            cfg.showValue = db["showValue"].toBool(true);
-                            rule->setDataBarConfig(cfg);
-                        }
-                        if (cfObj.contains("colorScale")) {
-                            QJsonObject cs = cfObj["colorScale"].toObject();
-                            ColorScaleConfig cfg;
-                            cfg.minColor = QColor(cs["minColor"].toString());
-                            cfg.midColor = QColor(cs["midColor"].toString());
-                            cfg.maxColor = QColor(cs["maxColor"].toString());
-                            cfg.minValue = cs["minValue"].toDouble(0);
-                            cfg.maxValue = cs["maxValue"].toDouble(100);
-                            cfg.autoRange = cs["autoRange"].toBool(true);
-                            cfg.threeColor = cs["threeColor"].toBool(false);
-                            rule->setColorScaleConfig(cfg);
-                        }
-                        if (cfObj.contains("iconSet")) {
-                            QJsonObject is = cfObj["iconSet"].toObject();
-                            IconSetConfig cfg;
-                            cfg.iconType = static_cast<IconSetConfig::IconType>(is["iconType"].toInt(0));
-                            cfg.threshold1 = is["threshold1"].toDouble(33.33);
-                            cfg.threshold2 = is["threshold2"].toDouble(66.67);
-                            cfg.showValue = is["showValue"].toBool(true);
-                            cfg.reverseOrder = is["reverseOrder"].toBool(false);
-                            rule->setIconSetConfig(cfg);
-                        }
-
-                        sheet->getConditionalFormatting().addRule(rule);
-                    }
-                }
-            }
-        }
+    // Load Nexel-native metadata sidecar (picklists, checkboxes, table
+    // themes, conditional-format styling, sparklines). Shared with
+    // importFromFileStreaming so both paths get full sidecar fidelity.
+    {
+        QByteArray nexelMetaData = zip.fileData("docMetadata/nexel-metadata.json");
+        if (nexelMetaData.isEmpty()) nexelMetaData = zip.fileData("xl/nexel-metadata.json"); // legacy
+        applyNexelMetadataJson(nexelMetaData, result.sheets);
     }
 
     // Load Nexel-native chart configs if present — these are the authoritative
@@ -400,6 +252,16 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
                 chart.y = obj["y"].toInt(50);
                 chart.width = obj["width"].toInt(420);
                 chart.height = obj["height"].toInt(320);
+                chart.legendPosition          = obj["legendPosition"].toInt(0);
+                chart.dataLabelPosition       = obj["dataLabelPosition"].toInt(0);
+                chart.dataLabelShowValue      = obj["dataLabelShowValue"].toBool(true);
+                chart.dataLabelShowCategory   = obj["dataLabelShowCategory"].toBool(false);
+                chart.dataLabelShowPercentage = obj["dataLabelShowPercentage"].toBool(false);
+                chart.dataLabelShowSeriesName = obj["dataLabelShowSeriesName"].toBool(false);
+                chart.stacked                 = obj["stacked"].toBool(false);
+                chart.percentStacked          = obj["percentStacked"].toBool(false);
+                chart.smoothLines             = obj["smoothLines"].toBool(false);
+                chart.showMarkers             = obj["showMarkers"].toBool(true);
                 chart.isNexelNative = true;
                 result.charts.push_back(chart);
             }
@@ -428,6 +290,179 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
 
     zip.close();
     return result;
+}
+
+// Apply Nexel-only sidecar metadata (picklists, checkboxes, table themes,
+// conditional-format styling, sparklines) to a vector of already-loaded
+// sheets. Shared by both importFromFile and importFromFileStreaming so the
+// full sidecar round-trips regardless of which import path the UI calls.
+static void applyNexelMetadataJson(const QByteArray& nexelMetaData,
+                                    const std::vector<std::shared_ptr<Spreadsheet>>& sheetsVec) {
+    if (nexelMetaData.isEmpty()) return;
+    QJsonDocument metaDoc = QJsonDocument::fromJson(nexelMetaData);
+    if (!metaDoc.isObject()) return;
+
+    QJsonArray sheetsArray = metaDoc.object()["sheets"].toArray();
+    for (const auto& sheetVal : sheetsArray) {
+        QJsonObject sheetObj = sheetVal.toObject();
+        int si = sheetObj["index"].toInt();
+        if (si < 0 || si >= static_cast<int>(sheetsVec.size())) continue;
+        auto* sheet = sheetsVec[si].get();
+
+        if (sheetObj.contains("picklists")) {
+            for (const auto& plVal : sheetObj["picklists"].toArray()) {
+                QJsonObject plObj = plVal.toObject();
+                Spreadsheet::DataValidationRule rule;
+                rule.range = CellRange(plObj["range"].toString());
+                rule.type = Spreadsheet::DataValidationRule::List;
+                rule.showErrorAlert = false;
+                for (const auto& item : plObj["options"].toArray()) {
+                    rule.listItems.append(item.toString());
+                }
+                if (plObj.contains("sourceRange")) {
+                    rule.listSourceRange = plObj["sourceRange"].toString();
+                    rule.listSortMode = plObj["sortMode"].toInt(0);
+                    rule.listIgnoreBlanks = plObj["ignoreBlanks"].toBool(true);
+                }
+                if (plObj.contains("optionColors")) {
+                    for (const auto& c : plObj["optionColors"].toArray())
+                        rule.listItemColors.append(c.toString());
+                }
+                sheet->addValidationRule(rule);
+                for (const auto& addr : rule.range.getCells()) {
+                    auto cell = sheet->getCell(addr);
+                    CellStyle style = cell->getStyle();
+                    style.numberFormat = "Picklist";
+                    cell->setStyle(style);
+                }
+            }
+        }
+
+        // Table themes — merge into existing OOXML-parsed tables by name.
+        if (sheetObj.contains("tables")) {
+            auto& existing = sheet->getTablesRef();
+            for (const auto& tblVal : sheetObj["tables"].toArray()) {
+                QJsonObject tblObj = tblVal.toObject();
+                const QString name = tblObj["name"].toString();
+                QJsonObject themeObj = tblObj["theme"].toObject();
+                auto applyTheme = [&](SpreadsheetTable& t) {
+                    t.theme.name        = themeObj["name"].toString();
+                    t.theme.headerBg    = QColor(themeObj["headerBg"].toString());
+                    t.theme.headerFg    = QColor(themeObj["headerFg"].toString());
+                    t.theme.bandedRow1  = QColor(themeObj["bandedRow1"].toString());
+                    t.theme.bandedRow2  = QColor(themeObj["bandedRow2"].toString());
+                    t.theme.borderColor = QColor(themeObj["borderColor"].toString());
+                };
+
+                bool merged = false;
+                for (auto& t : existing) {
+                    if (t.name == name) { applyTheme(t); merged = true; break; }
+                }
+                if (!merged) {
+                    SpreadsheetTable tbl;
+                    tbl.name = name;
+                    tbl.range = CellRange(tblObj["range"].toString());
+                    tbl.hasHeaderRow = tblObj["hasHeaderRow"].toBool(true);
+                    tbl.bandedRows   = tblObj["bandedRows"].toBool(true);
+                    for (const auto& cn : tblObj["columnNames"].toArray())
+                        tbl.columnNames.append(cn.toString());
+                    applyTheme(tbl);
+                    sheet->addTable(tbl);
+                }
+            }
+        }
+
+        if (sheetObj.contains("checkboxes")) {
+            for (const auto& cbVal : sheetObj["checkboxes"].toArray()) {
+                QJsonObject cbObj = cbVal.toObject();
+                CellAddress addr = CellAddress::fromString(cbObj["cell"].toString());
+                auto cell = sheet->getCell(addr);
+                CellStyle style = cell->getStyle();
+                style.numberFormat = "Checkbox";
+                cell->setStyle(style);
+                cell->setValue(QVariant(cbObj["checked"].toBool()));
+            }
+        }
+
+        if (sheetObj.contains("conditionalFormats")) {
+            for (const auto& cfVal : sheetObj["conditionalFormats"].toArray()) {
+                QJsonObject cfObj = cfVal.toObject();
+                CellRange range(cfObj["range"].toString());
+                auto condType = static_cast<ConditionType>(cfObj["type"].toInt());
+                auto rule = std::make_shared<ConditionalFormat>(range, condType);
+                if (cfObj.contains("value1"))
+                    rule->setValue1(cfObj["value1"].toVariant());
+                if (cfObj.contains("value2"))
+                    rule->setValue2(cfObj["value2"].toVariant());
+                if (cfObj.contains("formula"))
+                    rule->setFormula(cfObj["formula"].toString());
+                QJsonObject styleObj = cfObj["style"].toObject();
+                CellStyle st;
+                st.bold = styleObj["bold"].toBool();
+                st.italic = styleObj["italic"].toBool();
+                st.underline = styleObj["underline"].toBool();
+                if (styleObj.contains("fontColor"))
+                    st.foregroundColor = styleObj["fontColor"].toString();
+                if (styleObj.contains("bgColor"))
+                    st.backgroundColor = styleObj["bgColor"].toString();
+                rule->setStyle(st);
+
+                if (cfObj.contains("dataBar")) {
+                    QJsonObject db = cfObj["dataBar"].toObject();
+                    DataBarConfig cfg;
+                    cfg.barColor = QColor(db["color"].toString());
+                    cfg.minValue = db["minValue"].toDouble(0);
+                    cfg.maxValue = db["maxValue"].toDouble(100);
+                    cfg.autoRange = db["autoRange"].toBool(true);
+                    cfg.showValue = db["showValue"].toBool(true);
+                    rule->setDataBarConfig(cfg);
+                }
+                if (cfObj.contains("colorScale")) {
+                    QJsonObject cs = cfObj["colorScale"].toObject();
+                    ColorScaleConfig cfg;
+                    cfg.minColor = QColor(cs["minColor"].toString());
+                    cfg.midColor = QColor(cs["midColor"].toString());
+                    cfg.maxColor = QColor(cs["maxColor"].toString());
+                    cfg.minValue = cs["minValue"].toDouble(0);
+                    cfg.maxValue = cs["maxValue"].toDouble(100);
+                    cfg.autoRange = cs["autoRange"].toBool(true);
+                    cfg.threeColor = cs["threeColor"].toBool(false);
+                    rule->setColorScaleConfig(cfg);
+                }
+                if (cfObj.contains("iconSet")) {
+                    QJsonObject is = cfObj["iconSet"].toObject();
+                    IconSetConfig cfg;
+                    cfg.iconType = static_cast<IconSetConfig::IconType>(is["iconType"].toInt(0));
+                    cfg.threshold1 = is["threshold1"].toDouble(33.33);
+                    cfg.threshold2 = is["threshold2"].toDouble(66.67);
+                    cfg.showValue = is["showValue"].toBool(true);
+                    cfg.reverseOrder = is["reverseOrder"].toBool(false);
+                    rule->setIconSetConfig(cfg);
+                }
+
+                sheet->getConditionalFormatting().addRule(rule);
+            }
+        }
+
+        if (sheetObj.contains("sparklines")) {
+            for (const auto& spVal : sheetObj["sparklines"].toArray()) {
+                const QJsonObject sp = spVal.toObject();
+                SparklineConfig cfg;
+                cfg.type            = static_cast<SparklineType>(sp["type"].toInt(0));
+                cfg.dataRange       = sp["dataRange"].toString();
+                cfg.lineColor       = QColor(sp["lineColor"].toString());
+                cfg.highPointColor  = QColor(sp["highPointColor"].toString());
+                cfg.lowPointColor   = QColor(sp["lowPointColor"].toString());
+                cfg.negativeColor   = QColor(sp["negativeColor"].toString());
+                cfg.showHighPoint   = sp["showHighPoint"].toBool(false);
+                cfg.showLowPoint    = sp["showLowPoint"].toBool(false);
+                cfg.lineWidth       = sp["lineWidth"].toInt(2);
+                const int row = sp["row"].toInt();
+                const int col = sp["col"].toInt();
+                sheet->setSparkline(CellAddress(row, col), cfg);
+            }
+        }
+    }
 }
 
 // Parse xl/theme/theme1.xml into a DocumentTheme. Maps the 10 OOXML color
@@ -2196,23 +2231,55 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
         }
     }
 
-    // Nexel-native custom JSON (round-trip extras).
-    const QByteArray customJson = zip.readEntry("xl/nexel/custom.json");
-    if (!customJson.isEmpty()) {
-        QJsonDocument doc = QJsonDocument::fromJson(customJson);
-        if (doc.isObject()) {
-            QJsonObject root = doc.object();
-            QJsonArray chartsArr = root["charts"].toArray();
-            for (const auto& cv : chartsArr) {
-                QJsonObject co = cv.toObject();
-                int si = co["sheetIndex"].toInt();
-                if (si < 0 || si >= static_cast<int>(result.charts.size())) continue;
-                auto& chart = result.charts[si];
-                chart.dataRange = co["dataRange"].toString();
-                chart.themeIndex = co["themeIndex"].toInt();
-                chart.showLegend = co["showLegend"].toBool(true);
-                chart.showGridLines = co["showGridLines"].toBool(true);
+    // Load Nexel-native sidecar metadata (picklists, checkboxes, table
+    // themes, conditional-format styling, sparklines). The streaming import
+    // path previously skipped this entirely, so anything stored only in the
+    // sidecar (picklist colors, sparklines, etc.) silently failed to survive
+    // open/save through the UI — MainWindow uses this path.
+    {
+        QByteArray nexelMetaData = zip.readEntry("docMetadata/nexel-metadata.json");
+        if (nexelMetaData.isEmpty()) nexelMetaData = zip.readEntry("xl/nexel-metadata.json");
+        applyNexelMetadataJson(nexelMetaData, result.sheets);
+    }
+
+    // Nexel-native chart sidecar. Previously the streaming path read from a
+    // legacy path (xl/nexel/custom.json) that the exporter never writes to,
+    // so chart customisation silently failed to round-trip. Now we read the
+    // canonical docMetadata/nexel-charts.json — an array of full chart
+    // records that replaces any Excel-parsed chart duplicates.
+    const QByteArray nexelChartsData = zip.readEntry("docMetadata/nexel-charts.json");
+    if (!nexelChartsData.isEmpty()) {
+        const QJsonDocument doc = QJsonDocument::fromJson(nexelChartsData);
+        if (doc.isArray() && !doc.array().isEmpty()) {
+            result.charts.clear();
+            for (const auto& val : doc.array()) {
+                const QJsonObject obj = val.toObject();
+                ImportedChart chart;
+                chart.sheetIndex   = obj["sheetIndex"].toInt();
+                chart.chartType    = obj["chartType"].toString();
+                chart.title        = obj["title"].toString();
+                chart.xAxisTitle   = obj["xAxisTitle"].toString();
+                chart.yAxisTitle   = obj["yAxisTitle"].toString();
+                chart.dataRange    = obj["dataRange"].toString();
+                chart.themeIndex   = obj["themeIndex"].toInt();
+                chart.showLegend   = obj["showLegend"].toBool(true);
+                chart.showGridLines = obj["showGridLines"].toBool(true);
+                chart.x            = obj["x"].toInt(50);
+                chart.y            = obj["y"].toInt(50);
+                chart.width        = obj["width"].toInt(420);
+                chart.height       = obj["height"].toInt(320);
+                chart.legendPosition          = obj["legendPosition"].toInt(0);
+                chart.dataLabelPosition       = obj["dataLabelPosition"].toInt(0);
+                chart.dataLabelShowValue      = obj["dataLabelShowValue"].toBool(true);
+                chart.dataLabelShowCategory   = obj["dataLabelShowCategory"].toBool(false);
+                chart.dataLabelShowPercentage = obj["dataLabelShowPercentage"].toBool(false);
+                chart.dataLabelShowSeriesName = obj["dataLabelShowSeriesName"].toBool(false);
+                chart.stacked                 = obj["stacked"].toBool(false);
+                chart.percentStacked          = obj["percentStacked"].toBool(false);
+                chart.smoothLines             = obj["smoothLines"].toBool(false);
+                chart.showMarkers             = obj["showMarkers"].toBool(true);
                 chart.isNexelNative = true;
+                result.charts.push_back(chart);
             }
         }
     }
@@ -3037,6 +3104,16 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             obj["y"] = c.y;
             obj["width"] = c.width;
             obj["height"] = c.height;
+            obj["legendPosition"]          = c.legendPosition;
+            obj["dataLabelPosition"]       = c.dataLabelPosition;
+            obj["dataLabelShowValue"]      = c.dataLabelShowValue;
+            obj["dataLabelShowCategory"]   = c.dataLabelShowCategory;
+            obj["dataLabelShowPercentage"] = c.dataLabelShowPercentage;
+            obj["dataLabelShowSeriesName"] = c.dataLabelShowSeriesName;
+            obj["stacked"]                 = c.stacked;
+            obj["percentStacked"]          = c.percentStacked;
+            obj["smoothLines"]             = c.smoothLines;
+            obj["showMarkers"]             = c.showMarkers;
             chartsArray.append(obj);
         }
         QJsonDocument doc(chartsArray);
@@ -3183,7 +3260,31 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                 sheetObj["conditionalFormats"] = cfArray;
             }
 
-            if (sheetObj.contains("picklists") || sheetObj.contains("checkboxes") || sheetObj.contains("tables") || sheetObj.contains("conditionalFormats")) {
+            // Sparklines — Nexel-only round-trip via JSON sidecar. The OOXML
+            // x14:sparklineGroups extension is not yet emitted; that would
+            // make sparklines visible in Excel itself.
+            const auto& sparklines = sheet->getSparklines();
+            if (!sparklines.empty()) {
+                QJsonArray sparkArr;
+                for (const auto& [key, cfg] : sparklines) {
+                    QJsonObject sp;
+                    sp["row"]            = key.row;
+                    sp["col"]            = key.col;
+                    sp["type"]           = static_cast<int>(cfg.type);
+                    sp["dataRange"]      = cfg.dataRange;
+                    sp["lineColor"]      = cfg.lineColor.name();
+                    sp["highPointColor"] = cfg.highPointColor.name();
+                    sp["lowPointColor"]  = cfg.lowPointColor.name();
+                    sp["negativeColor"]  = cfg.negativeColor.name();
+                    sp["showHighPoint"]  = cfg.showHighPoint;
+                    sp["showLowPoint"]   = cfg.showLowPoint;
+                    sp["lineWidth"]      = cfg.lineWidth;
+                    sparkArr.append(sp);
+                }
+                sheetObj["sparklines"] = sparkArr;
+            }
+
+            if (sheetObj.contains("picklists") || sheetObj.contains("checkboxes") || sheetObj.contains("tables") || sheetObj.contains("conditionalFormats") || sheetObj.contains("sparklines")) {
                 sheetsArray.append(sheetObj);
             }
         }

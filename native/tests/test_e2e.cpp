@@ -28,6 +28,7 @@
 #include "../src/core/ConditionalFormatting.h"
 #include "../src/core/NamedRange.h"
 #include "../src/services/XlsxService.h"
+#include "../src/services/CsvService.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -484,6 +485,170 @@ void testXlsxRoundTrip_Comprehensive() {
 
     // Verify dimensions (non-default)
     check(imported->getColumnWidth(0) > 80, "comprehensive: column width preserved");
+
+    QFile::remove(tempPath);
+}
+
+void testXlsxRoundTrip_Sparklines() {
+    SECTION("XLSX Round-Trip: Sparklines");
+    auto sheet = std::make_shared<Spreadsheet>();
+    for (int i = 0; i < 6; ++i) {
+        sheet->setCellValue({0, i}, QVariant(double(i + 1) * 3.5));
+    }
+
+    SparklineConfig cfg;
+    cfg.type = SparklineType::Column;
+    cfg.dataRange = "A1:F1";
+    cfg.lineColor = QColor("#0E7490");
+    cfg.highPointColor = QColor("#16A34A");
+    cfg.lowPointColor = QColor("#DC2626");
+    cfg.showHighPoint = true;
+    cfg.showLowPoint = true;
+    cfg.lineWidth = 3;
+    sheet->setSparkline(CellAddress(0, 6), cfg);
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_sparkline.xlsx";
+    auto imported = roundTrip(sheet, tempPath);
+    check(imported != nullptr, "sparkline: round-trip import succeeded");
+    if (!imported) return;
+
+    const SparklineConfig* got = imported->getSparkline(CellAddress(0, 6));
+    check(got != nullptr, "sparkline: cell G1 sparkline preserved");
+    if (got) {
+        check(got->type == SparklineType::Column,    "sparkline: type preserved");
+        check(got->dataRange == "A1:F1",              "sparkline: data range preserved");
+        check(got->lineColor.name().toUpper() == "#0E7490",
+              "sparkline: line color preserved");
+        check(got->highPointColor.name().toUpper() == "#16A34A",
+              "sparkline: high point color preserved");
+        check(got->showHighPoint,                     "sparkline: showHighPoint preserved");
+        check(got->showLowPoint,                      "sparkline: showLowPoint preserved");
+        check(got->lineWidth == 3,                    "sparkline: lineWidth preserved");
+    }
+
+    QFile::remove(tempPath);
+}
+
+void testCsv_PreserveFormulasOnExport() {
+    SECTION("CSV: Formulas Preserved on Export");
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant(2.0));
+    sheet->setCellValue({0, 1}, QVariant(3.0));
+    sheet->setCellFormula({0, 2}, "=A1+B1");
+
+    const QString tempPath = QDir::tempPath() + "/nexel_csv_formula.csv";
+    bool ok = CsvService::exportToFile(*sheet, tempPath);
+    check(ok, "csv formula: export succeeded");
+    if (!ok) return;
+
+    auto imported = CsvService::importFromFile(tempPath);
+    check(imported != nullptr, "csv formula: import succeeded");
+    if (!imported) { QFile::remove(tempPath); return; }
+
+    auto cell = imported->getCellIfExists(0, 2);
+    check(cell.isValid(), "csv formula: cell C1 imported");
+    if (cell.isValid()) {
+        check(cell->getType() == CellType::Formula,
+              "csv formula: C1 recognised as formula on re-import");
+        check(cell->getFormula().contains("A1+B1"),
+              "csv formula: formula text preserved");
+    }
+
+    QFile::remove(tempPath);
+}
+
+void testCsv_Latin1Fallback() {
+    SECTION("CSV: Windows-1252 / Latin-1 fallback for non-UTF-8 files");
+
+    const QString tempPath = QDir::tempPath() + "/nexel_csv_latin1.csv";
+    {
+        QFile f(tempPath);
+        if (!f.open(QIODevice::WriteOnly)) {
+            check(false, "csv latin1: tempfile open failed");
+            return;
+        }
+        // Latin-1 encoded text: "Cafe" with e-acute (0xE9). Not valid UTF-8.
+        const QByteArray row = QByteArray("Caf") + char(0xE9) + ",1\n";
+        f.write(row);
+        f.close();
+    }
+
+    auto imported = CsvService::importFromFile(tempPath);
+    check(imported != nullptr, "csv latin1: import succeeded");
+    if (!imported) { QFile::remove(tempPath); return; }
+
+    auto cell = imported->getCellIfExists(0, 0);
+    check(cell.isValid(), "csv latin1: cell A1 imported");
+    if (cell.isValid()) {
+        const QString got = cell->getValue().toString();
+        check(got == QString::fromUtf8("Caf\xC3\xA9"),
+              "csv latin1: 0xE9 byte decoded as Latin-1 e-acute");
+    }
+
+    QFile::remove(tempPath);
+}
+
+void testXlsxRoundTrip_ChartCustomization() {
+    SECTION("XLSX Round-Trip: Chart Customization (legend, data labels, stacking)");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("X"));
+    sheet->setCellValue({0, 1}, QVariant("Y"));
+    sheet->setCellValue({1, 0}, QVariant(1.0));
+    sheet->setCellValue({1, 1}, QVariant(10.0));
+    sheet->setCellValue({2, 0}, QVariant(2.0));
+    sheet->setCellValue({2, 1}, QVariant(20.0));
+
+    NexelChartExport src;
+    src.sheetIndex = 0;
+    src.chartType = "column";
+    src.title = "Demo";
+    src.xAxisTitle = "Inputs";
+    src.yAxisTitle = "Outputs";
+    src.dataRange = "A1:B3";
+    src.themeIndex = 3;
+    src.showLegend = true;
+    src.showGridLines = false;
+    src.x = 100; src.y = 80; src.width = 480; src.height = 360;
+    src.legendPosition          = 2;     // Bottom
+    src.dataLabelPosition       = 6;     // InsideEnd
+    src.dataLabelShowValue      = true;
+    src.dataLabelShowCategory   = true;
+    src.dataLabelShowPercentage = false;
+    src.dataLabelShowSeriesName = true;
+    src.stacked                 = true;
+    src.percentStacked          = false;
+    src.smoothLines             = false;
+    src.showMarkers             = false;
+
+    QString tempPath = QDir::tempPath() + "/nexel_e2e_chart_custom.xlsx";
+    std::vector<std::shared_ptr<Spreadsheet>> sheets = { sheet };
+    bool ok = XlsxService::exportToFile(sheets, tempPath, { src });
+    check(ok, "chart custom: export succeeded");
+    if (!ok) return;
+
+    XlsxImportResult result = XlsxService::importFromFile(tempPath);
+    check(!result.charts.empty(), "chart custom: at least one chart imported");
+    if (result.charts.empty()) { QFile::remove(tempPath); return; }
+
+    // Find the Nexel-native chart (round-trip target).
+    const ImportedChart* got = nullptr;
+    for (const auto& c : result.charts) {
+        if (c.isNexelNative) { got = &c; break; }
+    }
+    check(got != nullptr, "chart custom: Nexel-native chart record present");
+    if (!got) { QFile::remove(tempPath); return; }
+
+    check(got->themeIndex             == 3,  "chart custom: themeIndex preserved");
+    check(got->legendPosition         == 2,  "chart custom: legend position preserved");
+    check(got->dataLabelPosition      == 6,  "chart custom: data label position preserved");
+    check(got->dataLabelShowValue,           "chart custom: showValue preserved");
+    check(got->dataLabelShowCategory,        "chart custom: showCategory preserved");
+    check(!got->dataLabelShowPercentage,     "chart custom: showPercentage preserved");
+    check(got->dataLabelShowSeriesName,      "chart custom: showSeriesName preserved");
+    check(got->stacked,                       "chart custom: stacked preserved");
+    check(!got->percentStacked,              "chart custom: percentStacked preserved");
+    check(!got->showMarkers,                 "chart custom: showMarkers preserved");
 
     QFile::remove(tempPath);
 }
@@ -1695,6 +1860,10 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_NamedRanges();
     testXlsxRoundTrip_MultipleSheets();
     testXlsxRoundTrip_Comprehensive();
+    testXlsxRoundTrip_Sparklines();
+    testCsv_PreserveFormulasOnExport();
+    testCsv_Latin1Fallback();
+    testXlsxRoundTrip_ChartCustomization();
     testXlsxRoundTrip_Comments();
     testXlsxRoundTrip_PrintSettings();
     testXlsxRoundTrip_OOXMLTables();

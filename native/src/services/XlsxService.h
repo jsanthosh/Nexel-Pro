@@ -34,6 +34,20 @@ struct ImportedChart {
     bool showLegend = true;
     bool showGridLines = true;
     bool isNexelNative = false; // true if saved by Nexel (has dataRange)
+
+    // Advanced customisation (Nexel-only — preserved via JSON sidecar).
+    // Ints map to the LegendPosition / DataLabelPosition enums in ChartWidget.h;
+    // we use ints here to keep the I/O struct free of UI dependencies.
+    int  legendPosition          = 0;  // 0=Right (LegendPosition default)
+    int  dataLabelPosition       = 0;  // 0=None (DataLabelPosition default)
+    bool dataLabelShowValue      = true;
+    bool dataLabelShowCategory   = false;
+    bool dataLabelShowPercentage = false;
+    bool dataLabelShowSeriesName = false;
+    bool stacked                 = false;
+    bool percentStacked          = false;
+    bool smoothLines             = false;
+    bool showMarkers             = true;
 };
 
 // Chart config for export (matches ChartWidget runtime state)
@@ -48,6 +62,19 @@ struct NexelChartExport {
     bool showLegend = true;
     bool showGridLines = true;
     int x = 50, y = 50, width = 420, height = 320;
+
+    // Advanced customisation (Nexel-only — preserved via JSON sidecar).
+    // Ints map to LegendPosition / DataLabelPosition enums in ChartWidget.h.
+    int  legendPosition          = 0;
+    int  dataLabelPosition       = 0;
+    bool dataLabelShowValue      = true;
+    bool dataLabelShowCategory   = false;
+    bool dataLabelShowPercentage = false;
+    bool dataLabelShowSeriesName = false;
+    bool stacked                 = false;
+    bool percentStacked          = false;
+    bool smoothLines             = false;
+    bool showMarkers             = true;
 };
 
 struct XlsxImportResult {

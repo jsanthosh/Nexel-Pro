@@ -2027,11 +2027,21 @@ void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& f
             chart->setLazyLoad(m_lazyLoadCharts);
 
             if (imported.isNexelNative && !imported.dataRange.isEmpty()) {
-                // Nexel-native chart: restore from dataRange
+                // Nexel-native chart: restore from dataRange + customisation.
                 config.dataRange = imported.dataRange;
                 config.themeIndex = imported.themeIndex;
                 config.showLegend = imported.showLegend;
                 config.showGridLines = imported.showGridLines;
+                config.legendPosition          = static_cast<LegendPosition>(imported.legendPosition);
+                config.dataLabelPosition       = static_cast<DataLabelPosition>(imported.dataLabelPosition);
+                config.dataLabelShowValue      = imported.dataLabelShowValue;
+                config.dataLabelShowCategory   = imported.dataLabelShowCategory;
+                config.dataLabelShowPercentage = imported.dataLabelShowPercentage;
+                config.dataLabelShowSeriesName = imported.dataLabelShowSeriesName;
+                config.stacked                 = imported.stacked;
+                config.percentStacked          = imported.percentStacked;
+                config.smoothLines             = imported.smoothLines;
+                config.showMarkers             = imported.showMarkers;
                 chart->setConfig(config);
                 chart->loadDataFromRange(imported.dataRange);
             } else if (!imported.dataRange.isEmpty()) {
@@ -2206,6 +2216,16 @@ void MainWindow::onSaveDocument() {
             ce.y = chart->y();
             ce.width = chart->width();
             ce.height = chart->height();
+            ce.legendPosition          = static_cast<int>(cfg.legendPosition);
+            ce.dataLabelPosition       = static_cast<int>(cfg.dataLabelPosition);
+            ce.dataLabelShowValue      = cfg.dataLabelShowValue;
+            ce.dataLabelShowCategory   = cfg.dataLabelShowCategory;
+            ce.dataLabelShowPercentage = cfg.dataLabelShowPercentage;
+            ce.dataLabelShowSeriesName = cfg.dataLabelShowSeriesName;
+            ce.stacked                 = cfg.stacked;
+            ce.percentStacked          = cfg.percentStacked;
+            ce.smoothLines             = cfg.smoothLines;
+            ce.showMarkers             = cfg.showMarkers;
             chartExports.push_back(ce);
         }
 
@@ -2336,6 +2356,16 @@ void MainWindow::onSaveAs() {
             ce.y = chart->y();
             ce.width = chart->width();
             ce.height = chart->height();
+            ce.legendPosition          = static_cast<int>(cfg.legendPosition);
+            ce.dataLabelPosition       = static_cast<int>(cfg.dataLabelPosition);
+            ce.dataLabelShowValue      = cfg.dataLabelShowValue;
+            ce.dataLabelShowCategory   = cfg.dataLabelShowCategory;
+            ce.dataLabelShowPercentage = cfg.dataLabelShowPercentage;
+            ce.dataLabelShowSeriesName = cfg.dataLabelShowSeriesName;
+            ce.stacked                 = cfg.stacked;
+            ce.percentStacked          = cfg.percentStacked;
+            ce.smoothLines             = cfg.smoothLines;
+            ce.showMarkers             = cfg.showMarkers;
             chartExports.push_back(ce);
         }
 
