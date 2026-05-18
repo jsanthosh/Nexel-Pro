@@ -153,6 +153,18 @@ QVariant Spreadsheet::getCellValue(const CellAddress& addr) {
 }
 
 void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
+    // Sheet-protection enforcement. When the sheet is protected, writes to
+    // locked cells are silently rejected — matches Excel's "this cell is on
+    // a protected sheet" behaviour. Cells without an explicit CellStyle take
+    // the Excel-default locked=1 from CellStyle's bitfield initializer.
+    // XLSX import + formula recalc bypass this path (they write through
+    // ColumnStore directly), so loading a protected workbook still works.
+    if (m_isProtected) {
+        const auto cellProxy = getCellIfExists(addr);
+        const bool locked = cellProxy.isValid() ? cellProxy->getStyle().locked : true;
+        if (locked) return;
+    }
+
     bool wasNew = !m_columnStore.hasCell(addr.row, addr.col);
 
     // Clear any existing spill range from this cell (was previously a spill-producing formula)
@@ -193,6 +205,13 @@ void Spreadsheet::setCellValue(const CellAddress& addr, const QVariant& value) {
 }
 
 void Spreadsheet::setCellFormula(const CellAddress& addr, const QString& formula) {
+    // Same protection enforcement as setCellValue — see comment there.
+    if (m_isProtected) {
+        const auto cellProxy = getCellIfExists(addr);
+        const bool locked = cellProxy.isValid() ? cellProxy->getStyle().locked : true;
+        if (locked) return;
+    }
+
     QElapsedTimer _timer; _timer.start();
     bool wasNew = !m_columnStore.hasCell(addr.row, addr.col);
 

@@ -897,6 +897,82 @@ void testXlsxRoundTrip_ConditionalFormatFormula() {
     QFile::remove(tempPath);
 }
 
+void testSheetProtection_RuntimeEnforcement() {
+    SECTION("Sheet Protection: Runtime Write Enforcement");
+
+    // Default behaviour: not protected → writes go through.
+    {
+        auto sheet = std::make_shared<Spreadsheet>();
+        sheet->setCellValue({0, 0}, QVariant("hello"));
+        check(sheet->getCellValue({0, 0}).toString() == "hello",
+              "enforce: unprotected sheet accepts writes");
+    }
+
+    // Protected sheet: writes to a default-locked cell are blocked.
+    {
+        auto sheet = std::make_shared<Spreadsheet>();
+        sheet->setCellValue({0, 0}, QVariant("original"));
+        sheet->setProtected(true);
+        sheet->setCellValue({0, 0}, QVariant("changed"));
+        check(sheet->getCellValue({0, 0}).toString() == "original",
+              "enforce: write to locked cell on protected sheet is blocked");
+
+        // New cells default to locked → also blocked.
+        sheet->setCellValue({1, 1}, QVariant("new"));
+        check(!sheet->getCellValue({1, 1}).isValid() ||
+               sheet->getCellValue({1, 1}).toString().isEmpty(),
+              "enforce: write to default-locked empty cell is blocked");
+    }
+
+    // Protected sheet: a cell explicitly unlocked accepts writes.
+    {
+        auto sheet = std::make_shared<Spreadsheet>();
+        sheet->setCellValue({0, 0}, QVariant("seed"));
+        // Unlock cell A1 (B2 stays default-locked).
+        {
+            auto cell = sheet->getCell({0, 0});
+            CellStyle s = cell->getStyle();
+            s.locked = 0;
+            cell->setStyle(s);
+        }
+        sheet->setProtected(true);
+
+        sheet->setCellValue({0, 0}, QVariant("updated"));
+        check(sheet->getCellValue({0, 0}).toString() == "updated",
+              "enforce: write to explicitly-unlocked cell goes through");
+
+        sheet->setCellValue({1, 1}, QVariant("blocked"));
+        check(!sheet->getCellValue({1, 1}).isValid() ||
+               sheet->getCellValue({1, 1}).toString().isEmpty(),
+              "enforce: write to default-locked neighbour still blocked");
+    }
+
+    // Formulas: setCellFormula enforces the same rule.
+    {
+        auto sheet = std::make_shared<Spreadsheet>();
+        sheet->setCellValue({0, 0}, QVariant(10.0));
+        sheet->setCellValue({0, 1}, QVariant(20.0));
+        sheet->setProtected(true);
+        sheet->setCellFormula({0, 2}, "=A1+B1");
+        // Cell C1 was default-locked → formula should not have been set.
+        auto c = sheet->getCellIfExists(0, 2);
+        check(!c.isValid() || c->getFormula().isEmpty(),
+              "enforce: setCellFormula on locked cell is blocked");
+    }
+
+    // Unprotecting re-enables writes.
+    {
+        auto sheet = std::make_shared<Spreadsheet>();
+        sheet->setCellValue({0, 0}, QVariant("v1"));
+        sheet->setProtected(true);
+        sheet->setCellValue({0, 0}, QVariant("blocked"));
+        sheet->setProtected(false);
+        sheet->setCellValue({0, 0}, QVariant("v2"));
+        check(sheet->getCellValue({0, 0}).toString() == "v2",
+              "enforce: unprotecting re-enables writes");
+    }
+}
+
 void testXlsxRoundTrip_SheetProtection() {
     SECTION("XLSX Round-Trip: Sheet Protection");
     auto sheet = std::make_shared<Spreadsheet>();
@@ -1924,6 +2000,7 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_NamedRanges();
     testXlsxRoundTrip_MultipleSheets();
     testXlsxRoundTrip_Comprehensive();
+    testSheetProtection_RuntimeEnforcement();
     testXlsxRoundTrip_Sparklines();
     testXlsxRoundTrip_EmbeddedImages();
     testCsv_PreserveFormulasOnExport();
