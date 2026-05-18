@@ -2088,6 +2088,47 @@ void MainWindow::finishXlsxOpen(const XlsxImportResult& result, const QString& f
             m_charts.append(chart);
             addOverlay(chart);
         }
+
+        // Embedded images — round-tripped via xl/media/* + xl/drawings/*.
+        for (const auto& imported : result.images) {
+            const int si = imported.sheetIndex;
+            if (si < 0 || si >= static_cast<int>(m_sheets.size())) continue;
+            if (imported.imageData.isEmpty()) continue;
+
+            QPixmap px;
+            if (!px.loadFromData(imported.imageData)) continue;
+
+            auto* image = new ImageWidget(m_spreadsheetView->viewport());
+            ImageConfig icfg;
+            icfg.imageData = imported.imageData;
+            image->setConfig(icfg);
+            image->setGeometry(imported.x, imported.y, imported.width, imported.height);
+
+            connect(image, &ImageWidget::editRequested, this, &MainWindow::onEditImage);
+            connect(image, &ImageWidget::deleteRequested, this, &MainWindow::onDeleteImage);
+            connect(image, &ImageWidget::imageMoved, this, [this]() { setDirty(); });
+            connect(image, &ImageWidget::imageSelected, this, [this](ImageWidget* img) {
+                int sIdx = img->property("sheetIndex").toInt();
+                bool multiSelect = QApplication::keyboardModifiers() & Qt::ControlModifier;
+                if (!multiSelect) {
+                    for (auto* other : m_images)
+                        if (other != img && other->property("sheetIndex").toInt() == sIdx) other->setSelected(false);
+                    for (auto* c : m_charts)
+                        if (c->property("sheetIndex").toInt() == sIdx) c->setSelected(false);
+                    for (auto* s : m_shapes)
+                        if (s->property("sheetIndex").toInt() == sIdx) s->setSelected(false);
+                }
+                img->setSelected(true);
+                m_selectedChart = nullptr;
+            });
+
+            image->setProperty("sheetIndex", si);
+            image->setVisible(si == m_activeSheetIndex);
+            if (si == m_activeSheetIndex) image->show();
+            m_images.append(image);
+            addOverlay(image);
+        }
+
         applyZOrder();
 
         // Immediately load any lazy charts that are already visible
@@ -2229,6 +2270,23 @@ void MainWindow::onSaveDocument() {
             chartExports.push_back(ce);
         }
 
+        // Collect embedded image configs from m_images (round-tripped via
+        // xl/media/*.png and xl/drawings/*).
+        std::vector<EmbeddedImageExport> imageExports;
+        for (auto* img : m_images) {
+            const auto cfg = img->config();
+            if (cfg.imageData.isEmpty()) continue;
+            EmbeddedImageExport ie;
+            ie.sheetIndex = img->property("sheetIndex").toInt();
+            ie.imageData  = cfg.imageData;
+            ie.format     = "png";          // ImageWidget always re-encodes as PNG
+            ie.x          = img->x();
+            ie.y          = img->y();
+            ie.width      = img->width();
+            ie.height     = img->height();
+            imageExports.push_back(ie);
+        }
+
         // Check if large dataset — run async to avoid UI freeze
         bool isLarge = false;
         for (const auto& sheet : m_sheets) {
@@ -2256,12 +2314,12 @@ void MainWindow::onSaveDocument() {
                     QMessageBox::warning(this, "Save Failed", "Could not save file.");
                 }
             });
-            watcher->setFuture(QtConcurrent::run([sheets, path, chartExports]() {
-                return XlsxService::exportToFile(sheets, path, chartExports);
+            watcher->setFuture(QtConcurrent::run([sheets, path, chartExports, imageExports]() {
+                return XlsxService::exportToFile(sheets, path, chartExports, imageExports);
             }));
         } else {
             // Small files: save synchronously (fast)
-            bool success = XlsxService::exportToFile(m_sheets, m_currentFilePath, chartExports);
+            bool success = XlsxService::exportToFile(m_sheets, m_currentFilePath, chartExports, imageExports);
             if (success) {
                 m_dirty = false;
                 updateWindowTitle();
@@ -2369,6 +2427,22 @@ void MainWindow::onSaveAs() {
             chartExports.push_back(ce);
         }
 
+        // Embedded images (Save As path).
+        std::vector<EmbeddedImageExport> imageExports;
+        for (auto* img : m_images) {
+            const auto cfg = img->config();
+            if (cfg.imageData.isEmpty()) continue;
+            EmbeddedImageExport ie;
+            ie.sheetIndex = img->property("sheetIndex").toInt();
+            ie.imageData  = cfg.imageData;
+            ie.format     = "png";
+            ie.x          = img->x();
+            ie.y          = img->y();
+            ie.width      = img->width();
+            ie.height     = img->height();
+            imageExports.push_back(ie);
+        }
+
         // Large files: background save
         bool isLarge = false;
         for (const auto& sheet : m_sheets) {
@@ -2394,13 +2468,13 @@ void MainWindow::onSaveAs() {
                     QMessageBox::warning(this, "Save Failed", "Could not save file.");
                 }
             });
-            watcher->setFuture(QtConcurrent::run([sheets, fileName, chartExports]() {
-                return XlsxService::exportToFile(sheets, fileName, chartExports);
+            watcher->setFuture(QtConcurrent::run([sheets, fileName, chartExports, imageExports]() {
+                return XlsxService::exportToFile(sheets, fileName, chartExports, imageExports);
             }));
             return;
         }
 
-        success = XlsxService::exportToFile(m_sheets, fileName, chartExports);
+        success = XlsxService::exportToFile(m_sheets, fileName, chartExports, imageExports);
     } else {
         auto spreadsheet = m_spreadsheetView->getSpreadsheet();
         if (spreadsheet) success = CsvService::exportToFile(*spreadsheet, fileName);

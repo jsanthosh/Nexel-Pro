@@ -77,9 +77,27 @@ struct NexelChartExport {
     bool showMarkers             = true;
 };
 
+struct ImportedImage {
+    int sheetIndex = 0;
+    QByteArray imageData;    // raw bytes
+    QString format;          // "png", "jpg", "gif" (lowercase)
+    int x = 50, y = 50;      // pixel position on sheet
+    int width = 200, height = 150;
+};
+
+// Chart config for export uses NexelChartExport. Images use this:
+struct EmbeddedImageExport {
+    int sheetIndex = 0;
+    QByteArray imageData;
+    QString format;          // "png", "jpg", "gif"
+    int x = 50, y = 50;
+    int width = 200, height = 150;
+};
+
 struct XlsxImportResult {
     std::vector<std::shared_ptr<Spreadsheet>> sheets;
     std::vector<ImportedChart> charts;
+    std::vector<ImportedImage> images;
 };
 
 class XlsxService {
@@ -94,9 +112,11 @@ public:
     static XlsxImportResult importFromFileStreaming(const QString& filePath,
                                                      ImportProgressCallback progress = nullptr);
 
-    // Export sheets to XLSX with all formatting (optionally including chart configs)
+    // Export sheets to XLSX with all formatting (optionally including chart
+    // and embedded-image configs).
     static bool exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& sheets, const QString& filePath,
-                             const std::vector<NexelChartExport>& charts = {});
+                             const std::vector<NexelChartExport>& charts = {},
+                             const std::vector<EmbeddedImageExport>& images = {});
 
 private:
     // Export helpers
@@ -106,7 +126,8 @@ private:
                                              bool hasCustomJson = false,
                                              bool hasTheme = false,
                                              int tableCount = 0,
-                                             int commentsCount = 0);
+                                             int commentsCount = 0,
+                                             const std::set<QString>& imageExts = {});
     static QByteArray generateRels();
     static QByteArray generateWorkbook(const std::vector<std::shared_ptr<Spreadsheet>>& sheets);
     static QByteArray generateWorkbookRels(int sheetCount, bool hasSharedStrings,
@@ -120,9 +141,17 @@ private:
 
     // OOXML chart export helpers
     static QByteArray generateChartXml(const NexelChartExport& chart, const QString& sheetName);
+    // Per-sheet drawing XML covers both chart and image anchors. The image
+    // indices index into allImages; the rId namespace is shared (charts first,
+    // then images) within the drawing's relationships file.
     static QByteArray generateDrawingXml(const std::vector<NexelChartExport>& allCharts,
-                                          const std::vector<int>& chartIndices);
-    static QByteArray generateDrawingRels(int chartCount, int startChartNum);
+                                          const std::vector<int>& chartIndices,
+                                          const std::vector<EmbeddedImageExport>& allImages = {},
+                                          const std::vector<int>& imageIndices = {},
+                                          const std::vector<int>& imageNums = {});
+    static QByteArray generateDrawingRels(int chartCount, int startChartNum,
+                                           const std::vector<int>& imageNums = {},
+                                           const std::vector<QString>& imageFormats = {});
     static QByteArray generateSheetRels(int drawingNum);
     static QVector<QColor> chartThemeColors(int themeIndex);
 
@@ -213,6 +242,16 @@ private:
 
     static std::map<QString, QString> parseRels(const QByteArray& relsXml);
     static QString findDrawingRId(const QByteArray& sheetXml);
+
+    // Image anchors inside a drawing part. Mirrors DrawingChartRef but for
+    // <xdr:pic> elements; rId references the drawing's relationship file
+    // which in turn points at xl/media/imageN.{ext}.
+    struct DrawingImageRef {
+        QString embedRId;
+        int fromCol = 0, fromRow = 0;
+        int toCol = 10, toRow = 15;
+    };
+    static std::vector<DrawingImageRef> parseDrawingImages(const QByteArray& drawingXml);
     static std::vector<DrawingChartRef> parseDrawing(const QByteArray& drawingXml);
     static ImportedChart parseChartXml(const QByteArray& chartXml);
     static QString resolveRelativePath(const QString& basePath, const QString& relativePath);

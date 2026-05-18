@@ -15,6 +15,9 @@
 #include <memory>
 #include <vector>
 
+#include <QImage>
+#include <QBuffer>
+
 #include "../src/core/Spreadsheet.h"
 #include "../src/core/Cell.h"
 #include "../src/core/CellRange.h"
@@ -524,6 +527,67 @@ void testXlsxRoundTrip_Sparklines() {
         check(got->showHighPoint,                     "sparkline: showHighPoint preserved");
         check(got->showLowPoint,                      "sparkline: showLowPoint preserved");
         check(got->lineWidth == 3,                    "sparkline: lineWidth preserved");
+    }
+
+    QFile::remove(tempPath);
+}
+
+void testXlsxRoundTrip_EmbeddedImages() {
+    SECTION("XLSX Round-Trip: Embedded Images");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("with-image"));
+
+    // Build a small but recognisable PNG payload.
+    QImage src(16, 16, QImage::Format_ARGB32);
+    src.fill(Qt::red);
+    src.setPixel(0, 0, qRgba(0, 255, 0, 255)); // sentinel pixel to detect byte-level changes
+    QByteArray pngBytes;
+    {
+        QBuffer buf(&pngBytes);
+        buf.open(QIODevice::WriteOnly);
+        const bool ok = src.save(&buf, "PNG");
+        check(ok, "image: built source PNG bytes");
+        if (!ok) return;
+    }
+
+    EmbeddedImageExport imgExport;
+    imgExport.sheetIndex = 0;
+    imgExport.imageData = pngBytes;
+    imgExport.format = "png";
+    imgExport.x = 100;
+    imgExport.y = 60;
+    imgExport.width = 120;
+    imgExport.height = 96;
+
+    const QString tempPath = QDir::tempPath() + "/nexel_e2e_image.xlsx";
+    std::vector<std::shared_ptr<Spreadsheet>> sheets = { sheet };
+    bool ok = XlsxService::exportToFile(sheets, tempPath, {}, { imgExport });
+    check(ok, "image: export succeeded");
+    if (!ok) return;
+
+    XlsxImportResult result = XlsxService::importFromFile(tempPath);
+    check(result.sheets.size() == 1, "image: one sheet imported");
+    check(result.images.size() == 1, "image: exactly one image imported");
+    if (result.images.empty()) { QFile::remove(tempPath); return; }
+
+    const auto& got = result.images[0];
+    check(got.sheetIndex == 0,                 "image: sheetIndex preserved");
+    check(got.format == "png",                 "image: format preserved");
+    check(got.imageData.size() == pngBytes.size(),
+          "image: byte count preserved");
+    check(got.imageData == pngBytes,
+          "image: full byte-for-byte payload preserved");
+
+    // Re-decode to confirm the image data is a valid PNG and the sentinel
+    // pixel is intact (round-trip didn't silently re-encode).
+    QImage decoded;
+    const bool decoded_ok = decoded.loadFromData(got.imageData, "PNG");
+    check(decoded_ok && decoded.width() == 16 && decoded.height() == 16,
+          "image: decoded PNG is 16x16");
+    if (decoded_ok) {
+        check(decoded.pixel(0, 0) == qRgba(0, 255, 0, 255),
+              "image: sentinel pixel intact");
     }
 
     QFile::remove(tempPath);
@@ -1861,6 +1925,7 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_MultipleSheets();
     testXlsxRoundTrip_Comprehensive();
     testXlsxRoundTrip_Sparklines();
+    testXlsxRoundTrip_EmbeddedImages();
     testCsv_PreserveFormulasOnExport();
     testCsv_Latin1Fallback();
     testXlsxRoundTrip_ChartCustomization();

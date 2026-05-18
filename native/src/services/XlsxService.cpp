@@ -191,9 +191,10 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
         if (drawingData.isEmpty()) continue;
 
         auto chartRefs = parseDrawing(drawingData);
-        if (chartRefs.empty()) continue;
+        auto imageRefs = parseDrawingImages(drawingData);
+        if (chartRefs.empty() && imageRefs.empty()) continue;
 
-        // Parse drawing rels to find chart paths
+        // Parse drawing rels — used by both chart and image resolution.
         int drawLastSlash = drawingPath.lastIndexOf('/');
         QString drawingDir = drawingPath.left(drawLastSlash);
         QString drawingFileName = drawingPath.mid(drawLastSlash + 1);
@@ -216,6 +217,26 @@ XlsxImportResult XlsxService::importFromFile(const QString& filePath) {
             chart.width = qMax(200, (ref.toCol - ref.fromCol) * 64);
             chart.height = qMax(150, (ref.toRow - ref.fromRow) * 20);
             result.charts.push_back(chart);
+        }
+
+        for (const auto& ref : imageRefs) {
+            auto mediaIt = drawingRels.find(ref.embedRId);
+            if (mediaIt == drawingRels.end()) continue;
+
+            QString mediaPath = resolveRelativePath(drawingPath, mediaIt->second);
+            QByteArray bytes = zip.fileData(mediaPath);
+            if (bytes.isEmpty()) continue;
+
+            ImportedImage img;
+            img.sheetIndex = sheetIdx;
+            img.imageData = bytes;
+            const int dot = mediaPath.lastIndexOf('.');
+            if (dot > 0) img.format = mediaPath.mid(dot + 1).toLower();
+            img.x = ref.fromCol * 64;
+            img.y = ref.fromRow * 20;
+            img.width = qMax(50, (ref.toCol - ref.fromCol) * 64);
+            img.height = qMax(50, (ref.toRow - ref.fromRow) * 20);
+            result.images.push_back(img);
         }
     }
 
@@ -2171,14 +2192,14 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
             }
         }
 
-        // Chart import — all small entries, safe to readEntry sequentially.
+        // Drawing import — covers both chart anchors and image anchors.
         if (!drawingRId.isEmpty()) {
-
             if (sheetRels.count(drawingRId)) {
                 const QString drawingPath = resolveRelativePath(fullSheetPath, sheetRels.at(drawingRId));
                 const QByteArray drawingData = zip.readEntry(drawingPath);
                 if (!drawingData.isEmpty()) {
                     const auto chartRefs = parseDrawing(drawingData);
+                    const auto imageRefs = parseDrawingImages(drawingData);
                     const int dLastSlash = drawingPath.lastIndexOf('/');
                     const QString drawingDir = drawingPath.left(dLastSlash);
                     const QString drawingFile = drawingPath.mid(dLastSlash + 1);
@@ -2201,6 +2222,25 @@ XlsxImportResult XlsxService::importFromFileStreaming(const QString& filePath,
                         if (chart.width < 200) chart.width = 420;
                         if (chart.height < 100) chart.height = 320;
                         result.charts.push_back(chart);
+                    }
+
+                    for (const auto& iref : imageRefs) {
+                        auto it = drawingRels.find(iref.embedRId);
+                        if (it == drawingRels.end()) continue;
+                        const QString mediaPath = resolveRelativePath(drawingPath, it->second);
+                        const QByteArray bytes = zip.readEntry(mediaPath);
+                        if (bytes.isEmpty()) continue;
+
+                        ImportedImage img;
+                        img.sheetIndex = sheetIdx;
+                        img.imageData = bytes;
+                        const int dot = mediaPath.lastIndexOf('.');
+                        if (dot > 0) img.format = mediaPath.mid(dot + 1).toLower();
+                        img.x = iref.fromCol * 64;
+                        img.y = iref.fromRow * 20;
+                        img.width = qMax(50, (iref.toCol - iref.fromCol) * 64);
+                        img.height = qMax(50, (iref.toRow - iref.fromRow) * 20);
+                        result.images.push_back(img);
                     }
                 }
             }
@@ -2328,7 +2368,8 @@ QString XlsxService::cellStyleKey(const CellStyle& style) {
 
 bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& sheets,
                                  const QString& filePath,
-                                 const std::vector<NexelChartExport>& charts) {
+                                 const std::vector<NexelChartExport>& charts,
+                                 const std::vector<EmbeddedImageExport>& images) {
     if (sheets.empty()) return false;
 
     // Collect unique styles and build style index map
@@ -2370,11 +2411,17 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         });
     }
 
-    // Pre-compute which sheets have charts (for drawing references)
+    // Pre-compute which sheets have charts / images (drives drawing parts).
     std::map<int, std::vector<int>> chartsPerSheet; // sheetIndex -> chart indices
     for (int i = 0; i < static_cast<int>(charts.size()); ++i) {
         if (!charts[i].dataRange.isEmpty()) {
             chartsPerSheet[charts[i].sheetIndex].push_back(i);
+        }
+    }
+    std::map<int, std::vector<int>> imagesPerSheet; // sheetIndex -> image indices
+    for (int i = 0; i < static_cast<int>(images.size()); ++i) {
+        if (!images[i].imageData.isEmpty()) {
+            imagesPerSheet[images[i].sheetIndex].push_back(i);
         }
     }
 
@@ -2383,12 +2430,26 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
     // sheet directly into the archive (no per-sheet QByteArray accumulation).
     const int sheetCount = static_cast<int>(sheets.size());
     int totalChartCount = 0;
-    std::vector<int> drawingSheetNums; // 1-based sheet numbers with drawings
+    std::set<int> drawingSheetSet; // 1-based sheet numbers that need a drawing part
     for (auto& [si, indices] : chartsPerSheet) {
         if (si < sheetCount) {
             totalChartCount += static_cast<int>(indices.size());
-            drawingSheetNums.push_back(si + 1);
+            drawingSheetSet.insert(si + 1);
         }
+    }
+    for (auto& [si, indices] : imagesPerSheet) {
+        if (si < sheetCount) drawingSheetSet.insert(si + 1);
+    }
+    std::vector<int> drawingSheetNums(drawingSheetSet.begin(), drawingSheetSet.end());
+
+    // Per-image global numbering for xl/media/imageN.{png,jpg,gif}.
+    // Built up during the post-loop drawing/rels pass; here we just need the
+    // count + format list for content-types.
+    const int totalImageCount = static_cast<int>(images.size());
+    std::set<QString> imageFormatsUsed;
+    for (const auto& img : images) {
+        const QString fmt = img.format.isEmpty() ? QString("png") : img.format.toLower();
+        imageFormatsUsed.insert(fmt);
     }
 
     bool hasCustomJson = !charts.empty();
@@ -2421,7 +2482,8 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
     zip.writeEntry("[Content_Types].xml",
                    generateContentTypes(sheetCount, !sharedStrings.isEmpty(),
                                         totalChartCount, drawingSheetNums, hasCustomJson, hasTheme,
-                                        totalTableCount, totalCommentsCount));
+                                        totalTableCount, totalCommentsCount,
+                                        imageFormatsUsed));
     zip.writeEntry("_rels/.rels", generateRels());
     zip.writeEntry("xl/workbook.xml", generateWorkbook(sheets));
     zip.writeEntry("xl/_rels/workbook.xml.rels",
@@ -2947,8 +3009,9 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
             }
         }
 
-        // Drawing reference (for sheets with charts)
-        if (chartsPerSheet.count(sheetIdx)) {
+        // Drawing reference — emitted for sheets with charts OR images.
+        // Both go in the same per-sheet drawing part referenced by rId1.
+        if (chartsPerSheet.count(sheetIdx) || imagesPerSheet.count(sheetIdx)) {
             xml.writeStartElement("drawing");
             xml.writeAttribute("r:id", "rId1");
             xml.writeEndElement();
@@ -2995,30 +3058,52 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         sheetIdx++;
     }
 
-    // Generate OOXML chart parts (so Excel can display them)
+    // Generate OOXML chart + image media + drawing parts. We iterate every
+    // sheet that has any drawing-bearing content (charts or images) and emit
+    // a single drawing part per sheet that references both kinds via rIds.
     int globalChartNum = 1;
-    for (auto& [si, indices] : chartsPerSheet) {
-        if (si >= sheetCount) continue;
-        QString sheetName = sheets[si]->getSheetName();
-        int startNum = globalChartNum;
+    int globalImageNum = 1;
+    for (int si : drawingSheetSet) {
+        const int sheetIdx = si - 1;
+        if (sheetIdx < 0 || sheetIdx >= sheetCount) continue;
+        const QString sheetName = sheets[sheetIdx]->getSheetName();
+        const int startChartNum = globalChartNum;
 
-        // Generate chart XML files
-        for (int ci : indices) {
+        const std::vector<int>& chartIndices = chartsPerSheet.count(sheetIdx)
+                                                ? chartsPerSheet[sheetIdx]
+                                                : std::vector<int>{};
+        const std::vector<int>& imageIndices = imagesPerSheet.count(sheetIdx)
+                                                ? imagesPerSheet[sheetIdx]
+                                                : std::vector<int>{};
+
+        // Write chart XML files.
+        for (int ci : chartIndices) {
             zip.writeEntry(QString("xl/charts/chart%1.xml").arg(globalChartNum),
-                        generateChartXml(charts[ci], sheetName));
+                           generateChartXml(charts[ci], sheetName));
             globalChartNum++;
         }
 
-        int chartCountForSheet = static_cast<int>(indices.size());
+        // Write image media bytes and collect their global numbers + formats.
+        std::vector<int> imageNumsForRels;
+        std::vector<QString> imageFormatsForRels;
+        for (int ii : imageIndices) {
+            const QString ext = images[ii].format.isEmpty() ? QString("png")
+                                                            : images[ii].format.toLower();
+            zip.writeEntry(QString("xl/media/image%1.%2").arg(globalImageNum).arg(ext),
+                           images[ii].imageData);
+            imageNumsForRels.push_back(globalImageNum);
+            imageFormatsForRels.push_back(ext);
+            globalImageNum++;
+        }
 
-        // Drawing XML
-        zip.writeEntry(QString("xl/drawings/drawing%1.xml").arg(si + 1),
-                    generateDrawingXml(charts, indices));
+        const int chartCountForSheet = static_cast<int>(chartIndices.size());
 
-        // Drawing relationships (maps rIdN -> chartN.xml)
-        zip.writeEntry(QString("xl/drawings/_rels/drawing%1.xml.rels").arg(si + 1),
-                    generateDrawingRels(chartCountForSheet, startNum));
-
+        zip.writeEntry(QString("xl/drawings/drawing%1.xml").arg(sheetIdx + 1),
+                       generateDrawingXml(charts, chartIndices,
+                                          images, imageIndices, imageNumsForRels));
+        zip.writeEntry(QString("xl/drawings/_rels/drawing%1.xml.rels").arg(sheetIdx + 1),
+                       generateDrawingRels(chartCountForSheet, startChartNum,
+                                           imageNumsForRels, imageFormatsForRels));
     }
 
     // Write per-sheet table XML files. Table numbering is global; the rId
@@ -3045,7 +3130,7 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 
     // Unified sheet rels pass — handles drawing, hyperlinks, tables, comments.
     for (int si = 0; si < sheetCount; ++si) {
-        const bool hasDrawing = chartsPerSheet.count(si) > 0;
+        const bool hasDrawing = chartsPerSheet.count(si) > 0 || imagesPerSheet.count(si) > 0;
         const bool hasHyperlinks = (si < static_cast<int>(allSheetHyperlinks.size()) &&
                                      !allSheetHyperlinks[si].empty());
         const bool hasTables = !sheetTableInfo[si].empty();
@@ -3302,7 +3387,8 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrings,
                                                int chartCount, const std::vector<int>& drawingSheetNums,
                                                bool hasCustomJson, bool hasTheme,
-                                               int tableCount, int commentsCount) {
+                                               int tableCount, int commentsCount,
+                                               const std::set<QString>& imageExts) {
     QByteArray data;
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
@@ -3327,6 +3413,19 @@ QByteArray XlsxService::generateContentTypes(int sheetCount, bool hasSharedStrin
         xml.writeStartElement("Default");
         xml.writeAttribute("Extension", "json");
         xml.writeAttribute("ContentType", "application/json");
+        xml.writeEndElement();
+    }
+
+    // Image format Default rules — needed so Excel knows xl/media/*.png is image/png.
+    for (const QString& ext : imageExts) {
+        QString mime;
+        if      (ext == "png")  mime = "image/png";
+        else if (ext == "jpg" || ext == "jpeg") mime = "image/jpeg";
+        else if (ext == "gif")  mime = "image/gif";
+        else continue;
+        xml.writeStartElement("Default");
+        xml.writeAttribute("Extension", ext);
+        xml.writeAttribute("ContentType", mime);
         xml.writeEndElement();
     }
 
@@ -3888,6 +3987,69 @@ QString XlsxService::findDrawingRId(const QByteArray& sheetXml) {
     return "";
 }
 
+std::vector<XlsxService::DrawingImageRef> XlsxService::parseDrawingImages(const QByteArray& drawingXml) {
+    std::vector<DrawingImageRef> refs;
+    QXmlStreamReader xml(drawingXml);
+
+    DrawingImageRef current;
+    bool inAnchor = false;
+    bool inPic = false;
+    bool inFrom = false, inTo = false;
+
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            QString n = xml.name().toString();
+            if (n == "twoCellAnchor" || n == "oneCellAnchor") {
+                inAnchor = true;
+                inPic = false;
+                current = DrawingImageRef();
+            } else if (inAnchor && n == "from") {
+                inFrom = true;
+            } else if (inAnchor && n == "to") {
+                inTo = true;
+            } else if ((inFrom || inTo) && n == "col") {
+                int val = xml.readElementText().toInt();
+                if (inFrom) current.fromCol = val;
+                else current.toCol = val;
+            } else if ((inFrom || inTo) && n == "row") {
+                int val = xml.readElementText().toInt();
+                if (inFrom) current.fromRow = val;
+                else current.toRow = val;
+            } else if (inAnchor && n == "pic") {
+                inPic = true;
+            } else if (inPic && n == "blip") {
+                // <a:blip r:embed="rIdN"/>
+                for (const auto& attr : xml.attributes()) {
+                    const QString qn = attr.qualifiedName().toString();
+                    if (qn.endsWith(":embed") || attr.name() == u"embed") {
+                        current.embedRId = attr.value().toString();
+                        break;
+                    }
+                }
+            }
+        } else if (xml.isEndElement()) {
+            QString n = xml.name().toString();
+            if (n == "twoCellAnchor" || n == "oneCellAnchor") {
+                if (!current.embedRId.isEmpty()) {
+                    refs.push_back(current);
+                }
+                inAnchor = false;
+                inPic = false;
+                inFrom = false;
+                inTo = false;
+            } else if (n == "pic") {
+                inPic = false;
+            } else if (n == "from") {
+                inFrom = false;
+            } else if (n == "to") {
+                inTo = false;
+            }
+        }
+    }
+    return refs;
+}
+
 std::vector<XlsxService::DrawingChartRef> XlsxService::parseDrawing(const QByteArray& drawingXml) {
     std::vector<DrawingChartRef> refs;
     QXmlStreamReader xml(drawingXml);
@@ -4339,24 +4501,40 @@ QByteArray XlsxService::generateChartXml(const NexelChartExport& chart, const QS
 }
 
 QByteArray XlsxService::generateDrawingXml(const std::vector<NexelChartExport>& allCharts,
-                                            const std::vector<int>& chartIndices) {
+                                            const std::vector<int>& chartIndices,
+                                            const std::vector<EmbeddedImageExport>& allImages,
+                                            const std::vector<int>& imageIndices,
+                                            const std::vector<int>& /*imageNums*/) {
     QString x;
     x += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
     x += "<xdr:wsDr xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" "
          "xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" "
          "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\n";
 
+    int nextNvId = 1;
+    auto pixelToAnchor = [](int x, int y, int w, int h,
+                            int& fromCol, int& fromColOff,
+                            int& fromRow, int& fromRowOff,
+                            int& toCol, int& toColOff,
+                            int& toRow, int& toRowOff) {
+        fromCol = x / 64;
+        fromRow = y / 20;
+        toCol = (x + w) / 64;
+        toRow = (y + h) / 20;
+        fromColOff = (x % 64) * 9525; // EMU
+        fromRowOff = (y % 20) * 9525;
+        toColOff = ((x + w) % 64) * 9525;
+        toRowOff = ((y + h) % 20) * 9525;
+    };
+
+    // Charts (rIds 1..chartCount).
     for (int i = 0; i < static_cast<int>(chartIndices.size()); ++i) {
         const auto& c = allCharts[chartIndices[i]];
-        // Convert pixel position to approximate column/row (default col ~64px, row ~20px)
-        int fromCol = c.x / 64;
-        int fromRow = c.y / 20;
-        int toCol = (c.x + c.width) / 64;
-        int toRow = (c.y + c.height) / 20;
-        int fromColOff = (c.x % 64) * 9525; // EMU
-        int fromRowOff = (c.y % 20) * 9525;
-        int toColOff = ((c.x + c.width) % 64) * 9525;
-        int toRowOff = ((c.y + c.height) % 20) * 9525;
+        int fromCol, fromColOff, fromRow, fromRowOff;
+        int toCol, toColOff, toRow, toRowOff;
+        pixelToAnchor(c.x, c.y, c.width, c.height,
+                      fromCol, fromColOff, fromRow, fromRowOff,
+                      toCol, toColOff, toRow, toRowOff);
 
         x += "<xdr:twoCellAnchor>\n";
         x += QString("<xdr:from><xdr:col>%1</xdr:col><xdr:colOff>%2</xdr:colOff>"
@@ -4368,7 +4546,7 @@ QByteArray XlsxService::generateDrawingXml(const std::vector<NexelChartExport>& 
 
         x += "<xdr:graphicFrame macro=\"\">\n";
         x += QString("<xdr:nvGraphicFramePr><xdr:cNvPr id=\"%1\" name=\"Chart %1\"/>"
-                     "<xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>\n").arg(i + 1);
+                     "<xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>\n").arg(nextNvId++);
         x += "<xdr:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/></xdr:xfrm>\n";
         x += "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\">"
              "<c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" "
@@ -4379,11 +4557,45 @@ QByteArray XlsxService::generateDrawingXml(const std::vector<NexelChartExport>& 
         x += "</xdr:twoCellAnchor>\n";
     }
 
+    // Images (rIds continue after charts).
+    const int chartCount = static_cast<int>(chartIndices.size());
+    for (int i = 0; i < static_cast<int>(imageIndices.size()); ++i) {
+        const auto& img = allImages[imageIndices[i]];
+        int fromCol, fromColOff, fromRow, fromRowOff;
+        int toCol, toColOff, toRow, toRowOff;
+        pixelToAnchor(img.x, img.y, img.width, img.height,
+                      fromCol, fromColOff, fromRow, fromRowOff,
+                      toCol, toColOff, toRow, toRowOff);
+        const int rId = chartCount + i + 1;
+        const int nvId = nextNvId++;
+
+        x += "<xdr:twoCellAnchor>\n";
+        x += QString("<xdr:from><xdr:col>%1</xdr:col><xdr:colOff>%2</xdr:colOff>"
+                     "<xdr:row>%3</xdr:row><xdr:rowOff>%4</xdr:rowOff></xdr:from>\n")
+             .arg(fromCol).arg(fromColOff).arg(fromRow).arg(fromRowOff);
+        x += QString("<xdr:to><xdr:col>%1</xdr:col><xdr:colOff>%2</xdr:colOff>"
+                     "<xdr:row>%3</xdr:row><xdr:rowOff>%4</xdr:rowOff></xdr:to>\n")
+             .arg(toCol).arg(toColOff).arg(toRow).arg(toRowOff);
+
+        x += "<xdr:pic>\n";
+        x += QString("<xdr:nvPicPr><xdr:cNvPr id=\"%1\" name=\"Picture %1\"/>"
+                     "<xdr:cNvPicPr/></xdr:nvPicPr>\n").arg(nvId);
+        x += QString("<xdr:blipFill><a:blip r:embed=\"rId%1\"/>"
+                     "<a:stretch><a:fillRect/></a:stretch></xdr:blipFill>\n").arg(rId);
+        x += "<xdr:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/></a:xfrm>"
+             "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></xdr:spPr>\n";
+        x += "</xdr:pic>\n";
+        x += "<xdr:clientData/>\n";
+        x += "</xdr:twoCellAnchor>\n";
+    }
+
     x += "</xdr:wsDr>\n";
     return x.toUtf8();
 }
 
-QByteArray XlsxService::generateDrawingRels(int chartCount, int startChartNum) {
+QByteArray XlsxService::generateDrawingRels(int chartCount, int startChartNum,
+                                              const std::vector<int>& imageNums,
+                                              const std::vector<QString>& imageFormats) {
     QString x;
     x += "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
     x += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n";
@@ -4392,6 +4604,14 @@ QByteArray XlsxService::generateDrawingRels(int chartCount, int startChartNum) {
                      "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart\" "
                      "Target=\"../charts/chart%2.xml\"/>\n")
              .arg(i + 1).arg(startChartNum + i);
+    }
+    for (int i = 0; i < static_cast<int>(imageNums.size()); ++i) {
+        const QString ext = (i < static_cast<int>(imageFormats.size())
+                              && !imageFormats[i].isEmpty()) ? imageFormats[i] : QString("png");
+        x += QString("<Relationship Id=\"rId%1\" "
+                     "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" "
+                     "Target=\"../media/image%2.%3\"/>\n")
+             .arg(chartCount + i + 1).arg(imageNums[i]).arg(ext);
     }
     x += "</Relationships>\n";
     return x.toUtf8();
