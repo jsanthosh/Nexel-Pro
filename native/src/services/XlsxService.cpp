@@ -2372,24 +2372,14 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
                                  const std::vector<EmbeddedImageExport>& images) {
     if (sheets.empty()) return false;
 
-    // Collect unique styles and build style index map
+    // Single-pass collection of style index map AND shared strings. Previously
+    // these were two separate forEachCell passes over every sheet — on the
+    // 500K-row benchmark that doubled total export time (~10 s per pass).
+    // Merging halves the per-cell overhead.
     std::map<QString, int> styleIndexMap;
-    // Index 0 is reserved for default style
     CellStyle defaultStyle;
     styleIndexMap[cellStyleKey(defaultStyle)] = 0;
 
-    for (const auto& sheet : sheets) {
-        sheet->forEachCell([&](int, int, const Cell& cell) {
-            const CellStyle& s = cell.getStyle();
-            QString key = cellStyleKey(s);
-            if (styleIndexMap.find(key) == styleIndexMap.end()) {
-                int idx = static_cast<int>(styleIndexMap.size());
-                styleIndexMap[key] = idx;
-            }
-        });
-    }
-
-    // Collect shared strings from all sheets
     QStringList sharedStrings;
     std::map<QString, int> ssMap; // string -> index
 
@@ -2399,8 +2389,18 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 
     for (const auto& sheet : sheets) {
         sheet->forEachCell([&](int, int, const Cell& cell) {
-            if (cell.getType() == CellType::Text || cell.getType() == CellType::Empty) {
-                QString val = cell.getValue().toString();
+            // Style collection
+            const CellStyle& s = cell.getStyle();
+            const QString key = cellStyleKey(s);
+            if (styleIndexMap.find(key) == styleIndexMap.end()) {
+                styleIndexMap[key] = static_cast<int>(styleIndexMap.size());
+            }
+
+            // Shared-string collection (text / empty cells only — formula and
+            // numeric cells are written inline).
+            const CellType type = cell.getType();
+            if (type == CellType::Text || type == CellType::Empty) {
+                const QString val = cell.getValue().toString();
                 if (!val.isEmpty() && !val.startsWith('=')) {
                     if (ssMap.find(val) == ssMap.end()) {
                         ssMap[val] = sharedStrings.size();
@@ -2512,7 +2512,12 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         auto sheetDev = zip.openEntry(QString("xl/worksheets/sheet%1.xml").arg(sheetIdx + 1));
         if (!sheetDev) return false;
         QXmlStreamWriter xml(sheetDev.get());
-        xml.setAutoFormatting(true);
+        // Sheet XML is huge for large workbooks; AutoFormatting inserts
+        // pretty-print whitespace + newlines around every element, which on
+        // 500K rows costs several seconds and bloats the output with no value
+        // (XLSX consumers don't care about formatting). Small parts that get
+        // human-inspected (workbook.xml, styles.xml, theme1.xml etc.) keep it.
+        xml.setAutoFormatting(false);
 
         xml.writeStartDocument();
         xml.writeStartElement("worksheet");
@@ -2609,16 +2614,17 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
         }
 
         for (int r = 0; r <= maxRowForHeights; ++r) {
+            // Fast hasData scan: one ColumnStore lookup per cell, no QString
+            // building. hasCustomStyle() is an O(1) pointer null-check on the
+            // Cell — cells with default style share a single static instance,
+            // so most populated workbooks short-circuit here.
             bool hasData = false;
             if (r <= maxRow) {
                 for (int c = 0; c <= maxCol; ++c) {
-                    auto val = sheet->getCellValue(CellAddress(r, c));
-                    if (val.isValid() && !val.toString().isEmpty()) { hasData = true; break; }
                     auto cell = sheet->getCellIfExists(r, c);
-                    if (cell) {
-                        QString key = cellStyleKey(cell->getStyle());
-                        if (styleIndexMap.count(key) && styleIndexMap[key] != 0) { hasData = true; break; }
-                    }
+                    if (!cell.isValid()) continue;
+                    if (cell->getType() != CellType::Empty) { hasData = true; break; }
+                    if (cell->hasCustomStyle())             { hasData = true; break; }
                 }
             }
 
@@ -2640,17 +2646,25 @@ bool XlsxService::exportToFile(const std::vector<std::shared_ptr<Spreadsheet>>& 
 
             for (int c = 0; c <= maxCol; ++c) {
                 auto cell = sheet->getCellIfExists(r, c);
-                if (!cell) continue;
+                if (!cell.isValid()) continue;
 
+                const CellType cellType = cell->getType();
                 QVariant val = cell->getValue();
-                QString formula = cell->getFormula();
+                // Only fetch the formula when the cell is actually a formula.
+                // For 2.5M-cell workbooks this avoids 2.5M empty-QString allocs.
+                QString formula;
+                if (cellType == CellType::Formula) formula = cell->getFormula();
                 bool hasValue = val.isValid() && !val.toString().isEmpty();
                 bool hasFormula = !formula.isEmpty();
 
-                // Get style index
-                QString key = cellStyleKey(cell->getStyle());
+                // Style index: 0 (default) when cell has no custom style.
+                // Avoids 2.5M cellStyleKey() QString-builds on big sheets.
                 int styleIdx = 0;
-                if (styleIndexMap.count(key)) styleIdx = styleIndexMap[key];
+                if (cell->hasCustomStyle()) {
+                    const QString key = cellStyleKey(cell->getStyle());
+                    auto it = styleIndexMap.find(key);
+                    if (it != styleIndexMap.end()) styleIdx = it->second;
+                }
 
                 if (!hasValue && !hasFormula && styleIdx == 0) continue;
 
