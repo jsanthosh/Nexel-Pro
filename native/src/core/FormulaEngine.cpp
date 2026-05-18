@@ -19,6 +19,91 @@ void FormulaEngine::setSpreadsheet(Spreadsheet* spreadsheet) {
     m_spreadsheet = spreadsheet;
 }
 
+// Excel structured references: rewrite Table1[Col], Table1[@Col],
+// Table1[#Headers] and Table1[#All] into plain A1-style ranges that the
+// rest of the parser already understands. Limitations:
+//   • The "@" implicit-row form resolves to the table's first data row —
+//     correct only when invoked from outside the table itself. Treating
+//     it as "row 1 of data" is the closest approximation without an
+//     "active cell" notion in the engine.
+//   • [#Totals] is unsupported (we never emit a totals row).
+//   • Multi-column ranges like Table1[[Col1]:[Col2]] are unsupported.
+QString FormulaEngine::expandStructuredRefs(const QString& formula, Spreadsheet* sheet) {
+    if (!sheet) return formula;
+    const auto& tables = sheet->getTables();
+    if (tables.empty()) return formula;
+    if (!formula.contains('[')) return formula;
+
+    static const QRegularExpression re(
+        R"(([A-Za-z_][A-Za-z0-9_]*)\[(@?)(#Headers|#All|[^\]\[]+)\])");
+
+    struct Patch { int start; int len; QString replacement; };
+    std::vector<Patch> patches;
+
+    QRegularExpressionMatchIterator it = re.globalMatch(formula);
+    while (it.hasNext()) {
+        const auto m = it.next();
+        const QString tableName = m.captured(1);
+        const QString atSign    = m.captured(2);
+        const QString specifier = m.captured(3);
+
+        const SpreadsheetTable* table = nullptr;
+        for (const auto& t : tables) {
+            if (t.name == tableName) { table = &t; break; }
+        }
+        if (!table) continue;
+
+        const int firstRow = table->range.getStart().row;
+        const int lastRow  = table->range.getEnd().row;
+        const int firstCol = table->range.getStart().col;
+        const int lastCol  = table->range.getEnd().col;
+        const int dataStart = table->hasHeaderRow ? firstRow + 1 : firstRow;
+
+        auto rangeStr = [&](int r1, int c1, int r2, int c2) {
+            return CellAddress(r1, c1).toString() + ":" + CellAddress(r2, c2).toString();
+        };
+
+        QString replacement;
+        if (specifier == "#Headers") {
+            if (!table->hasHeaderRow) continue;
+            replacement = rangeStr(firstRow, firstCol, firstRow, lastCol);
+        } else if (specifier == "#All") {
+            replacement = rangeStr(firstRow, firstCol, lastRow, lastCol);
+        } else {
+            // Column name lookup
+            int colIdx = -1;
+            for (int i = 0; i < table->columnNames.size(); ++i) {
+                if (table->columnNames[i].compare(specifier, Qt::CaseInsensitive) == 0) {
+                    colIdx = i; break;
+                }
+            }
+            if (colIdx < 0) continue;
+            const int absCol = firstCol + colIdx;
+            if (atSign == "@") {
+                // [@Col] → first data row of that column (approximation).
+                replacement = CellAddress(dataStart, absCol).toString();
+            } else {
+                // [Col] → entire data column.
+                replacement = rangeStr(dataStart, absCol, lastRow, absCol);
+            }
+        }
+
+        if (!replacement.isEmpty()) {
+            patches.push_back({static_cast<int>(m.capturedStart()),
+                               static_cast<int>(m.capturedLength()),
+                               replacement});
+        }
+    }
+
+    if (patches.empty()) return formula;
+
+    QString out = formula;
+    for (auto rit = patches.rbegin(); rit != patches.rend(); ++rit) {
+        out.replace(rit->start, rit->len, rit->replacement);
+    }
+    return out;
+}
+
 QVariant FormulaEngine::evaluate(const QString& formula) {
     m_lastError.clear();
     m_lastDependencies.clear();
@@ -27,14 +112,20 @@ QVariant FormulaEngine::evaluate(const QString& formula) {
 
     if (formula.isEmpty()) return QVariant();
 
-    QString expr = formula.startsWith('=') ? formula.mid(1) : formula;
+    // Rewrite Excel structured refs (Table1[Col] etc.) to A1 ranges before
+    // the parser sees them. Cheap when no '[' is in the formula.
+    QString rewritten = expandStructuredRefs(formula, m_spreadsheet);
+    QString expr = rewritten.startsWith('=') ? rewritten.mid(1) : rewritten;
 
     // Use AST for all formulas except array constants ({})
     bool useAST = !expr.contains('{');
 
     if (useAST) {
         try {
-            uint32_t root = FormulaASTPool::instance().parse(formula);
+            // Use the rewritten (post-structured-ref) formula so the AST
+            // parser sees A1-style ranges. Multiple cells using the same
+            // Table1[Col] expression hash to the same AST.
+            uint32_t root = FormulaASTPool::instance().parse(rewritten);
             QVariant result = evaluateAST(root);
             // If AST evaluation hit a parse error node, fall back to old parser
             // Only check string result for error types (avoid expensive toString on complex types)

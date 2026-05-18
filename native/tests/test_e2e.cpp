@@ -897,6 +897,60 @@ void testXlsxRoundTrip_ConditionalFormatFormula() {
     QFile::remove(tempPath);
 }
 
+void testStructuredReferences_FormulaResolution() {
+    SECTION("Structured References: Table1[Col] in formulas");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    // Header row + 4 data rows
+    sheet->setCellValue({0, 0}, QVariant("Region"));
+    sheet->setCellValue({0, 1}, QVariant("Sales"));
+    sheet->setCellValue({0, 2}, QVariant("Cost"));
+    sheet->setCellValue({1, 0}, QVariant("North")); sheet->setCellValue({1, 1}, QVariant(100.0)); sheet->setCellValue({1, 2}, QVariant(30.0));
+    sheet->setCellValue({2, 0}, QVariant("South")); sheet->setCellValue({2, 1}, QVariant(200.0)); sheet->setCellValue({2, 2}, QVariant(50.0));
+    sheet->setCellValue({3, 0}, QVariant("East"));  sheet->setCellValue({3, 1}, QVariant(150.0)); sheet->setCellValue({3, 2}, QVariant(40.0));
+    sheet->setCellValue({4, 0}, QVariant("West"));  sheet->setCellValue({4, 1}, QVariant(250.0)); sheet->setCellValue({4, 2}, QVariant(60.0));
+
+    SpreadsheetTable tbl;
+    tbl.name = "Sales";
+    tbl.range = CellRange(CellAddress(0, 0), CellAddress(4, 2));
+    tbl.hasHeaderRow = true;
+    tbl.columnNames = QStringList{"Region", "Sales", "Cost"};
+    sheet->addTable(tbl);
+
+    auto evalNum = [&](const QString& f) {
+        return sheet->getFormulaEngine().evaluate(f).toDouble();
+    };
+
+    // SUM over a structured column.
+    checkApprox(evalNum("=SUM(Sales[Sales])"), 700.0,
+                "structured refs: SUM(Sales[Sales]) = 100+200+150+250");
+    checkApprox(evalNum("=SUM(Sales[Cost])"), 180.0,
+                "structured refs: SUM(Sales[Cost]) = 30+50+40+60");
+
+    // AVERAGE
+    checkApprox(evalNum("=AVERAGE(Sales[Sales])"), 175.0,
+                "structured refs: AVERAGE(Sales[Sales])");
+
+    // Combined: SUM([Sales]) - SUM([Cost])
+    checkApprox(evalNum("=SUM(Sales[Sales])-SUM(Sales[Cost])"), 520.0,
+                "structured refs: arithmetic across two column refs");
+
+    // Case-insensitive column lookup
+    checkApprox(evalNum("=SUM(Sales[sales])"), 700.0,
+                "structured refs: column name lookup is case-insensitive");
+
+    // Unknown column → falls through unchanged → engine returns error.
+    QVariant unknown = sheet->getFormulaEngine().evaluate("=SUM(Sales[Profit])");
+    check(unknown.toString().startsWith('#') ||
+          (unknown.typeId() == QMetaType::Double && unknown.toDouble() == 0.0),
+          "structured refs: unknown column produces error or zero");
+
+    // [#Headers] returns the header row range.
+    QVariant headerCount = sheet->getFormulaEngine().evaluate("=COUNTA(Sales[#Headers])");
+    checkApprox(headerCount.toDouble(), 3.0,
+                "structured refs: COUNTA(Sales[#Headers]) counts 3 headers");
+}
+
 void testSheetProtection_RuntimeEnforcement() {
     SECTION("Sheet Protection: Runtime Write Enforcement");
 
@@ -2001,6 +2055,7 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_MultipleSheets();
     testXlsxRoundTrip_Comprehensive();
     testSheetProtection_RuntimeEnforcement();
+    testStructuredReferences_FormulaResolution();
     testXlsxRoundTrip_Sparklines();
     testXlsxRoundTrip_EmbeddedImages();
     testCsv_PreserveFormulasOnExport();

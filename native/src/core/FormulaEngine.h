@@ -18,6 +18,13 @@ public:
 
     QVariant evaluate(const QString& formula);
     void setSpreadsheet(Spreadsheet* spreadsheet);
+
+    // Pre-processor that rewrites Excel structured references
+    // (Table1[Col], Table1[@Col], Table1[#Headers]) to plain A1-style
+    // ranges based on the current spreadsheet's tables. Public so the AST
+    // pool, dependency tracker, and direct callers all see the same
+    // transformation. Returns the formula unchanged if no tables match.
+    static QString expandStructuredRefs(const QString& formula, Spreadsheet* sheet);
     void setAllSheets(const std::vector<std::shared_ptr<Spreadsheet>>* sheets) { m_allSheets = sheets; }
     const std::vector<std::shared_ptr<Spreadsheet>>* getAllSheets() const { return m_allSheets; }
 
