@@ -971,12 +971,12 @@ int ColumnStore::nextOccupiedRow(int col, int startRow) const {
 
         uint64_t w = chunk->presence[word] & (~0ULL << bit); // mask lower bits
         if (w) {
-            int setBit = __builtin_ctzll(w);
+            int setBit = ctzll(w);
             return chunk->baseRow + word * 64 + setBit;
         }
         for (int wi = word + 1; wi < ColumnChunk::BITMAP_WORDS; ++wi) {
             if (chunk->presence[wi]) {
-                int setBit = __builtin_ctzll(chunk->presence[wi]);
+                int setBit = ctzll(chunk->presence[wi]);
                 return chunk->baseRow + wi * 64 + setBit;
             }
         }
@@ -1043,7 +1043,7 @@ int ColumnStore::nextEmptyRow(int col, int startRow) const {
         // Check first partial word
         uint64_t w = chunk->presence[wordIdx] | ((1ULL << bitIdx) - 1);
         if (~w) {
-            int zeroBit = __builtin_ctzll(~w);
+            int zeroBit = ctzll(~w);
             if (zeroBit < 64) {
                 int candidate = chunk->baseRow + wordIdx * 64 + zeroBit;
                 // Verify it's truly empty (another chunk might cover this row)
@@ -1057,7 +1057,7 @@ int ColumnStore::nextEmptyRow(int col, int startRow) const {
         bool found = false;
         for (int wi = wordIdx + 1; wi < ColumnChunk::BITMAP_WORDS; ++wi) {
             if (~chunk->presence[wi]) {
-                int zeroBit = __builtin_ctzll(~chunk->presence[wi]);
+                int zeroBit = ctzll(~chunk->presence[wi]);
                 int candidate = chunk->baseRow + wi * 64 + zeroBit;
                 if (!hasCell(candidate, col)) return candidate;
                 row = candidate + 1;
