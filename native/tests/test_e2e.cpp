@@ -32,6 +32,7 @@
 #include "../src/core/NamedRange.h"
 #include "../src/services/XlsxService.h"
 #include "../src/services/CsvService.h"
+#include "../src/core/PivotEngine.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -895,6 +896,54 @@ void testXlsxRoundTrip_ConditionalFormatFormula() {
     check(foundFormulaRule, "CF formula: rule type preserved as Formula");
 
     QFile::remove(tempPath);
+}
+
+void testPivotEngine_Aggregations() {
+    SECTION("PivotEngine: Statistical Aggregations");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("Region"));
+    sheet->setCellValue({0, 1}, QVariant("Sales"));
+    // Region North: values {10, 20, 30, 40, 50} — mean=30, var=250 (sample), product=12000000
+    QStringList regions = {"North","North","North","North","North"};
+    QVector<double> values = {10, 20, 30, 40, 50};
+    for (int i = 0; i < regions.size(); ++i) {
+        sheet->setCellValue({i + 1, 0}, QVariant(regions[i]));
+        sheet->setCellValue({i + 1, 1}, QVariant(values[i]));
+    }
+
+    auto runAgg = [&](AggregationFunction agg) {
+        PivotConfig cfg;
+        cfg.sourceRange = CellRange(CellAddress(0, 0), CellAddress(5, 1));
+        cfg.sourceSheetIndex = 0;
+        PivotField row;
+        row.sourceColumnIndex = 0;
+        row.name = "Region";
+        cfg.rowFields.push_back(row);
+        PivotValueField val;
+        val.sourceColumnIndex = 1;
+        val.name = "Sales";
+        val.aggregation = agg;
+        cfg.valueFields.push_back(val);
+
+        PivotEngine engine;
+        engine.setSource(sheet, cfg);
+        PivotResult res = engine.compute();
+        // grandTotal should hold the single-region single-value aggregation result.
+        return res.grandTotal.toDouble();
+    };
+
+    // sample variance of {10,20,30,40,50} = 250
+    checkApprox(runAgg(AggregationFunction::Var),  250.0,  "pivot: Var (sample) = 250");
+    // population variance = 200
+    checkApprox(runAgg(AggregationFunction::VarP), 200.0,  "pivot: VarP = 200");
+    // sample stddev = sqrt(250)
+    checkApprox(runAgg(AggregationFunction::StDev),  std::sqrt(250.0), "pivot: StDev = sqrt(250)", 1e-9);
+    checkApprox(runAgg(AggregationFunction::StDevP), std::sqrt(200.0), "pivot: StDevP = sqrt(200)", 1e-9);
+    // product = 10*20*30*40*50 = 12,000,000
+    checkApprox(runAgg(AggregationFunction::Product), 12000000.0, "pivot: Product = 12000000");
+    // median of 5 elements is the middle one = 30
+    checkApprox(runAgg(AggregationFunction::Median),  30.0,  "pivot: Median (odd count)");
 }
 
 void testStructuredReferences_FormulaResolution() {
@@ -2056,6 +2105,7 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_Comprehensive();
     testSheetProtection_RuntimeEnforcement();
     testStructuredReferences_FormulaResolution();
+    testPivotEngine_Aggregations();
     testXlsxRoundTrip_Sparklines();
     testXlsxRoundTrip_EmbeddedImages();
     testCsv_PreserveFormulasOnExport();

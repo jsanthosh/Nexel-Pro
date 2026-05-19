@@ -2,26 +2,52 @@
 #include "Spreadsheet.h"
 #include "Cell.h"
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 
 // ============== AggregateAccumulator ==============
 
-void AggregateAccumulator::addValue(double val, const QString& rawVal) {
+void AggregateAccumulator::addValue(double val, const QString& rawVal, bool needSamples) {
     sum += val;
     if (val < min) min = val;
     if (val > max) max = val;
     count++;
     if (!rawVal.isEmpty()) distinctValues.insert(rawVal);
+
+    // Welford's online algorithm for variance — numerically stable.
+    const double delta = val - mean;
+    mean += delta / count;
+    m2 += delta * (val - mean);
+
+    product *= val;
+
+    if (needSamples) samples.push_back(val);
 }
 
-double AggregateAccumulator::result(AggregationFunction func) const {
+double AggregateAccumulator::result(AggregationFunction func) {
     switch (func) {
-        case AggregationFunction::Sum: return sum;
-        case AggregationFunction::Count: return count;
-        case AggregationFunction::Average: return count > 0 ? sum / count : 0.0;
-        case AggregationFunction::Min: return count > 0 ? min : 0.0;
-        case AggregationFunction::Max: return count > 0 ? max : 0.0;
+        case AggregationFunction::Sum:           return sum;
+        case AggregationFunction::Count:         return count;
+        case AggregationFunction::Average:       return count > 0 ? sum / count : 0.0;
+        case AggregationFunction::Min:           return count > 0 ? min : 0.0;
+        case AggregationFunction::Max:           return count > 0 ? max : 0.0;
         case AggregationFunction::CountDistinct: return static_cast<double>(distinctValues.size());
+        case AggregationFunction::Var:           return count > 1 ? m2 / (count - 1) : 0.0;
+        case AggregationFunction::VarP:          return count > 0 ? m2 / count       : 0.0;
+        case AggregationFunction::StDev:         return count > 1 ? std::sqrt(m2 / (count - 1)) : 0.0;
+        case AggregationFunction::StDevP:        return count > 0 ? std::sqrt(m2 / count)       : 0.0;
+        case AggregationFunction::Product:       return count > 0 ? product : 0.0;
+        case AggregationFunction::Median: {
+            if (samples.empty()) return 0.0;
+            // Partial sort to the middle — O(n) average vs full sort's O(n log n).
+            auto mid = samples.begin() + samples.size() / 2;
+            std::nth_element(samples.begin(), mid, samples.end());
+            const double upper = *mid;
+            if (samples.size() % 2 == 1) return upper;
+            // Even count: average of the two middle elements.
+            const double lower = *std::max_element(samples.begin(), mid);
+            return (lower + upper) * 0.5;
+        }
     }
     return 0.0;
 }
@@ -31,12 +57,18 @@ double AggregateAccumulator::result(AggregationFunction func) const {
 QString PivotValueField::displayName() const {
     QString prefix;
     switch (aggregation) {
-        case AggregationFunction::Sum: prefix = "Sum of "; break;
-        case AggregationFunction::Count: prefix = "Count of "; break;
-        case AggregationFunction::Average: prefix = "Avg of "; break;
-        case AggregationFunction::Min: prefix = "Min of "; break;
-        case AggregationFunction::Max: prefix = "Max of "; break;
-        case AggregationFunction::CountDistinct: prefix = "Distinct "; break;
+        case AggregationFunction::Sum:           prefix = "Sum of ";       break;
+        case AggregationFunction::Count:         prefix = "Count of ";     break;
+        case AggregationFunction::Average:       prefix = "Avg of ";       break;
+        case AggregationFunction::Min:           prefix = "Min of ";       break;
+        case AggregationFunction::Max:           prefix = "Max of ";       break;
+        case AggregationFunction::CountDistinct: prefix = "Distinct ";     break;
+        case AggregationFunction::StDev:         prefix = "StDev of ";     break;
+        case AggregationFunction::StDevP:        prefix = "StDevP of ";    break;
+        case AggregationFunction::Var:           prefix = "Var of ";       break;
+        case AggregationFunction::VarP:          prefix = "VarP of ";      break;
+        case AggregationFunction::Median:        prefix = "Median of ";    break;
+        case AggregationFunction::Product:       prefix = "Product of ";   break;
     }
     return prefix + name;
 }
@@ -187,10 +219,12 @@ PivotResult PivotEngine::compute() {
             if (!ok) val = 0.0;
             QString rawVal = row.values[srcCol].toString();
 
-            accums[v].addValue(val, rawVal);
-            rowTotal[v].addValue(val, rawVal);
-            colTotal[v].addValue(val, rawVal);
-            grandTotals[v].addValue(val, rawVal);
+            // Median needs to keep the full sample list per accumulator.
+            const bool needSamples = (m_config.valueFields[v].aggregation == AggregationFunction::Median);
+            accums[v].addValue(val, rawVal, needSamples);
+            rowTotal[v].addValue(val, rawVal, needSamples);
+            colTotal[v].addValue(val, rawVal, needSamples);
+            grandTotals[v].addValue(val, rawVal, needSamples);
         }
     }
 

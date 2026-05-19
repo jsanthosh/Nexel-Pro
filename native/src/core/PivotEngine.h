@@ -19,7 +19,14 @@ enum class AggregationFunction {
     Average,
     Min,
     Max,
-    CountDistinct
+    CountDistinct,
+    // Statistical aggregations (round 2)
+    StDev,    // Sample standard deviation (n-1 denominator)
+    StDevP,   // Population standard deviation
+    Var,      // Sample variance
+    VarP,     // Population variance
+    Median,
+    Product
 };
 
 struct PivotField {
@@ -63,9 +70,17 @@ struct AggregateAccumulator {
     double max = std::numeric_limits<double>::lowest();
     int count = 0;
     std::set<QString> distinctValues;
+    // Online statistics: Welford's algorithm for mean + M2 (sum of squared
+    // deviations from mean). Keeps numeric stability for big-N data without
+    // storing every value. Median still needs the full sample, so we store
+    // it separately and only when actually requested.
+    double mean = 0.0;
+    double m2 = 0.0;       // sum of (x - mean)^2 accumulated incrementally
+    double product = 1.0;
+    std::vector<double> samples; // populated only when Median is requested
 
-    void addValue(double val, const QString& rawVal);
-    double result(AggregationFunction func) const;
+    void addValue(double val, const QString& rawVal, bool needSamples = false);
+    double result(AggregationFunction func);
 };
 
 struct PivotResult {
