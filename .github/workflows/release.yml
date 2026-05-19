@@ -140,9 +140,12 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install SQLite via vcpkg
+      - name: Install SQLite + zlib via vcpkg
         run: |
-          vcpkg install sqlite3:x64-windows
+          # zlib is required by minizip-ng (added in 9b10cfe). vcpkg gives us
+          # the same ZLIB CMake target the macOS/Linux builds get from their
+          # platform SDKs.
+          vcpkg install sqlite3:x64-windows zlib:x64-windows
           echo "CMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" >> $env:GITHUB_ENV
 
       - name: Configure
