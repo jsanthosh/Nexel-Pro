@@ -898,6 +898,40 @@ void testXlsxRoundTrip_ConditionalFormatFormula() {
     QFile::remove(tempPath);
 }
 
+void testSearchAllCells_FormulaScan() {
+    SECTION("searchAllCells: Look in Formulas (Find > Options)");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant(10.0));
+    sheet->setCellValue({1, 0}, QVariant(20.0));
+    sheet->setCellFormula({2, 0}, "=SUM(A1:A2)");
+    sheet->setCellFormula({3, 0}, "=A1*VLOOKUP(B1,Sheet2!A:C,3,FALSE)");
+    sheet->setCellValue({4, 0}, QVariant("VLOOKUP cheatsheet"));
+
+    // Default: search values only. "VLOOKUP" only matches the string in A5.
+    auto valuesOnly = sheet->searchAllCells("VLOOKUP", /*caseSensitive*/false,
+                                             /*wholeCell*/false, /*searchFormulas*/false);
+    check(valuesOnly.size() == 1, "search: values-only finds the literal string match");
+    if (valuesOnly.size() == 1) {
+        check(valuesOnly[0].row == 4 && valuesOnly[0].col == 0,
+              "search: values-only hit is A5");
+    }
+
+    // With searchFormulas: also matches the formula cell containing VLOOKUP.
+    auto withFormulas = sheet->searchAllCells("VLOOKUP", false, false, true);
+    check(withFormulas.size() == 2, "search: with formulas finds both the literal and the formula");
+
+    // Whole-cell + searchFormulas: matches the exact formula text but not the
+    // partial value cell.
+    auto whole = sheet->searchAllCells("=SUM(A1:A2)", false, true, true);
+    check(whole.size() == 1, "search: whole-cell formula match finds the SUM cell");
+
+    // Without formula search, the SUM formula's cached value (30) isn't queryable
+    // by formula text — should return zero hits.
+    auto noScan = sheet->searchAllCells("=SUM(A1:A2)", false, true, false);
+    check(noScan.empty(), "search: whole-cell formula text not found in values-only mode");
+}
+
 void testPivotEngine_Aggregations() {
     SECTION("PivotEngine: Statistical Aggregations");
 
@@ -2105,6 +2139,7 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_Comprehensive();
     testSheetProtection_RuntimeEnforcement();
     testStructuredReferences_FormulaResolution();
+    testSearchAllCells_FormulaScan();
     testPivotEngine_Aggregations();
     testXlsxRoundTrip_Sparklines();
     testXlsxRoundTrip_EmbeddedImages();

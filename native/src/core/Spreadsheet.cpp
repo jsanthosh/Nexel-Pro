@@ -1652,7 +1652,8 @@ bool Spreadsheet::checkProtectionPassword(const QString& password) const {
 // Parallel search across all cells
 // ============================================================================
 std::vector<CellAddress> Spreadsheet::searchAllCells(const QString& query, bool caseSensitive,
-                                                      bool wholeCell) const {
+                                                      bool wholeCell,
+                                                      bool searchFormulas) const {
     int maxCol = m_columnStore.maxCol();
     int maxRow = m_columnStore.maxRow();
     if (maxCol < 0 || maxRow < 0) return {};
@@ -1665,10 +1666,25 @@ std::vector<CellAddress> Spreadsheet::searchAllCells(const QString& query, bool 
     auto searchColumn = [&](int col) {
         m_columnStore.scanColumnValues(col, 0, maxRow,
             [&](int row, const QVariant& val) {
-                QString str = val.toString();
+                // scanColumnValues returns the formula TEXT for formula cells,
+                // not the computed value. So by default we substitute the
+                // computed value here — that matches Excel's "Look in: Values"
+                // (the default user expectation). When searchFormulas is on,
+                // we additionally try the formula text.
+                const bool isFormula =
+                    m_columnStore.getCellType(row, col) == CellDataType::Formula;
+                const QString display = isFormula
+                    ? m_columnStore.getComputedValue(row, col).toString()
+                    : val.toString();
                 bool match = wholeCell
-                    ? (str.compare(query, cs) == 0)
-                    : str.contains(query, cs);
+                    ? (display.compare(query, cs) == 0)
+                    : display.contains(query, cs);
+                if (!match && searchFormulas && isFormula) {
+                    const QString f = val.toString(); // formula text
+                    match = wholeCell
+                            ? (f.compare(query, cs) == 0)
+                            : f.contains(query, cs);
+                }
                 if (match) {
                     perColResults[col].push_back(CellAddress(row, col));
                 }

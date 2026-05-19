@@ -142,10 +142,13 @@ public:
     const std::set<int>& getHiddenRows()    const { return m_hiddenRows; }
     const std::set<int>& getHiddenColumns() const { return m_hiddenColumns; }
 
-    // Parallel search: find all cells matching query string across the entire sheet
+    // Parallel search: find all cells matching query string across the entire sheet.
     // Returns vector of matching cell addresses. Uses multi-threaded column scan.
+    // searchFormulas=true also scans the formula text of formula cells, not just
+    // their cached values — matches Excel's Find > Options > Look in: Formulas.
     std::vector<CellAddress> searchAllCells(const QString& query, bool caseSensitive = false,
-                                             bool wholeCell = false) const;
+                                             bool wholeCell = false,
+                                             bool searchFormulas = false) const;
 
     // Cell shift insert/delete
     void insertCellsShiftRight(const CellRange& range);
