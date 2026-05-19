@@ -408,6 +408,27 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 # ============================================================================
+# Streaming XLSX benchmark (export → re-import with timing + RSS reporting)
+# Build with: cmake --build build --target bench_xlsx_streaming
+# ============================================================================
+add_executable(bench_xlsx_streaming EXCLUDE_FROM_ALL
+    benchmarks/bench_xlsx_streaming.cpp
+    ${CORE_SOURCES}
+    ${IO_SOURCES}
+    ${DATABASE_SOURCES}
+    ${SERVICES_SOURCES}
+)
+target_link_libraries(bench_xlsx_streaming
+    Qt6::Core Qt6::CorePrivate Qt6::Widgets Qt6::Gui Qt6::Qml Qt6::Concurrent Qt6::Network
+    SQLite::SQLite3
+    Threads::Threads
+    MINIZIP::minizip
+)
+target_include_directories(bench_xlsx_streaming PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# ============================================================================
 # ZipStream smoke test (small, focused — does not depend on Spreadsheet stack)
 # Build with: cmake --build build --target test_zipstream
 # ============================================================================
