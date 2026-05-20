@@ -898,6 +898,57 @@ void testXlsxRoundTrip_ConditionalFormatFormula() {
     QFile::remove(tempPath);
 }
 
+void testParallelRecalc_LargeLevel() {
+    SECTION("Recalc: parallel large-level evaluation");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setAutoRecalculate(true);
+
+    // A1 is the single shared dependency. B1..B500 each compute
+    // =A1*<row>. They all live in the same dependency level (one ancestor:
+    // A1) so changing A1 forces the parallel branch (level.size() > 4).
+    sheet->setCellValue({0, 0}, QVariant(10.0));
+    constexpr int kN = 500;
+    for (int r = 0; r < kN; ++r) {
+        sheet->setCellFormula({r, 1}, QString("=A1*%1").arg(r + 1));
+    }
+
+    // Sanity: with A1=10 the cached results should already be correct.
+    for (int r = 0; r < kN; ++r) {
+        const double got = sheet->getCellValue({r, 1}).toDouble();
+        const double want = 10.0 * (r + 1);
+        if (std::abs(got - want) > 1e-9) {
+            check(false, qPrintable(QString("recalc(initial): row %1 expected %2, got %3")
+                                     .arg(r).arg(want).arg(got)));
+            return;
+        }
+    }
+    check(true, "recalc(initial): 500 formulas evaluated correctly");
+
+    // Now flip A1 — this triggers the parallel-level recalc path.
+    sheet->setCellValue({0, 0}, QVariant(7.0));
+
+    int mismatches = 0;
+    for (int r = 0; r < kN; ++r) {
+        const double got = sheet->getCellValue({r, 1}).toDouble();
+        const double want = 7.0 * (r + 1);
+        if (std::abs(got - want) > 1e-9) ++mismatches;
+    }
+    check(mismatches == 0,
+          qPrintable(QString("recalc(parallel): %1/%2 dependents correct").arg(kN - mismatches).arg(kN)));
+
+    // Change again to confirm idempotency / no stale state.
+    sheet->setCellValue({0, 0}, QVariant(-3.5));
+    int second = 0;
+    for (int r = 0; r < kN; ++r) {
+        const double got = sheet->getCellValue({r, 1}).toDouble();
+        const double want = -3.5 * (r + 1);
+        if (std::abs(got - want) > 1e-9) ++second;
+    }
+    check(second == 0,
+          qPrintable(QString("recalc(parallel, 2nd pass): %1/%2 correct").arg(kN - second).arg(kN)));
+}
+
 void testSearchAllCells_FormulaScan() {
     SECTION("searchAllCells: Look in Formulas (Find > Options)");
 
@@ -2139,6 +2190,7 @@ int main(int argc, char* argv[]) {
     testXlsxRoundTrip_Comprehensive();
     testSheetProtection_RuntimeEnforcement();
     testStructuredReferences_FormulaResolution();
+    testParallelRecalc_LargeLevel();
     testSearchAllCells_FormulaScan();
     testPivotEngine_Aggregations();
     testXlsxRoundTrip_Sparklines();

@@ -664,13 +664,24 @@ uint32_t FormulaASTPool::parse(const QString& formula) {
     if (!cleaned.isEmpty() && cleaned[0] == QLatin1Char('='))
         cleaned = cleaned.mid(1);
 
-    // Check cache
+    // Cache hit fast path — shared lock so many worker threads can read in
+    // parallel. This is the common case during recalc.
+    {
+        std::shared_lock<std::shared_mutex> lk(m_mutex);
+        auto it = m_cache.find(cleaned);
+        if (it != m_cache.end()) return it->second;
+    }
+
+    // Cache miss — take the unique lock and re-check (another thread may
+    // have parsed the same formula in between). All node/literal/function
+    // arena mutations happen under this lock, matching the assumption in
+    // allocNode / storeLiteral / internFunction.
+    std::unique_lock<std::shared_mutex> lk(m_mutex);
     auto it = m_cache.find(cleaned);
     if (it != m_cache.end()) return it->second;
 
     ParseContext ctx(cleaned, *this);
     uint32_t root = parseExpr(ctx);
-
     m_cache[cleaned] = root;
     return root;
 }

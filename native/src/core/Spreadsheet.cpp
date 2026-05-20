@@ -1067,15 +1067,42 @@ void Spreadsheet::endBatchUpdate() {
                 }
             }
         } else {
-            // Large level — sequential for now (parallel requires thread-safe AST pool)
-            // TODO: Add per-thread AST pools for true parallel recalc
-            for (const auto& depAddr : level) {
-                if (m_columnStore.getCellType(depAddr.row, depAddr.col) == CellDataType::Formula) {
-                    QString formula = m_columnStore.getCellFormula(depAddr.row, depAddr.col);
-                    m_columnStore.setComputedValue(depAddr.row, depAddr.col,
-                                                   m_formulaEngine->evaluate(formula));
-                    recalculated.push_back(depAddr);
-                }
+            // Large level — parallel evaluation. Cells within one dependency
+            // level have no cross-dependencies (that is what the topological
+            // sort guarantees), so they can evaluate concurrently. Each worker
+            // thread keeps its own FormulaEngine in TLS to avoid contention on
+            // the engine's per-call state (m_lastDependencies, m_lastError,
+            // m_cache). FormulaASTPool::parse is shared and synchronised via
+            // a shared_mutex (cache hits take a shared lock).
+            //
+            // Writes back to ColumnStore are done serially after all the
+            // evaluations complete — keeps the column-level shared mutexes
+            // out of the critical path and matches the dependency-graph
+            // ordering downstream code expects.
+            const size_t n = level.size();
+            std::vector<QVariant> results(n);
+            std::vector<uint8_t> hasResult(n, 0);
+            std::vector<size_t> indices(n);
+            std::iota(indices.begin(), indices.end(), size_t{0});
+
+            QtConcurrent::blockingMap(indices, [&](size_t i) {
+                const CellAddress& addr = level[i];
+                if (m_columnStore.getCellType(addr.row, addr.col) != CellDataType::Formula)
+                    return;
+
+                thread_local std::unique_ptr<FormulaEngine> tlEngine;
+                if (!tlEngine) tlEngine = std::make_unique<FormulaEngine>(this);
+                else           tlEngine->setSpreadsheet(this);
+
+                const QString formula = m_columnStore.getCellFormula(addr.row, addr.col);
+                results[i] = tlEngine->evaluate(formula);
+                hasResult[i] = 1;
+            });
+
+            for (size_t i = 0; i < n; ++i) {
+                if (!hasResult[i]) continue;
+                m_columnStore.setComputedValue(level[i].row, level[i].col, results[i]);
+                recalculated.push_back(level[i]);
             }
         }
     }

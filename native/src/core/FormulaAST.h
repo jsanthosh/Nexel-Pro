@@ -119,6 +119,8 @@ struct ASTNode {
 // ============================================================================
 // FormulaASTPool — Global pool of parsed formula ASTs
 // ============================================================================
+#include <shared_mutex>
+
 class FormulaASTPool {
 public:
     static FormulaASTPool& instance();
@@ -156,9 +158,12 @@ public:
 private:
     FormulaASTPool() = default;
 
-    // No mutex needed: parse is called from main thread only.
-    // Parallel recalc uses thread-local FormulaEngines that call
-    // parse() sequentially (formulas are already cached by then).
+    // Shared mutex: cache hits use a shared lock so multiple worker threads
+    // can evaluate concurrently; cache misses take a unique lock to mutate
+    // the arena and cache. Spreadsheet::recalculateDependents now uses this
+    // for level-parallel evaluation (formulas in the same dependency level
+    // have no cross-dependencies, so safe to evaluate in parallel).
+    mutable std::shared_mutex m_mutex;
 
     // Arena of all AST nodes (flat, cache-friendly)
     std::vector<ASTNode> m_nodes;
