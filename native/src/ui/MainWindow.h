@@ -110,6 +110,9 @@ private slots:
     void onHighlightInvalidCells();
     void onChatActions(const QJsonArray& actions);
 
+    // Function browser (fx)
+    void onShowFunctionBrowser();
+
     // Chart and Shape insertion
     void onInsertChart();
     void onInsertShape();

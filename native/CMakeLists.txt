@@ -200,6 +200,8 @@ set(UI_SOURCES
     src/ui/GoToDialog.h
     src/ui/GoToSpecialDialog.cpp
     src/ui/GoToSpecialDialog.h
+    src/ui/FunctionBrowserDialog.cpp
+    src/ui/FunctionBrowserDialog.h
     src/ui/RemoveDuplicatesDialog.cpp
     src/ui/RemoveDuplicatesDialog.h
     src/ui/SortDialog.cpp

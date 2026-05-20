@@ -12,6 +12,7 @@
 #include "FindReplaceDialog.h"
 #include "GoToDialog.h"
 #include "GoToSpecialDialog.h"
+#include "FunctionBrowserDialog.h"
 #include "RemoveDuplicatesDialog.h"
 #include "ConditionalFormatDialog.h"
 #include "DataValidationDialog.h"
@@ -136,14 +137,9 @@ MainWindow::MainWindow(QWidget* parent)
         "QPushButton { background: #F0F2F5; color: #344054; border: 1px solid #D0D5DD; "
         "border-radius: 4px; font-size: 11px; font-style: italic; font-weight: 600; }"
         "QPushButton:hover { background: #E4E7EC; }");
-    fxBtn->setToolTip("Insert Function");
-    connect(fxBtn, &QPushButton::clicked, this, [this]() {
-        // Focus the formula bar and insert "=" to start formula
-        if (m_formulaBar) {
-            m_formulaBar->setFocus();
-            m_formulaBar->setCellContent("=");
-        }
-    });
+    fxBtn->setToolTip("Insert Function (Shift+F3)");
+    fxBtn->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F3));
+    connect(fxBtn, &QPushButton::clicked, this, &MainWindow::onShowFunctionBrowser);
 
     // Formula bar expand/collapse button (Excel-style)
     QPushButton* expandBtn = new QPushButton();
@@ -3821,6 +3817,17 @@ QString MainWindow::getSelectionRange() const {
     }
 
     return CellAddress(minRow, minCol).toString() + ":" + CellAddress(maxRow, maxCol).toString();
+}
+
+void MainWindow::onShowFunctionBrowser() {
+    FunctionBrowserDialog dlg(this);
+    if (dlg.exec() == QDialog::Accepted && !dlg.selectedFunction().isEmpty()) {
+        const QString name = dlg.selectedFunction();
+        if (m_formulaBar) {
+            m_formulaBar->setFocus();
+            m_formulaBar->insertText("=" + name + "(");
+        }
+    }
 }
 
 void MainWindow::onInsertChart() {
