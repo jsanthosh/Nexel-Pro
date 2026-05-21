@@ -26,6 +26,7 @@
 
 #include "../src/ui/SpreadsheetView.h"
 #include "../src/ui/SpreadsheetModel.h"
+#include "../src/ui/GridCanvasView.h"
 
 #include <QApplication>
 #include <QKeyEvent>
@@ -1453,6 +1454,72 @@ void testConditionalFormatting() {
     check(cf.getAllRules().empty(), "conditional format rule removed");
 }
 
+void testGridCanvasView_Foundation() {
+    SECTION("M2 GridCanvasView: foundation (render + scroll + nav)");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("Header"));
+    sheet->setCellValue({0, 1}, QVariant(42.0));
+    sheet->setCellValue({5, 3}, QVariant("middle"));
+
+    GridCanvasView view;
+    view.resize(640, 400);
+    view.setSpreadsheet(sheet);
+    view.show();
+    QApplication::processEvents();
+
+    // Initial selection is A1.
+    check(view.currentRow() == 0 && view.currentColumn() == 0,
+          "grid: initial selection is A1");
+
+    // setCurrentCell emits and updates state.
+    int sig = 0;
+    int sigRow = -1, sigCol = -1;
+    QObject::connect(&view, &GridCanvasView::currentCellChanged,
+                      [&](int r, int c) { ++sig; sigRow = r; sigCol = c; });
+    view.setCurrentCell(5, 3);
+    check(sig == 1 && sigRow == 5 && sigCol == 3,
+          "grid: setCurrentCell fires signal with new coords");
+    check(view.currentRow() == 5 && view.currentColumn() == 3,
+          "grid: state matches signal");
+
+    // Arrow key moves selection.
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+    QApplication::sendEvent(&view, &down);
+    check(view.currentRow() == 6 && view.currentColumn() == 3,
+          "grid: Down arrow moves selection down");
+
+    QKeyEvent right(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
+    QApplication::sendEvent(&view, &right);
+    check(view.currentColumn() == 4, "grid: Right arrow moves selection right");
+
+    // Home clamps to column 0 of current row.
+    QKeyEvent home(QEvent::KeyPress, Qt::Key_Home, Qt::NoModifier);
+    QApplication::sendEvent(&view, &home);
+    check(view.currentColumn() == 0, "grid: Home jumps to column 0");
+
+    // Out-of-bounds navigation stays clamped (no underflow).
+    view.setCurrentCell(0, 0);
+    QKeyEvent up(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
+    QApplication::sendEvent(&view, &up);
+    check(view.currentRow() == 0, "grid: Up at row 0 stays at row 0");
+
+    // Renders to a pixmap without crashing.
+    QPixmap snapshot = view.grab();
+    check(!snapshot.isNull() && snapshot.width() == view.width(),
+          "grid: paint to pixmap succeeded");
+
+    // Snapshot should contain non-white pixels (headers, text, gridlines).
+    QImage img = snapshot.toImage();
+    bool foundNonWhite = false;
+    for (int y = 0; y < img.height() && !foundNonWhite; y += 8) {
+        for (int x = 0; x < img.width(); x += 8) {
+            if (img.pixel(x, y) != qRgb(255, 255, 255)) { foundNonWhite = true; break; }
+        }
+    }
+    check(foundNonWhite, "grid: rendered output has non-background pixels");
+}
+
 // ============================================================================
 // MAIN
 // ============================================================================
@@ -1483,6 +1550,7 @@ int main(int argc, char* argv[]) {
     testDataValidation();
     testNamedRanges();
     testConditionalFormatting();
+    testGridCanvasView_Foundation();
 
     std::cout << "\n==============================================" << std::endl;
     std::cout << "  RESULTS: " << g_pass << " passed, " << g_fail << " failed, " << g_total << " total" << std::endl;

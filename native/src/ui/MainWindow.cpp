@@ -13,6 +13,7 @@
 #include "GoToDialog.h"
 #include "GoToSpecialDialog.h"
 #include "FunctionBrowserDialog.h"
+#include "GridCanvasView.h"
 #include "RemoveDuplicatesDialog.h"
 #include "ConditionalFormatDialog.h"
 #include "DataValidationDialog.h"
@@ -1276,6 +1277,15 @@ void MainWindow::createMenuBar() {
             [darkModeAction](const NexelTheme& t) {
         darkModeAction->setChecked(t.id == "dark_mode");
     });
+
+    // ===== Experimental: M2 custom virtual grid =====
+    // Opens a side-by-side window showing the active sheet in the new
+    // QPainter-based GridCanvasView. The existing QTableView stays as the
+    // production view; this is here so users can A/B-test perf and
+    // appearance during M2's incremental rollout.
+    viewMenu->addSeparator();
+    viewMenu->addAction("Experimental: Open &M2 Grid Window…",
+                        this, &MainWindow::onOpenM2GridWindow);
 
     // ===== Tools Menu =====
     QMenu* toolsMenu = menuBar->addMenu("&Tools");
@@ -3817,6 +3827,24 @@ QString MainWindow::getSelectionRange() const {
     }
 
     return CellAddress(minRow, minCol).toString() + ":" + CellAddress(maxRow, maxCol).toString();
+}
+
+void MainWindow::onOpenM2GridWindow() {
+    if (m_activeSheetIndex < 0 || m_activeSheetIndex >= static_cast<int>(m_sheets.size())) {
+        QMessageBox::information(this, "M2 Grid", "No active sheet to display.");
+        return;
+    }
+    auto* w = new QWidget(this, Qt::Window);
+    w->setAttribute(Qt::WA_DeleteOnClose);
+    w->setWindowTitle("Nexel Pro — Experimental M2 Grid (" +
+                      m_sheets[m_activeSheetIndex]->getSheetName() + ")");
+    w->resize(900, 600);
+    auto* layout = new QVBoxLayout(w);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* grid = new GridCanvasView(w);
+    grid->setSpreadsheet(m_sheets[m_activeSheetIndex]);
+    layout->addWidget(grid);
+    w->show();
 }
 
 void MainWindow::onShowFunctionBrowser() {

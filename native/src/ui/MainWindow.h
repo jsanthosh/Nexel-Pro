@@ -113,6 +113,9 @@ private slots:
     // Function browser (fx)
     void onShowFunctionBrowser();
 
+    // M2: open a side window with the new custom grid view
+    void onOpenM2GridWindow();
+
     // Chart and Shape insertion
     void onInsertChart();
     void onInsertShape();
