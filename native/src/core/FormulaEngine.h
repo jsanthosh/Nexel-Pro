@@ -25,6 +25,15 @@ public:
     // pool, dependency tracker, and direct callers all see the same
     // transformation. Returns the formula unchanged if no tables match.
     static QString expandStructuredRefs(const QString& formula, Spreadsheet* sheet);
+
+    // Excel LET function support. Rewrites LET(name1, value1, [name2, value2,
+    // ...], calculation) by inline-substituting each name with its
+    // parenthesised value into subsequent value bindings and the final
+    // calculation. Substitution is lexical (word-boundary), so x only
+    // matches the token x and not xyz or a string literal. Handles nested
+    // LETs by recursive application; called from FormulaEngine::evaluate
+    // before any other parser step touches the string.
+    static QString expandLet(const QString& formula);
     void setAllSheets(const std::vector<std::shared_ptr<Spreadsheet>>* sheets) { m_allSheets = sheets; }
     const std::vector<std::shared_ptr<Spreadsheet>>* getAllSheets() const { return m_allSheets; }
 

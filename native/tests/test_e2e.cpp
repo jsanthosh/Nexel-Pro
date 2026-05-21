@@ -898,6 +898,44 @@ void testXlsxRoundTrip_ConditionalFormatFormula() {
     QFile::remove(tempPath);
 }
 
+void testLET_FunctionExpansion() {
+    SECTION("LET: variable binding via source rewrite");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant(10.0));   // A1
+    sheet->setCellValue({0, 1}, QVariant(3.0));    // B1
+    sheet->setCellValue({0, 2}, QVariant(5.0));    // C1
+
+    auto evalNum = [&](const QString& f) {
+        return sheet->getFormulaEngine().evaluate(f).toDouble();
+    };
+
+    // Single binding.
+    checkApprox(evalNum("=LET(x, A1*2, x+1)"), 21.0,
+                "LET: single binding x=A1*2, x+1 = 21");
+
+    // Two bindings, second uses first.
+    checkApprox(evalNum("=LET(x, A1, y, x*B1, y+C1)"), 35.0,
+                "LET: y = x*B1 uses earlier binding (10*3+5=35)");
+
+    // Three bindings + arithmetic.
+    checkApprox(evalNum("=LET(a, A1, b, B1, c, C1, a+b+c)"), 18.0,
+                "LET: a+b+c with three bindings (10+3+5=18)");
+
+    // Nested LET.
+    checkApprox(evalNum("=LET(x, A1, LET(y, x*2, y+1))"), 21.0,
+                "LET: nested LET (outer x=10, inner y=20, result 21)");
+
+    // Inside SUM (composition).
+    checkApprox(evalNum("=SUM(LET(x, A1, x*2), B1)"), 23.0,
+                "LET: composed inside SUM (SUM(20, 3) = 23)");
+
+    // Word-boundary check: name x must not match XLOOKUP-style identifiers.
+    // Use a binding name that resembles a substring of a function we use.
+    checkApprox(evalNum("=LET(SUM_OK, A1*4, SUM_OK)"), 40.0,
+                "LET: snake_case identifier substitutes cleanly");
+}
+
 void testParallelRecalc_LargeLevel() {
     SECTION("Recalc: parallel large-level evaluation");
 
@@ -2191,6 +2229,7 @@ int main(int argc, char* argv[]) {
     testSheetProtection_RuntimeEnforcement();
     testStructuredReferences_FormulaResolution();
     testParallelRecalc_LargeLevel();
+    testLET_FunctionExpansion();
     testSearchAllCells_FormulaScan();
     testPivotEngine_Aggregations();
     testXlsxRoundTrip_Sparklines();

@@ -104,6 +104,153 @@ QString FormulaEngine::expandStructuredRefs(const QString& formula, Spreadsheet*
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// LET expansion
+// ---------------------------------------------------------------------------
+// LET(name1, value1, [name2, value2, ...], calculation) — Excel binds each
+// name in scope, then evaluates calculation. Our parser has no binding
+// machinery, so we rewrite at the source-text level: every occurrence of
+// name in subsequent value bindings and in the final calculation is
+// substituted with the corresponding (parenthesised) value expression.
+//
+// Limitations vs. real Excel:
+// - Substitution is text-level. A name inside a quoted string literal will
+//   still be substituted. Quoted-string detection is honoured for
+//   comma-splitting but not for substitution itself; this is fine for
+//   typical use (names like x, profit, totalSales) but pathological cases
+//   are not handled.
+// - Errors in argument validation (odd binding count, etc.) currently
+//   leave the LET call untouched, which lets the downstream parser surface
+//   #VALUE!. A future revision could rewrite to a literal "#VALUE!".
+
+namespace {
+
+// Find the index of the matching ')' for the '(' at openParen. Returns -1
+// if no match. Honours single and double quoted strings (skip char inside).
+int matchParen(const QString& s, int openParen) {
+    if (openParen < 0 || openParen >= s.size() || s[openParen] != QLatin1Char('('))
+        return -1;
+    int depth = 0;
+    bool inSingle = false, inDouble = false;
+    for (int i = openParen; i < s.size(); ++i) {
+        const QChar c = s[i];
+        if (inSingle) { if (c == QLatin1Char('\'')) inSingle = false; continue; }
+        if (inDouble) { if (c == QLatin1Char('"'))  inDouble = false; continue; }
+        if (c == QLatin1Char('\'')) { inSingle = true; continue; }
+        if (c == QLatin1Char('"'))  { inDouble = true; continue; }
+        if (c == QLatin1Char('('))  ++depth;
+        else if (c == QLatin1Char(')')) {
+            --depth;
+            if (depth == 0) return i;
+        }
+    }
+    return -1;
+}
+
+// Split arg string by top-level commas (paren-depth 0, not inside quotes).
+QStringList splitTopLevelArgs(const QString& argStr) {
+    QStringList parts;
+    int depth = 0;
+    bool inSingle = false, inDouble = false;
+    int last = 0;
+    for (int i = 0; i < argStr.size(); ++i) {
+        const QChar c = argStr[i];
+        if (inSingle) { if (c == QLatin1Char('\'')) inSingle = false; continue; }
+        if (inDouble) { if (c == QLatin1Char('"'))  inDouble = false; continue; }
+        if (c == QLatin1Char('\'')) { inSingle = true; continue; }
+        if (c == QLatin1Char('"'))  { inDouble = true; continue; }
+        if (c == QLatin1Char('('))  ++depth;
+        else if (c == QLatin1Char(')')) --depth;
+        else if (c == QLatin1Char(',') && depth == 0) {
+            parts.append(argStr.mid(last, i - last).trimmed());
+            last = i + 1;
+        }
+    }
+    parts.append(argStr.mid(last).trimmed());
+    return parts;
+}
+
+bool isIdentStart(QChar c) { return c.isLetter() || c == QLatin1Char('_'); }
+bool isIdentChar(QChar c)  { return c.isLetterOrNumber() || c == QLatin1Char('_'); }
+
+// Substitute every word-boundary occurrence of `name` in `text` with
+// `(value)`. Pure lexical — doesn't try to be clever about which contexts.
+QString substituteIdent(QString text, const QString& name, const QString& value) {
+    if (name.isEmpty()) return text;
+    const QString replacement = "(" + value + ")";
+    int i = 0;
+    while (i <= text.size() - name.size()) {
+        // Word boundary on the left.
+        if (i > 0 && isIdentChar(text[i - 1])) { ++i; continue; }
+        // Match.
+        if (QStringView(text).mid(i, name.size()).compare(name, Qt::CaseSensitive) != 0) {
+            ++i; continue;
+        }
+        // Word boundary on the right.
+        const int after = i + name.size();
+        if (after < text.size() && isIdentChar(text[after])) { ++i; continue; }
+        text.replace(i, name.size(), replacement);
+        i += replacement.size();
+    }
+    return text;
+}
+
+// Find the next "LET(" in `s` (case-insensitive), respecting identifier
+// boundaries on the left. Returns the index of L, or -1.
+int findLetCall(const QString& s, int from = 0) {
+    int i = from;
+    while (i < s.size() - 3) {
+        // Look for L/l followed by E/e, T/t, then (.
+        if ((s[i] == QLatin1Char('L') || s[i] == QLatin1Char('l'))
+            && (s[i + 1] == QLatin1Char('E') || s[i + 1] == QLatin1Char('e'))
+            && (s[i + 2] == QLatin1Char('T') || s[i + 2] == QLatin1Char('t'))
+            && s[i + 3] == QLatin1Char('(')) {
+            if (i == 0 || !isIdentChar(s[i - 1])) return i;
+        }
+        ++i;
+    }
+    return -1;
+}
+
+} // namespace
+
+QString FormulaEngine::expandLet(const QString& formula) {
+    if (formula.isEmpty()) return formula;
+    // Quick reject: no "LET(" / "let(" anywhere.
+    if (!formula.contains(QLatin1String("LET("), Qt::CaseInsensitive)) return formula;
+
+    QString s = formula;
+    // Repeatedly rewrite until no LET( remains. Nested LETs are handled by
+    // each rewrite collapsing the outermost LET; subsequent passes then see
+    // (and rewrite) the previously-inner ones.
+    for (int safety = 0; safety < 128; ++safety) {
+        const int letStart = findLetCall(s);
+        if (letStart < 0) return s;
+
+        const int openParen = letStart + 3; // index of '('
+        const int closeParen = matchParen(s, openParen);
+        if (closeParen < 0) return s; // malformed, let parser surface the error
+
+        const QString argStr = s.mid(openParen + 1, closeParen - openParen - 1);
+        QStringList args = splitTopLevelArgs(argStr);
+        // Need odd count >= 3: (name, value)+ then final calculation.
+        if (args.size() < 3 || args.size() % 2 == 0) return s;
+
+        // Bind each (name, value) pair into subsequent args + final expr.
+        for (int k = 0; k + 1 < args.size() - 1; k += 2) {
+            const QString name  = args[k];
+            const QString value = args[k + 1];
+            for (int m = k + 2; m < args.size(); ++m) {
+                args[m] = substituteIdent(args[m], name, value);
+            }
+        }
+
+        const QString finalExpr = "(" + args.back() + ")";
+        s = s.left(letStart) + finalExpr + s.mid(closeParen + 1);
+    }
+    return s;
+}
+
 QVariant FormulaEngine::evaluate(const QString& formula) {
     m_lastError.clear();
     m_lastDependencies.clear();
@@ -112,9 +259,10 @@ QVariant FormulaEngine::evaluate(const QString& formula) {
 
     if (formula.isEmpty()) return QVariant();
 
-    // Rewrite Excel structured refs (Table1[Col] etc.) to A1 ranges before
-    // the parser sees them. Cheap when no '[' is in the formula.
+    // Pre-processor passes: expand structured refs (Table1[Col] etc.) and
+    // LET() bindings. Cheap when neither '[' nor LET appears in the formula.
     QString rewritten = expandStructuredRefs(formula, m_spreadsheet);
+    rewritten = expandLet(rewritten);
     QString expr = rewritten.startsWith('=') ? rewritten.mid(1) : rewritten;
 
     // Use AST for all formulas except array constants ({})
