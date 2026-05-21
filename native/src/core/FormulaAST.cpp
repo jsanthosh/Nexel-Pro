@@ -1,4 +1,6 @@
 #include "FormulaAST.h"
+#include <mutex>             // std::unique_lock — libstdc++ doesn't pull it
+                             // in transitively from <shared_mutex>
 #include <QRegularExpression>
 
 // ============================================================================
