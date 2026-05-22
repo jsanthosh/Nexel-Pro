@@ -47,13 +47,33 @@ public:
     int currentColumn() const { return m_currentCol; }
     void setCurrentCell(int row, int col);
 
+    // Range selection. The "anchor" is the corner from which Shift-arrows
+    // and drag operations extend; the "current" cell is the active one in
+    // the range (where editing would happen). Both Excel and our existing
+    // SpreadsheetView use the same model.
+    int selectionTop()    const { return qMin(m_anchorRow, m_currentRow); }
+    int selectionBottom() const { return qMax(m_anchorRow, m_currentRow); }
+    int selectionLeft()   const { return qMin(m_anchorCol, m_currentCol); }
+    int selectionRight()  const { return qMax(m_anchorCol, m_currentCol); }
+    bool hasMultiCellSelection() const {
+        return m_anchorRow != m_currentRow || m_anchorCol != m_currentCol;
+    }
+
+    // Set anchor + current to (row, col). Default for non-shift mouse clicks.
+    void selectCell(int row, int col);
+    // Keep anchor where it is; move current. Default for shift+click / shift+arrow.
+    void extendSelectionTo(int row, int col);
+
 signals:
     void currentCellChanged(int row, int col);
+    void selectionChanged(int top, int left, int bottom, int right);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
 
@@ -89,9 +109,16 @@ private:
                       int firstCol, int lastCol);
     void paintSelection(QPainter& p);
 
+    // Auto-scroll the viewport so (row, col) is visible. Called after every
+    // selection change driven by keyboard or drag.
+    void scrollToCell(int row, int col);
+
     std::shared_ptr<Spreadsheet> m_sheet;
     int m_currentRow = 0;
     int m_currentCol = 0;
+    int m_anchorRow  = 0;
+    int m_anchorCol  = 0;
+    bool m_dragSelecting = false;
 };
 
 #endif // GRIDCANVASVIEW_H

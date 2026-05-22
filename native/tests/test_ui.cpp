@@ -1454,6 +1454,100 @@ void testConditionalFormatting() {
     check(cf.getAllRules().empty(), "conditional format rule removed");
 }
 
+void testGridCanvasView_RangeSelection() {
+    SECTION("M2 GridCanvasView: range selection (Shift-click, drag, Shift-arrow, Ctrl+A)");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    for (int r = 0; r < 8; ++r)
+        for (int c = 0; c < 5; ++c)
+            sheet->setCellValue({r, c}, QVariant(r * 5 + c));
+
+    GridCanvasView view;
+    view.resize(800, 400);
+    view.setSpreadsheet(sheet);
+    view.show();
+    QApplication::processEvents();
+
+    // Single click → single-cell selection (anchor = current).
+    view.setCurrentCell(2, 1);
+    check(!view.hasMultiCellSelection(),
+          "range: single-cell selection has no extra range");
+    check(view.selectionTop()    == 2 && view.selectionBottom() == 2,
+          "range: rows collapse on single cell");
+
+    // extendSelectionTo: anchor stays, current moves.
+    view.extendSelectionTo(5, 3);
+    check(view.hasMultiCellSelection(),
+          "range: extendSelectionTo creates multi-cell selection");
+    check(view.selectionTop()    == 2 && view.selectionBottom() == 5,
+          "range: top/bottom set by min/max of anchor + current");
+    check(view.selectionLeft()   == 1 && view.selectionRight()  == 3,
+          "range: left/right set by min/max of anchor + current");
+    check(view.currentRow() == 5 && view.currentColumn() == 3,
+          "range: current cell is the extended-to cell");
+
+    // Shift+Down extends the selection.
+    QKeyEvent shiftDown(QEvent::KeyPress, Qt::Key_Down, Qt::ShiftModifier);
+    QApplication::sendEvent(&view, &shiftDown);
+    check(view.selectionBottom() == 6,
+          "range: Shift+Down extends bottom by one row");
+    check(view.selectionTop()    == 2,
+          "range: Shift+Down doesn't move the anchor");
+
+    // Shift+Right extends right.
+    QKeyEvent shiftRight(QEvent::KeyPress, Qt::Key_Right, Qt::ShiftModifier);
+    QApplication::sendEvent(&view, &shiftRight);
+    check(view.selectionRight() == 4,
+          "range: Shift+Right extends right by one column");
+
+    // Shift+Up contracts (current crosses back over anchor at some point).
+    QKeyEvent shiftUp(QEvent::KeyPress, Qt::Key_Up, Qt::ShiftModifier);
+    QApplication::sendEvent(&view, &shiftUp);
+    check(view.selectionBottom() == 5,
+          "range: Shift+Up contracts the bottom");
+
+    // Plain arrow collapses back to single cell.
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+    QApplication::sendEvent(&view, &down);
+    check(!view.hasMultiCellSelection(),
+          "range: plain arrow collapses multi-cell to single cell");
+
+    // Drag-select via mouse: press then move with button held.
+    {
+        const int xOffset = 48; // kRowHeaderWidth
+        const int yOffset = 22; // kColHeaderHeight
+        const int cellW = 80, cellH = 22;
+        // Press at row 1 col 0.
+        QPointF press(xOffset + cellW / 2.0,
+                       yOffset + cellH * 1 + cellH / 2.0);
+        QMouseEvent pressEv(QEvent::MouseButtonPress, press, view.mapToGlobal(press.toPoint()),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &pressEv);
+        // Drag to row 4 col 3.
+        QPointF move(xOffset + cellW * 3 + cellW / 2.0,
+                      yOffset + cellH * 4 + cellH / 2.0);
+        QMouseEvent moveEv(QEvent::MouseMove, move, view.mapToGlobal(move.toPoint()),
+                            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &moveEv);
+        QMouseEvent releaseEv(QEvent::MouseButtonRelease, move, view.mapToGlobal(move.toPoint()),
+                               Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &releaseEv);
+
+        check(view.selectionTop()    == 1 && view.selectionBottom() == 4,
+              "range: drag-select sets row bounds");
+        check(view.selectionLeft()   == 0 && view.selectionRight()  == 3,
+              "range: drag-select sets column bounds");
+    }
+
+    // Ctrl+A selects all populated cells.
+    QKeyEvent ctrlA(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier);
+    QApplication::sendEvent(&view, &ctrlA);
+    check(view.selectionTop() == 0 && view.selectionLeft() == 0,
+          "range: Ctrl+A anchors at A1");
+    check(view.selectionBottom() == 7 && view.selectionRight() == 4,
+          "range: Ctrl+A extends to last populated cell");
+}
+
 void testGridCanvasView_Foundation() {
     SECTION("M2 GridCanvasView: foundation (render + scroll + nav)");
 
@@ -1551,6 +1645,7 @@ int main(int argc, char* argv[]) {
     testNamedRanges();
     testConditionalFormatting();
     testGridCanvasView_Foundation();
+    testGridCanvasView_RangeSelection();
 
     std::cout << "\n==============================================" << std::endl;
     std::cout << "  RESULTS: " << g_pass << " passed, " << g_fail << " failed, " << g_total << " total" << std::endl;

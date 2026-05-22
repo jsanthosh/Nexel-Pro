@@ -34,18 +34,52 @@ void GridCanvasView::setSpreadsheet(std::shared_ptr<Spreadsheet> sheet) {
     m_sheet = std::move(sheet);
     m_currentRow = 0;
     m_currentCol = 0;
+    m_anchorRow  = 0;
+    m_anchorCol  = 0;
     updateScrollRanges();
     viewport()->update();
 }
 
 void GridCanvasView::setCurrentCell(int row, int col) {
+    selectCell(row, col);
+}
+
+void GridCanvasView::selectCell(int row, int col) {
+    row = qBound(0, row, kVirtualRowCount - 1);
+    col = qBound(0, col, kVirtualColumnCount - 1);
+    const bool currentMoved = (row != m_currentRow || col != m_currentCol);
+    const bool anchorMoved  = (row != m_anchorRow  || col != m_anchorCol);
+    m_currentRow = row;
+    m_currentCol = col;
+    m_anchorRow  = row;
+    m_anchorCol  = col;
+    if (currentMoved) emit currentCellChanged(row, col);
+    if (anchorMoved || currentMoved)
+        emit selectionChanged(row, col, row, col);
+    viewport()->update();
+}
+
+void GridCanvasView::extendSelectionTo(int row, int col) {
     row = qBound(0, row, kVirtualRowCount - 1);
     col = qBound(0, col, kVirtualColumnCount - 1);
     if (row == m_currentRow && col == m_currentCol) return;
     m_currentRow = row;
     m_currentCol = col;
     emit currentCellChanged(row, col);
+    emit selectionChanged(selectionTop(), selectionLeft(),
+                           selectionBottom(), selectionRight());
     viewport()->update();
+}
+
+void GridCanvasView::scrollToCell(int row, int col) {
+    const QRect r = cellRect(row, col);
+    const QRect gridRect(kRowHeaderWidth, kColHeaderHeight,
+                          viewport()->width()  - kRowHeaderWidth,
+                          viewport()->height() - kColHeaderHeight);
+    if (r.top()    < gridRect.top())    verticalScrollBar()->setValue(verticalScrollBar()->value() - (gridRect.top()    - r.top()));
+    if (r.bottom() > gridRect.bottom()) verticalScrollBar()->setValue(verticalScrollBar()->value() + (r.bottom() - gridRect.bottom()));
+    if (r.left()   < gridRect.left())   horizontalScrollBar()->setValue(horizontalScrollBar()->value() - (gridRect.left()   - r.left()));
+    if (r.right()  > gridRect.right())  horizontalScrollBar()->setValue(horizontalScrollBar()->value() + (r.right()  - gridRect.right()));
 }
 
 void GridCanvasView::updateScrollRanges() {
@@ -225,24 +259,63 @@ void GridCanvasView::paintCells(QPainter& p, int firstRow, int lastRow,
 }
 
 void GridCanvasView::paintSelection(QPainter& p) {
-    const QRect r = cellRect(m_currentRow, m_currentCol);
-    if (!r.isValid()) return;
-    // Don't paint the selection over the header area.
-    if (r.right()  < kRowHeaderWidth)  return;
-    if (r.bottom() < kColHeaderHeight) return;
+    const int t = selectionTop(),    l = selectionLeft();
+    const int b = selectionBottom(), r = selectionRight();
+    const QRect topLeft     = cellRect(t, l);
+    const QRect bottomRight = cellRect(b, r);
+    if (!topLeft.isValid() || !bottomRight.isValid()) return;
 
-    QRect clipped = r.intersected(
-        QRect(kRowHeaderWidth, kColHeaderHeight,
-              viewport()->width()  - kRowHeaderWidth,
-              viewport()->height() - kColHeaderHeight));
+    const QRect gridRect(kRowHeaderWidth, kColHeaderHeight,
+                          viewport()->width()  - kRowHeaderWidth,
+                          viewport()->height() - kColHeaderHeight);
 
     p.save();
+    p.setClipRect(gridRect);
+
+    // Range fill (Excel-style soft blue) — skip the active cell so it shows
+    // its real value cleanly through transparent white.
+    if (hasMultiCellSelection()) {
+        const QRect fullRange(topLeft.topLeft(), bottomRight.bottomRight());
+        p.fillRect(fullRange, QColor(26, 122, 90, 30));   // light brand-green wash
+    }
+
+    // Active cell highlight (white interior, distinguishes from the wash).
+    const QRect activeR = cellRect(m_currentRow, m_currentCol);
+    if (activeR.isValid()) {
+        p.fillRect(activeR.adjusted(0, 0, -1, -1), Qt::white);
+    }
+
+    // Heavy border around the entire selection.
     QPen border(QColor("#1A7A5A"));
     border.setWidth(2);
     p.setPen(border);
     p.setBrush(Qt::NoBrush);
-    p.drawRect(clipped.adjusted(0, 0, -1, -1));
+    const QRect rangeRect(topLeft.topLeft(), bottomRight.bottomRight());
+    p.drawRect(rangeRect.adjusted(0, 0, -1, -1));
+
     p.restore();
+
+    // Repaint active cell text on top of the white fill so it shows through.
+    if (m_sheet && activeR.isValid()) {
+        auto cell = m_sheet->getCellIfExists(m_currentRow, m_currentCol);
+        if (cell.isValid()) {
+            const QString text = cell->getValue().toString();
+            if (!text.isEmpty()) {
+                p.save();
+                p.setClipRect(gridRect);
+                p.setPen(QColor("#101828"));
+                const QFontMetrics fm = p.fontMetrics();
+                const QRect textR = activeR.adjusted(4, 0, -4, 0);
+                const QString display = fm.elidedText(text, Qt::ElideRight, textR.width());
+                const bool isNumeric = cell->getType() == CellType::Number
+                                       || cell->getType() == CellType::Formula;
+                p.drawText(textR, Qt::AlignVCenter |
+                                    (isNumeric ? Qt::AlignRight : Qt::AlignLeft),
+                            display);
+                p.restore();
+            }
+        }
+    }
 }
 
 void GridCanvasView::mousePressEvent(QMouseEvent* e) {
@@ -252,14 +325,40 @@ void GridCanvasView::mousePressEvent(QMouseEvent* e) {
     }
     const int r = rowAt(e->position().y());
     const int c = colAt(e->position().x());
-    if (r >= 0 && c >= 0) {
-        setCurrentCell(r, c);
-        setFocus(Qt::MouseFocusReason);
+    if (r < 0 || c < 0) return;
+
+    if (e->modifiers() & Qt::ShiftModifier) {
+        // Extend existing selection from anchor.
+        extendSelectionTo(r, c);
+    } else {
+        selectCell(r, c);
+        m_dragSelecting = true;
     }
+    setFocus(Qt::MouseFocusReason);
+}
+
+void GridCanvasView::mouseMoveEvent(QMouseEvent* e) {
+    if (!m_dragSelecting) {
+        QAbstractScrollArea::mouseMoveEvent(e);
+        return;
+    }
+    const int r = rowAt(e->position().y());
+    const int c = colAt(e->position().x());
+    if (r >= 0 && c >= 0) {
+        extendSelectionTo(r, c);
+    }
+}
+
+void GridCanvasView::mouseReleaseEvent(QMouseEvent* e) {
+    m_dragSelecting = false;
+    QAbstractScrollArea::mouseReleaseEvent(e);
 }
 
 void GridCanvasView::keyPressEvent(QKeyEvent* e) {
     int dr = 0, dc = 0;
+    const bool shift = (e->modifiers() & Qt::ShiftModifier) != 0;
+    const bool ctrl  = (e->modifiers() & Qt::ControlModifier) != 0;
+
     switch (e->key()) {
         case Qt::Key_Up:    dr = -1; break;
         case Qt::Key_Down:  dr = +1; break;
@@ -273,23 +372,39 @@ void GridCanvasView::keyPressEvent(QKeyEvent* e) {
             const int rowsPerPage = qMax(1, (viewport()->height() - kColHeaderHeight) / kDefaultRowHeight - 1);
             dr = +rowsPerPage; break;
         }
-        case Qt::Key_Home: setCurrentCell(m_currentRow, 0); return;
-        case Qt::Key_End:  if (m_sheet) setCurrentCell(m_currentRow, qMax(0, m_sheet->getMaxColumn())); return;
+        case Qt::Key_Home:
+            if (shift) extendSelectionTo(m_currentRow, 0);
+            else       selectCell(m_currentRow, 0);
+            scrollToCell(m_currentRow, m_currentCol);
+            return;
+        case Qt::Key_End:
+            if (m_sheet) {
+                const int lastCol = qMax(0, m_sheet->getMaxColumn());
+                if (shift) extendSelectionTo(m_currentRow, lastCol);
+                else       selectCell(m_currentRow, lastCol);
+                scrollToCell(m_currentRow, m_currentCol);
+            }
+            return;
+        case Qt::Key_A:
+            if (ctrl && m_sheet) {
+                const int lastRow = qMax(0, m_sheet->getMaxRow());
+                const int lastCol = qMax(0, m_sheet->getMaxColumn());
+                m_anchorRow = 0; m_anchorCol = 0;
+                extendSelectionTo(lastRow, lastCol);
+                return;
+            }
+            QAbstractScrollArea::keyPressEvent(e);
+            return;
         default:
             QAbstractScrollArea::keyPressEvent(e);
             return;
     }
-    setCurrentCell(m_currentRow + dr, m_currentCol + dc);
 
-    // Auto-scroll if the new selection falls outside the viewport.
-    const QRect r = cellRect(m_currentRow, m_currentCol);
-    const QRect gridRect(kRowHeaderWidth, kColHeaderHeight,
-                          viewport()->width()  - kRowHeaderWidth,
-                          viewport()->height() - kColHeaderHeight);
-    if (r.top()    < gridRect.top())    verticalScrollBar()->setValue(verticalScrollBar()->value() - (gridRect.top()    - r.top()));
-    if (r.bottom() > gridRect.bottom()) verticalScrollBar()->setValue(verticalScrollBar()->value() + (r.bottom() - gridRect.bottom()));
-    if (r.left()   < gridRect.left())   horizontalScrollBar()->setValue(horizontalScrollBar()->value() - (gridRect.left()   - r.left()));
-    if (r.right()  > gridRect.right())  horizontalScrollBar()->setValue(horizontalScrollBar()->value() + (r.right()  - gridRect.right()));
+    const int newRow = m_currentRow + dr;
+    const int newCol = m_currentCol + dc;
+    if (shift) extendSelectionTo(newRow, newCol);
+    else       selectCell(newRow, newCol);
+    scrollToCell(m_currentRow, m_currentCol);
 }
 
 void GridCanvasView::wheelEvent(QWheelEvent* e) {
