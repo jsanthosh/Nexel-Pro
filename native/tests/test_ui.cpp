@@ -1454,6 +1454,76 @@ void testConditionalFormatting() {
     check(cf.getAllRules().empty(), "conditional format rule removed");
 }
 
+void testGridCanvasView_Editing() {
+    SECTION("M2 GridCanvasView: in-place editing (F2, type-to-edit, Enter, Esc)");
+
+    auto sheet = std::make_shared<Spreadsheet>();
+    sheet->setCellValue({0, 0}, QVariant("seed"));
+
+    GridCanvasView view;
+    view.resize(800, 400);
+    view.setSpreadsheet(sheet);
+    view.show();
+    QApplication::processEvents();
+
+    // F2 enters edit mode at A1 with the existing value selected.
+    view.setCurrentCell(0, 0);
+    QKeyEvent f2(QEvent::KeyPress, Qt::Key_F2, Qt::NoModifier);
+    QApplication::sendEvent(&view, &f2);
+    check(view.isEditing(), "edit: F2 opens the in-place editor");
+
+    // Escape cancels without writing.
+    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(&view, &esc);
+    check(!view.isEditing(), "edit: Escape closes the editor");
+    check(sheet->getCellValue({0, 0}).toString() == "seed",
+          "edit: Escape preserves the original value");
+
+    // Programmatic edit via beginEdit("hello"), then commit.
+    view.setCurrentCell(0, 0);
+    view.beginEdit("hello");
+    check(view.isEditing(), "edit: beginEdit() opens the editor");
+    view.commitEdit();
+    check(!view.isEditing(), "edit: commitEdit() closes the editor");
+    check(sheet->getCellValue({0, 0}).toString() == "hello",
+          "edit: text value committed back to the spreadsheet");
+
+    // Number coercion: numeric text becomes a Number cell.
+    view.setCurrentCell(1, 0);
+    view.beginEdit("42.5");
+    view.commitEdit();
+    checkApprox(sheet->getCellValue({1, 0}).toDouble(), 42.5,
+                "edit: numeric text is parsed as a number");
+
+    // Formula commit.
+    view.setCurrentCell(2, 0);
+    view.beginEdit("=1+2");
+    view.commitEdit();
+    auto formulaCell = sheet->getCellIfExists(2, 0);
+    check(formulaCell.isValid() && formulaCell->getType() == CellType::Formula,
+          "edit: leading '=' creates a formula cell");
+    checkApprox(sheet->getCellValue({2, 0}).toDouble(), 3.0,
+                "edit: formula evaluates correctly");
+
+    // Delete clears the active cell (and the whole selection if multi-cell).
+    view.setCurrentCell(0, 0);
+    QKeyEvent del(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(&view, &del);
+    check(sheet->getCellValue({0, 0}).toString().isEmpty(),
+          "edit: Delete clears the current cell");
+
+    // Double-click enters edit mode.
+    view.setCurrentCell(2, 0);
+    const int xOff = 48 + 0 * 80 + 40;       // col 0 centre
+    const int yOff = 22 + 2 * 22 + 11;       // row 2 centre
+    QPointF p(xOff, yOff);
+    QMouseEvent dbl(QEvent::MouseButtonDblClick, p, view.mapToGlobal(p.toPoint()),
+                     Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(view.viewport(), &dbl);
+    check(view.isEditing(), "edit: double-click opens the editor");
+    view.cancelEdit();
+}
+
 void testGridCanvasView_RangeSelection() {
     SECTION("M2 GridCanvasView: range selection (Shift-click, drag, Shift-arrow, Ctrl+A)");
 
@@ -1646,6 +1716,7 @@ int main(int argc, char* argv[]) {
     testConditionalFormatting();
     testGridCanvasView_Foundation();
     testGridCanvasView_RangeSelection();
+    testGridCanvasView_Editing();
 
     std::cout << "\n==============================================" << std::endl;
     std::cout << "  RESULTS: " << g_pass << " passed, " << g_fail << " failed, " << g_total << " total" << std::endl;

@@ -11,6 +11,7 @@
 #include <QWheelEvent>
 #include <QScrollBar>
 #include <QApplication>
+#include <QLineEdit>
 
 GridCanvasView::GridCanvasView(QWidget* parent) : QAbstractScrollArea(parent) {
     setFocusPolicy(Qt::StrongFocus);
@@ -25,9 +26,91 @@ GridCanvasView::GridCanvasView(QWidget* parent) : QAbstractScrollArea(parent) {
 
     updateScrollRanges();
     connect(verticalScrollBar(),   &QScrollBar::valueChanged,
-            this, [this](int) { viewport()->update(); });
+            this, [this](int) { viewport()->update(); if (isEditing()) repositionEditor(); });
     connect(horizontalScrollBar(), &QScrollBar::valueChanged,
-            this, [this](int) { viewport()->update(); });
+            this, [this](int) { viewport()->update(); if (isEditing()) repositionEditor(); });
+}
+
+bool GridCanvasView::isEditing() const {
+    return m_editor && m_editor->isVisible();
+}
+
+void GridCanvasView::beginEdit(const QString& initialChar) {
+    if (!m_sheet) return;
+    if (!m_editor) {
+        m_editor = new QLineEdit(viewport());
+        m_editor->setFrame(false);
+        m_editor->setStyleSheet("QLineEdit { background: white; "
+                                  "border: 2px solid #1A7A5A; "
+                                  "padding: 0 3px; }");
+        m_editor->hide();
+        // Pressing Enter commits and advances; Escape cancels. These are
+        // intercepted in keyPressEvent at the view level too, but routing
+        // through the editor's own signal handles focus-loss cleanly.
+        connect(m_editor, &QLineEdit::returnPressed,
+                this, [this]() { commitEdit(); selectCell(m_currentRow + 1, m_currentCol); scrollToCell(m_currentRow, m_currentCol); });
+    }
+
+    auto cell = m_sheet->getCellIfExists(m_currentRow, m_currentCol);
+    QString existing;
+    if (cell.isValid()) {
+        // Prefer formula text over computed value so editing a formula cell
+        // shows the formula (matches Excel's F2 behaviour).
+        if (cell->getType() == CellType::Formula) existing = cell->getFormula();
+        else                                       existing = cell->getValue().toString();
+    }
+
+    if (!initialChar.isEmpty()) {
+        m_editor->setText(initialChar);
+    } else {
+        m_editor->setText(existing);
+        m_editor->selectAll();
+    }
+    repositionEditor();
+    m_editor->show();
+    m_editor->setFocus(Qt::OtherFocusReason);
+    // Put cursor at end after a type-to-edit so subsequent chars append.
+    if (!initialChar.isEmpty()) m_editor->setCursorPosition(initialChar.size());
+}
+
+void GridCanvasView::commitEdit() {
+    if (!isEditing() || !m_sheet) {
+        if (m_editor) m_editor->hide();
+        return;
+    }
+    const QString text = m_editor->text();
+    m_editor->hide();
+    // Heuristic: leading '=' makes it a formula. Anything else goes through
+    // setCellValue (which itself classifies as number/text/etc).
+    if (text.startsWith('=')) {
+        m_sheet->setCellFormula({m_currentRow, m_currentCol}, text);
+    } else {
+        // Try to interpret as number for typing convenience; fall through
+        // to text on parse failure.
+        bool ok = false;
+        const double num = text.toDouble(&ok);
+        if (ok && !text.isEmpty()) {
+            m_sheet->setCellValue({m_currentRow, m_currentCol}, QVariant(num));
+        } else {
+            m_sheet->setCellValue({m_currentRow, m_currentCol}, QVariant(text));
+        }
+    }
+    emit cellEdited(m_currentRow, m_currentCol, text);
+    setFocus(Qt::OtherFocusReason);
+    viewport()->update();
+}
+
+void GridCanvasView::cancelEdit() {
+    if (m_editor) m_editor->hide();
+    setFocus(Qt::OtherFocusReason);
+}
+
+void GridCanvasView::repositionEditor() {
+    if (!m_editor) return;
+    const QRect r = cellRect(m_currentRow, m_currentCol);
+    // Inflate by 1 px on each side so the editor's heavy border sits cleanly
+    // around the cell rect instead of biting into the gridlines.
+    m_editor->setGeometry(r.adjusted(-1, -1, 1, 1));
 }
 
 void GridCanvasView::setSpreadsheet(std::shared_ptr<Spreadsheet> sheet) {
@@ -323,6 +406,10 @@ void GridCanvasView::mousePressEvent(QMouseEvent* e) {
         QAbstractScrollArea::mousePressEvent(e);
         return;
     }
+    // Any click commits a pending edit first (with Excel semantics: the
+    // typed value is saved before the cursor moves).
+    if (isEditing()) commitEdit();
+
     const int r = rowAt(e->position().y());
     const int c = colAt(e->position().x());
     if (r < 0 || c < 0) return;
@@ -335,6 +422,20 @@ void GridCanvasView::mousePressEvent(QMouseEvent* e) {
         m_dragSelecting = true;
     }
     setFocus(Qt::MouseFocusReason);
+}
+
+void GridCanvasView::mouseDoubleClickEvent(QMouseEvent* e) {
+    if (e->button() == Qt::LeftButton) {
+        // Make sure the click first selects the cell, then enter edit mode.
+        const int r = rowAt(e->position().y());
+        const int c = colAt(e->position().x());
+        if (r >= 0 && c >= 0) {
+            selectCell(r, c);
+            beginEdit();
+            return;
+        }
+    }
+    QAbstractScrollArea::mouseDoubleClickEvent(e);
 }
 
 void GridCanvasView::mouseMoveEvent(QMouseEvent* e) {
@@ -359,6 +460,27 @@ void GridCanvasView::keyPressEvent(QKeyEvent* e) {
     const bool shift = (e->modifiers() & Qt::ShiftModifier) != 0;
     const bool ctrl  = (e->modifiers() & Qt::ControlModifier) != 0;
 
+    // Edit-mode commands first.
+    if (e->key() == Qt::Key_F2) { beginEdit(); return; }
+    if (e->key() == Qt::Key_Delete && !isEditing()) {
+        if (m_sheet) {
+            for (int r = selectionTop(); r <= selectionBottom(); ++r)
+                for (int c = selectionLeft(); c <= selectionRight(); ++c)
+                    m_sheet->setCellValue({r, c}, QVariant());
+            viewport()->update();
+        }
+        return;
+    }
+    // Type-to-edit: any printable char (not modifier-only) opens the editor
+    // pre-filled with that character. Excludes Escape, navigation keys, etc.
+    if (!isEditing() && !ctrl && !e->text().isEmpty()) {
+        const QChar ch = e->text().at(0);
+        if (ch.isPrint() && ch != QLatin1Char('\r') && ch != QLatin1Char('\n')) {
+            beginEdit(e->text());
+            return;
+        }
+    }
+
     switch (e->key()) {
         case Qt::Key_Up:    dr = -1; break;
         case Qt::Key_Down:  dr = +1; break;
@@ -372,6 +494,21 @@ void GridCanvasView::keyPressEvent(QKeyEvent* e) {
             const int rowsPerPage = qMax(1, (viewport()->height() - kColHeaderHeight) / kDefaultRowHeight - 1);
             dr = +rowsPerPage; break;
         }
+        case Qt::Key_Escape:
+            if (isEditing()) { cancelEdit(); return; }
+            QAbstractScrollArea::keyPressEvent(e);
+            return;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            // Without edit mode, Enter just moves down — matches Excel.
+            if (isEditing()) { commitEdit(); }
+            dr = +1; break;
+        case Qt::Key_Tab:
+            if (isEditing()) commitEdit();
+            dc = +1; break;
+        case Qt::Key_Backtab:
+            if (isEditing()) commitEdit();
+            dc = -1; break;
         case Qt::Key_Home:
             if (shift) extendSelectionTo(m_currentRow, 0);
             else       selectCell(m_currentRow, 0);

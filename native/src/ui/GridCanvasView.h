@@ -33,6 +33,7 @@
 #include <memory>
 
 class Spreadsheet;
+class QLineEdit;
 
 class GridCanvasView : public QAbstractScrollArea {
     Q_OBJECT
@@ -64,14 +65,27 @@ public:
     // Keep anchor where it is; move current. Default for shift+click / shift+arrow.
     void extendSelectionTo(int row, int col);
 
+    // Cell editing. beginEdit shows an inline QLineEdit over the active
+    // cell, pre-populated with the cell's current text. If initialChar is
+    // non-empty (the user started typing without entering edit mode first),
+    // the editor's contents are replaced with that character. commitEdit
+    // writes the editor's text back to the spreadsheet and hides the editor;
+    // cancelEdit discards changes.
+    void beginEdit(const QString& initialChar = QString());
+    void commitEdit();
+    void cancelEdit();
+    bool isEditing() const;
+
 signals:
     void currentCellChanged(int row, int col);
     void selectionChanged(int top, int left, int bottom, int right);
+    void cellEdited(int row, int col, const QString& newText);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
@@ -113,12 +127,17 @@ private:
     // selection change driven by keyboard or drag.
     void scrollToCell(int row, int col);
 
+    // Reposition the in-place editor over the current cell. Called when
+    // scroll position changes or the active cell moves while editing.
+    void repositionEditor();
+
     std::shared_ptr<Spreadsheet> m_sheet;
     int m_currentRow = 0;
     int m_currentCol = 0;
     int m_anchorRow  = 0;
     int m_anchorCol  = 0;
     bool m_dragSelecting = false;
+    QLineEdit* m_editor = nullptr;
 };
 
 #endif // GRIDCANVASVIEW_H
