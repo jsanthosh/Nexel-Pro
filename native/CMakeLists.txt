@@ -185,6 +185,8 @@ set(UI_SOURCES
     src/ui/SpreadsheetView.h
     src/ui/GridCanvasView.cpp
     src/ui/GridCanvasView.h
+    src/ui/PageSetupDialog.cpp
+    src/ui/PageSetupDialog.h
     src/ui/CellDelegate.cpp
     src/ui/CellDelegate.h
     src/ui/FormulaPopupDelegate.h

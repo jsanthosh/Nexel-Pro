@@ -14,6 +14,7 @@
 #include "GoToSpecialDialog.h"
 #include "FunctionBrowserDialog.h"
 #include "GridCanvasView.h"
+#include "PageSetupDialog.h"
 #include "RemoveDuplicatesDialog.h"
 #include "ConditionalFormatDialog.h"
 #include "DataValidationDialog.h"
@@ -908,6 +909,10 @@ void MainWindow::createMenuBar() {
     fileMenu->addSeparator();
     fileMenu->addAction("&Import CSV...", this, &MainWindow::onImportCsv);
     fileMenu->addAction("&Export CSV...", this, &MainWindow::onExportCsv);
+    fileMenu->addSeparator();
+    // M3: Page Setup. Backend (per-sheet PrintSettings) already round-trips
+    // through XLSX as of M1 Week 5b — this gives users a UI to edit it.
+    fileMenu->addAction("Page Set&up...", this, &MainWindow::onPageSetup);
     fileMenu->addSeparator();
     fileMenu->addAction("E&xit", this, &QWidget::close, QKeySequence::Quit);
 
@@ -3827,6 +3832,20 @@ QString MainWindow::getSelectionRange() const {
     }
 
     return CellAddress(minRow, minCol).toString() + ":" + CellAddress(maxRow, maxCol).toString();
+}
+
+void MainWindow::onPageSetup() {
+    if (m_activeSheetIndex < 0 || m_activeSheetIndex >= static_cast<int>(m_sheets.size())) {
+        QMessageBox::information(this, "Page Setup", "No active sheet.");
+        return;
+    }
+    auto& sheet = m_sheets[m_activeSheetIndex];
+    PageSetupDialog dlg(sheet->getPrintSettings(), this);
+    if (dlg.exec() == QDialog::Accepted) {
+        sheet->setPrintSettings(dlg.settings());
+        setDirty();
+        statusBar()->showMessage("Page setup updated");
+    }
 }
 
 void MainWindow::onOpenM2GridWindow() {

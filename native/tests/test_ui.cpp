@@ -27,6 +27,7 @@
 #include "../src/ui/SpreadsheetView.h"
 #include "../src/ui/SpreadsheetModel.h"
 #include "../src/ui/GridCanvasView.h"
+#include "../src/ui/PageSetupDialog.h"
 
 #include <QApplication>
 #include <QKeyEvent>
@@ -1454,6 +1455,55 @@ void testConditionalFormatting() {
     check(cf.getAllRules().empty(), "conditional format rule removed");
 }
 
+void testPageSetupDialog_RoundTrip() {
+    SECTION("M3 PageSetupDialog: round-trip through PrintSettings");
+
+    Spreadsheet::PrintSettings src;
+    src.orientation   = 2;        // landscape
+    src.paperSize     = 9;        // A4
+    src.scale         = 75;
+    src.fitToWidth    = 0;        // scale mode (not fit)
+    src.fitToHeight   = 0;
+    src.leftMargin    = 0.5;
+    src.rightMargin   = 0.5;
+    src.topMargin     = 1.0;
+    src.bottomMargin  = 1.0;
+    src.headerMargin  = 0.4;
+    src.footerMargin  = 0.4;
+    src.oddHeader     = "&CMonthly Report";
+    src.oddFooter     = "&LPage &P of &N";
+    src.printGridlines = true;
+    src.printHeadings  = true;
+
+    PageSetupDialog dlg(src);
+    Spreadsheet::PrintSettings got = dlg.settings();
+
+    check(got.orientation == 2,           "page setup: landscape preserved");
+    check(got.paperSize   == 9,           "page setup: A4 preserved");
+    check(got.scale       == 75,          "page setup: scale preserved");
+    check(got.fitToWidth  == 0 &&
+          got.fitToHeight == 0,            "page setup: scale mode keeps fit at 0");
+    checkApprox(got.leftMargin,   0.5,    "page setup: left margin preserved");
+    checkApprox(got.rightMargin,  0.5,    "page setup: right margin preserved");
+    checkApprox(got.topMargin,    1.0,    "page setup: top margin preserved");
+    checkApprox(got.bottomMargin, 1.0,    "page setup: bottom margin preserved");
+    checkApprox(got.headerMargin, 0.4,    "page setup: header margin preserved");
+    checkApprox(got.footerMargin, 0.4,    "page setup: footer margin preserved");
+    check(got.oddHeader   == "&CMonthly Report", "page setup: header text preserved");
+    check(got.oddFooter   == "&LPage &P of &N",  "page setup: footer text preserved");
+    check(got.printGridlines, "page setup: gridlines flag preserved");
+    check(got.printHeadings,  "page setup: headings flag preserved");
+
+    // Fit mode round-trip.
+    Spreadsheet::PrintSettings fitInit;
+    fitInit.fitToWidth = 2;
+    fitInit.fitToHeight = 3;
+    PageSetupDialog dlgFit(fitInit);
+    Spreadsheet::PrintSettings gotFit = dlgFit.settings();
+    check(gotFit.fitToWidth  == 2, "page setup: fit-to width preserved");
+    check(gotFit.fitToHeight == 3, "page setup: fit-to height preserved");
+}
+
 void testGridCanvasView_Editing() {
     SECTION("M2 GridCanvasView: in-place editing (F2, type-to-edit, Enter, Esc)");
 
@@ -1717,6 +1767,7 @@ int main(int argc, char* argv[]) {
     testGridCanvasView_Foundation();
     testGridCanvasView_RangeSelection();
     testGridCanvasView_Editing();
+    testPageSetupDialog_RoundTrip();
 
     std::cout << "\n==============================================" << std::endl;
     std::cout << "  RESULTS: " << g_pass << " passed, " << g_fail << " failed, " << g_total << " total" << std::endl;

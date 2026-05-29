@@ -116,6 +116,9 @@ private slots:
     // M2: open a side window with the new custom grid view
     void onOpenM2GridWindow();
 
+    // M3: page setup
+    void onPageSetup();
+
     // Chart and Shape insertion
     void onInsertChart();
     void onInsertShape();
